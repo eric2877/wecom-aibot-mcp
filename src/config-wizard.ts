@@ -17,6 +17,7 @@ export interface WecomConfig {
 
 const CONFIG_DIR = path.join(os.homedir(), '.wecom-aibot-mcp');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+const CLAUDE_CONFIG_FILE = path.join(os.homedir(), '.claude.json');
 const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.local.json');
 const HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.sh');
 const HOOK_PORT = 18963;
@@ -114,6 +115,59 @@ esac
   console.log(`[config] Hook 脚本已写入: ${HOOK_SCRIPT_PATH}`);
 }
 
+// 写入 MCP Server 配置到 ~/.claude.json
+function writeMcpServerConfig(config: WecomConfig) {
+  try {
+    // 读取现有配置
+    let claudeConfig: any = {};
+    if (fs.existsSync(CLAUDE_CONFIG_FILE)) {
+      const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
+      claudeConfig = JSON.parse(content);
+    }
+
+    // 确保 mcpServers 存在
+    if (!claudeConfig.mcpServers) claudeConfig.mcpServers = {};
+
+    // 检查是否已有 wecom-aibot 配置
+    if (claudeConfig.mcpServers['wecom-aibot']) {
+      console.log('[config] ~/.claude.json 中已存在 wecom-aibot 配置，跳过写入');
+      return true;
+    }
+
+    // 写入 MCP Server 配置
+    claudeConfig.mcpServers['wecom-aibot'] = {
+      command: 'npx',
+      args: ['@various/wecom-aibot-mcp'],
+      env: {
+        WECOM_BOT_ID: config.botId,
+        WECOM_SECRET: config.secret,
+        WECOM_TARGET_USER: config.targetUserId,
+      },
+    };
+
+    fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
+    console.log(`[config] MCP Server 配置已写入 ~/.claude.json`);
+    return true;
+  } catch (err) {
+    console.error('[config] 写入 ~/.claude.json 失败:', err);
+    console.log('[config] ⚠️  请手动将以下配置添加到 ~/.claude.json:');
+    console.log(JSON.stringify({
+      mcpServers: {
+        'wecom-aibot': {
+          command: 'npx',
+          args: ['@various/wecom-aibot-mcp'],
+          env: {
+            WECOM_BOT_ID: config.botId,
+            WECOM_SECRET: config.secret,
+            WECOM_TARGET_USER: config.targetUserId,
+          },
+        },
+      },
+    }, null, 2));
+    return false;
+  }
+}
+
 // 写入 MCP 工具权限 + 注册 PermissionRequest hook 到 Claude settings
 function writeMcpPermissions() {
   try {
@@ -161,13 +215,16 @@ export function ensureHookInstalled() {
   writeMcpPermissions();
 }
 
-// 保存配置（并自动写入 MCP 权限）
+// 保存配置（并自动写入 MCP 权限和 Server 配置）
 export function saveConfig(config: WecomConfig) {
   ensureConfigDir();
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
   console.log(`[config] 配置已保存到 ${CONFIG_FILE}`);
 
-  // 自动写入 MCP 工具权限
+  // 自动写入 MCP Server 配置到 ~/.claude.json
+  writeMcpServerConfig(config);
+
+  // 自动写入 MCP 工具权限和 Hook 到 ~/.claude/settings.local.json
   writeMcpPermissions();
 }
 
