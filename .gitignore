@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.*
+*.log
+.DS_Store
+*.tgz
+
+# Claude Code 项目配置（包含用户特定路径）
+.claude/

@@ -1,0 +1,50 @@
+{
+  "name": "@various/wecom-aibot-mcp",
+  "version": "1.0.0",
+  "description": "企业微信智能机器人 MCP 服务 - Claude Code 审批通道",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "wecom-aibot-mcp": "./dist/bin.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/bin.js",
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "wecom",
+    "企业微信",
+    "mcp",
+    "claude-code",
+    "approval",
+    "智能机器人",
+    "various"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/various/wecom-aibot-mcp.git"
+  },
+  "dependencies": {
+    "@wecom/aibot-node-sdk": "^1.0.4",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
