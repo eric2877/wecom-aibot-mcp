@@ -312,6 +312,140 @@ export function ensureHookInstalled() {
   installSkills();
 }
 
+// 卸载所有配置
+export function uninstall() {
+  console.log('\n[uninstall] 开始清理 wecom-aibot-mcp 配置...\n');
+
+  let cleaned = 0;
+
+  // 1. 删除 ~/.wecom-aibot-mcp/ 目录
+  if (fs.existsSync(CONFIG_DIR)) {
+    fs.rmSync(CONFIG_DIR, { recursive: true });
+    console.log(`[uninstall] 已删除: ${CONFIG_DIR}`);
+    cleaned++;
+  }
+
+  // 2. 清理 ~/.claude/.mcp.json 中的 wecom-aibot 配置
+  const mcpConfigFile = path.join(os.homedir(), '.claude', '.mcp.json');
+  if (fs.existsSync(mcpConfigFile)) {
+    try {
+      const content = fs.readFileSync(mcpConfigFile, 'utf-8');
+      const config = JSON.parse(content);
+      if (config.mcpServers?.['wecom-aibot']) {
+        delete config.mcpServers['wecom-aibot'];
+        fs.writeFileSync(mcpConfigFile, JSON.stringify(config, null, 2));
+        console.log(`[uninstall] 已从 ~/.claude/.mcp.json 移除 wecom-aibot`);
+        cleaned++;
+      }
+    } catch (err) {
+      console.error('[uninstall] 清理 ~/.claude/.mcp.json 失败:', err);
+    }
+  }
+
+  // 3. 清理 ~/.claude/settings.json 中的 wecom 权限和 hooks
+  const settingsFile = path.join(os.homedir(), '.claude', 'settings.json');
+  if (fs.existsSync(settingsFile)) {
+    try {
+      const content = fs.readFileSync(settingsFile, 'utf-8');
+      const settings = JSON.parse(content);
+      let modified = false;
+
+      // 清理 wecom 相关权限
+      if (settings.permissions?.allow) {
+        const originalLen = settings.permissions.allow.length;
+        settings.permissions.allow = settings.permissions.allow.filter(
+          (p: string) => !p.includes('wecom-aibot')
+        );
+        if (settings.permissions.allow.length < originalLen) {
+          console.log(`[uninstall] 已从 ~/.claude/settings.json 移除 wecom 权限`);
+          modified = true;
+        }
+      }
+
+      // 清理 PermissionRequest hook（指向 wecom hook 脚本的）
+      if (settings.hooks?.PermissionRequest) {
+        const originalLen = settings.hooks.PermissionRequest.length;
+        settings.hooks.PermissionRequest = settings.hooks.PermissionRequest.filter(
+          (h: any) => !h.hooks?.some((hook: any) => hook.command?.includes('wecom-aibot-mcp'))
+        );
+        if (settings.hooks.PermissionRequest.length < originalLen) {
+          console.log(`[uninstall] 已从 ~/.claude/settings.json 移除 wecom hook`);
+          modified = true;
+        }
+        // 如果 PermissionRequest 为空，删除整个 key
+        if (settings.hooks.PermissionRequest.length === 0) {
+          delete settings.hooks.PermissionRequest;
+        }
+      }
+
+      if (modified) {
+        fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+        cleaned++;
+      }
+    } catch (err) {
+      console.error('[uninstall] 清理 ~/.claude/settings.json 失败:', err);
+    }
+  }
+
+  // 4. 清理 ~/.claude/settings.local.json 中的 wecom 权限和 hooks
+  if (fs.existsSync(CLAUDE_SETTINGS_FILE)) {
+    try {
+      const content = fs.readFileSync(CLAUDE_SETTINGS_FILE, 'utf-8');
+      const settings = JSON.parse(content);
+      let modified = false;
+
+      // 清理 wecom 相关权限
+      if (settings.permissions?.allow) {
+        const originalLen = settings.permissions.allow.length;
+        settings.permissions.allow = settings.permissions.allow.filter(
+          (p: string) => !p.includes('wecom-aibot')
+        );
+        if (settings.permissions.allow.length < originalLen) {
+          console.log(`[uninstall] 已从 ~/.claude/settings.local.json 移除 wecom 权限`);
+          modified = true;
+        }
+      }
+
+      // 清理 hooks
+      if (settings.hooks?.PermissionRequest) {
+        const originalLen = settings.hooks.PermissionRequest.length;
+        settings.hooks.PermissionRequest = settings.hooks.PermissionRequest.filter(
+          (h: any) => !h.hooks?.some((hook: any) => hook.command?.includes('wecom-aibot-mcp'))
+        );
+        if (settings.hooks.PermissionRequest.length < originalLen) {
+          console.log(`[uninstall] 已从 ~/.claude/settings.local.json 移除 wecom hook`);
+          modified = true;
+        }
+        if (settings.hooks.PermissionRequest.length === 0) {
+          delete settings.hooks.PermissionRequest;
+        }
+      }
+
+      if (modified) {
+        fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(settings, null, 2));
+        cleaned++;
+      }
+    } catch (err) {
+      console.error('[uninstall] 清理 ~/.claude/settings.local.json 失败:', err);
+    }
+  }
+
+  // 5. 删除 skill 文件
+  const skillDir = path.join(os.homedir(), '.claude', 'skills', 'headless-mode');
+  const skillFile = path.join(skillDir, 'SKILL.md');
+  if (fs.existsSync(skillFile)) {
+    fs.rmSync(skillFile);
+    // 如果目录为空，删除目录
+    if (fs.existsSync(skillDir) && fs.readdirSync(skillDir).length === 0) {
+      fs.rmSync(skillDir);
+    }
+    console.log(`[uninstall] 已删除 skill 文件: ${skillFile}`);
+    cleaned++;
+  }
+
+  console.log(`\n[uninstall] 清理完成，共清理 ${cleaned} 项配置\n`);
+}
+
 // 保存配置（并自动写入 MCP 权限和 Server 配置）
 export function saveConfig(config: WecomConfig) {
   ensureConfigDir();

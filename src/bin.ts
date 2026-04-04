@@ -4,7 +4,7 @@
  *
  * npx 运行入口
  */
-import { getOrInitConfig, runConfigWizard, loadConfig, saveConfig, ensureHookInstalled, WecomConfig } from './config-wizard.js';
+import { getOrInitConfig, runConfigWizard, loadConfig, saveConfig, ensureHookInstalled, uninstall, WecomConfig } from './config-wizard.js';
 import { initClient } from './client.js';
 import { registerTools } from './tools/index.js';
 import { startHttpServer } from './http-server.js';
@@ -28,6 +28,7 @@ function showHelp() {
   --version, -v   显示版本号
   --config        重新配置（修改 Bot ID / Secret / 目标用户）
   --status        显示当前配置状态
+  --uninstall     卸载并清除所有配置（彻底移除 MCP）
 
 配置方式（按优先级）:
   1. 环境变量（推荐多实例场景）:
@@ -119,6 +120,12 @@ async function main() {
     process.exit(0);
   }
 
+  // 卸载并彻底清除所有配置
+  if (args.includes('--uninstall')) {
+    uninstall();
+    process.exit(0);
+  }
+
   const reconfig = args.includes('--config');
 
   console.log('');
@@ -132,6 +139,14 @@ async function main() {
   let config: WecomConfig;
 
   if (reconfig) {
+    // --config 只用于修改已有配置，不能重新安装
+    const existingConfig = loadConfig();
+    if (!existingConfig) {
+      console.log('[config] 未找到已保存的配置');
+      console.log('[config] 如需安装，请直接运行: npx @vrs-soft/wecom-aibot-mcp');
+      console.log('[config] 或设置环境变量: WECOM_BOT_ID, WECOM_SECRET, WECOM_TARGET_USER');
+      process.exit(1);
+    }
     console.log('[config] 重新配置模式\n');
     config = await runConfigWizard();
   } else {
