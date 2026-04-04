@@ -12,7 +12,7 @@ import { startHttpServer } from './http-server.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.5';
 
 // 等待连接验证（最多等待 10 秒）
 async function waitForConnection(client: WecomClient, timeoutMs = 10000): Promise<boolean> {
