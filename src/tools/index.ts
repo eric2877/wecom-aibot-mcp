@@ -3,7 +3,47 @@
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import * as fs from 'fs';
+import * as path from 'path';
 import type { WecomClient } from '../client.js';
+import { getHeadlessFilePath } from '../http-server.js';
+
+const CONFIG_DIR = path.join(process.env.HOME || '/tmp', '.wecom-aibot-mcp');
+
+// 进入 headless 模式（写入状态文件）
+function enterHeadlessMode(): boolean {
+  try {
+    if (!fs.existsSync(CONFIG_DIR)) {
+      fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    }
+    fs.writeFileSync(getHeadlessFilePath(), String(Date.now()));
+    console.log(`[mcp] 已进入 headless 模式: ${getHeadlessFilePath()}`);
+    return true;
+  } catch (err) {
+    console.error(`[mcp] 进入 headless 模式失败: ${err}`);
+    return false;
+  }
+}
+
+// 退出 headless 模式（删除状态文件）
+function exitHeadlessMode(): boolean {
+  try {
+    const headlessFile = getHeadlessFilePath();
+    if (fs.existsSync(headlessFile)) {
+      fs.unlinkSync(headlessFile);
+      console.log(`[mcp] 已退出 headless 模式: ${headlessFile}`);
+    }
+    return true;
+  } catch (err) {
+    console.error(`[mcp] 退出 headless 模式失败: ${err}`);
+    return false;
+  }
+}
+
+// 检查是否在 headless 模式
+function isHeadlessMode(): boolean {
+  return fs.existsSync(getHeadlessFilePath());
+}
 
 export function registerTools(server: McpServer, client: WecomClient) {
   // ============================================
@@ -347,5 +387,49 @@ ${jsonSnippet}
     }
   );
 
-  console.log('[mcp] 已注册 7 个工具: send_message, send_approval_request, get_approval_result, check_connection, get_pending_messages, get_setup_guide, add_robot_config');
+  // ============================================
+  // 工具 8: 进入 headless 模式
+  // ============================================
+  server.tool(
+    'enter_headless_mode',
+    '进入 headless 微信模式（审批通过微信发送）。当用户说「现在开始通过微信联系」时调用。',
+    {},
+    async () => {
+      const success = enterHeadlessMode();
+      return {
+        content: [
+          {
+            type: 'text',
+            text: success
+              ? JSON.stringify({ status: 'entered', headless: true, message: '审批请求将通过微信发送' })
+              : JSON.stringify({ status: 'error', message: '进入 headless 模式失败' }),
+          },
+        ],
+      };
+    }
+  );
+
+  // ============================================
+  // 工具 9: 退出 headless 模式
+  // ============================================
+  server.tool(
+    'exit_headless_mode',
+    '退出 headless 微信模式（审批回退到默认 UI）。当用户说「结束微信模式」或「我回来了」时调用。',
+    {},
+    async () => {
+      const success = exitHeadlessMode();
+      return {
+        content: [
+          {
+            type: 'text',
+            text: success
+              ? JSON.stringify({ status: 'exited', headless: false, message: '审批将使用默认 UI' })
+              : JSON.stringify({ status: 'error', message: '退出 headless 模式失败' }),
+          },
+        ],
+      };
+    }
+  );
+
+  console.log('[mcp] 已注册 9 个工具: send_message, send_approval_request, get_approval_result, check_connection, get_pending_messages, get_setup_guide, add_robot_config, enter_headless_mode, exit_headless_mode');
 }

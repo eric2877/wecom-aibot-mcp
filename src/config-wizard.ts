@@ -20,7 +20,6 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const CLAUDE_CONFIG_FILE = path.join(os.homedir(), '.claude.json');
 const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.local.json');
 const HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.sh');
-const HOOK_PORT = 18963;
 
 // MCP 工具权限列表（需要预授权以避免 headless 模式阻断）
 const MCP_TOOL_PERMISSIONS = [
@@ -31,6 +30,8 @@ const MCP_TOOL_PERMISSIONS = [
   'mcp__wecom-aibot__get_pending_messages',
   'mcp__wecom-aibot__get_setup_guide',
   'mcp__wecom-aibot__add_robot_config',
+  'mcp__wecom-aibot__enter_headless_mode',
+  'mcp__wecom-aibot__exit_headless_mode',
 ];
 
 // 确保配置目录存在
@@ -53,11 +54,14 @@ export function loadConfig(): WecomConfig | null {
   return null;
 }
 
-// 生成并写入 hook 脚本（非阻塞轮询模式）
+// 生成并写入 hook 脚本（多实例 + headless 模式支持）
 function writeHookScript() {
   const script = `#!/bin/bash
 # wecom-aibot-mcp PermissionRequest hook
-# 非阻塞模式：发送审批请求后轮询结果
+# 多实例 + headless 模式支持
+#
+# 多实例：按 PID 查找端口文件 ~/.wecom-aibot-mcp/port-{PID}
+# Headless：只有存在 headless-{PID} 文件时才发微信审批
 
 INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
@@ -76,33 +80,82 @@ case "$TOOL_NAME" in
     ;;
 esac
 
-# 检查审批服务是否在线
-HEALTH=$(curl -s -m 2 "http://127.0.0.1:${HOOK_PORT}/health" 2>/dev/null)
-if ! echo "$HEALTH" | jq -e '.connected == true' > /dev/null 2>&1; then
-  # 服务不在线或未连接微信，回退到默认 UI
+# 查找当前进程对应的 MCP 端口
+CONFIG_DIR="$HOME/.wecom-aibot-mcp"
+PARENT_PID=$PPID
+PORT_FILE=""
+HEADLESS_FILE=""
+
+# 最多查找 5 层进程树
+for i in {1..5}; do
+  if [[ -z "$PARENT_PID" ]] || [[ "$PARENT_PID" -eq 1 ]]; then
+    break
+  fi
+
+  CANDIDATE_PORT="$CONFIG_DIR/port-$PARENT_PID"
+  if [[ -f "$CANDIDATE_PORT" ]]; then
+    PORT_FILE="$CANDIDATE_PORT"
+    HEADLESS_FILE="$CONFIG_DIR/headless-$PARENT_PID"
+    break
+  fi
+
+  CHILD_PIDS=$(pgrep -P "$PARENT_PID" 2>/dev/null)
+  for CHILD_PID in $CHILD_PIDS; do
+    CANDIDATE_PORT="$CONFIG_DIR/port-$CHILD_PID"
+    if [[ -f "$CANDIDATE_PORT" ]]; then
+      PORT_FILE="$CANDIDATE_PORT"
+      HEADLESS_FILE="$CONFIG_DIR/headless-$CHILD_PID"
+      break 2
+    fi
+  done
+
+  PARENT_PID=$(ps -o ppid= -p "$PARENT_PID" 2>/dev/null | tr -d ' ')
+done
+
+# Fallback: 查找最新的端口文件
+if [[ -z "$PORT_FILE" ]]; then
+  PORT_FILE=$(ls -t "$CONFIG_DIR"/port-* 2>/dev/null | head -1)
+  if [[ -n "$PORT_FILE" ]]; then
+    HEADLESS_FILE=$(echo "$PORT_FILE" | sed 's/port-/headless-/')
+  fi
+fi
+
+# 没有找到端口文件，回退默认 UI
+if [[ -z "$PORT_FILE" ]] || [[ ! -f "$PORT_FILE" ]]; then
   exit 0
 fi
 
-# 发送审批请求（非阻塞，立即返回 taskId）
+PORT=$(cat "$PORT_FILE")
+
+# 检查 headless 模式（只有 headless 才发微信审批）
+if [[ ! -f "$HEADLESS_FILE" ]]; then
+  exit 0
+fi
+
+# 检查审批服务是否在线
+HEALTH=$(curl -s -m 2 "http://127.0.0.1:$PORT/health" 2>/dev/null)
+if ! echo "$HEALTH" | jq -e '.connected == true' > /dev/null 2>&1; then
+  exit 0
+fi
+
+# 发送审批请求
 TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}')
-BODY=$(jq -n --arg tool_name "$TOOL_NAME" --argjson tool_input "$TOOL_INPUT" \
-  '{"tool_name":$tool_name,"tool_input":$tool_input}')
-RESPONSE=$(curl -s -X POST "http://127.0.0.1:${HOOK_PORT}/approve" \\
+BODY=$(jq -n --arg tool_name "$TOOL_NAME" --argjson tool_input "$TOOL_INPUT" '{"tool_name":$tool_name,"tool_input":$tool_input}')
+RESPONSE=$(curl -s -X POST "http://127.0.0.1:$PORT/approve" \\
   -H "Content-Type: application/json" \\
   -d "$BODY")
 
 TASK_ID=$(echo "$RESPONSE" | jq -r '.taskId // empty')
 if [[ -z "$TASK_ID" ]]; then
-  # 发送失败，回退默认 UI
   exit 0
 fi
 
-# 轮询审批结果（每 2 秒检查一次，最多 300 次 = 10 分钟）
+# 轮询审批结果
 MAX_POLL=300
 POLL_COUNT=0
 while [[ $POLL_COUNT -lt $MAX_POLL ]]; do
   sleep 2
-  STATUS=$(curl -s "http://127.0.0.1:${HOOK_PORT}/approval_status/$TASK_ID")
+  STATUS=$(curl -s "http://127.0.0.1:$PORT/approval_status/$TASK_ID" 2>/dev/null)
   RESULT=$(echo "$STATUS" | jq -r '.result // empty')
 
   if [[ "$RESULT" == "allow-once" || "$RESULT" == "allow-always" ]]; then
@@ -116,7 +169,6 @@ while [[ $POLL_COUNT -lt $MAX_POLL ]]; do
   POLL_COUNT=$((POLL_COUNT + 1))
 done
 
-# 超时，回退默认 UI
 exit 0
 `;
 
