@@ -60,7 +60,7 @@ PermissionRequest Hook 拦截
 
 ### 审批卡片示例
 
-![审批卡片](docs/approval-card.png)
+<img src="docs/approval-card.png" width="30%" alt="审批卡片示例" />
 
 用户在企业微信中收到审批卡片，点击按钮即可远程决策：
 

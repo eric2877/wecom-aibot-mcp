@@ -2,6 +2,7 @@
  * 配置向导模块
  *
  * 首次运行时引导用户配置 Bot ID、Secret 和默认目标用户
+ * 配置直接存储在 ~/.claude.json 的 mcpServers.wecom-aibot.env 中
  */
 import * as readline from 'readline';
 import * as fs from 'fs';
@@ -16,7 +17,6 @@ export interface WecomConfig {
 }
 
 const CONFIG_DIR = path.join(os.homedir(), '.wecom-aibot-mcp');
-const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const CLAUDE_CONFIG_FILE = path.join(os.homedir(), '.claude.json');
 const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.local.json');
 const HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.sh');
@@ -34,19 +34,31 @@ const MCP_TOOL_PERMISSIONS = [
   'mcp__wecom-aibot__exit_headless_mode',
 ];
 
-// 确保配置目录存在
+// 确保配置目录存在（用于存储端口文件、hook脚本等运行时文件）
 function ensureConfigDir() {
   if (!fs.existsSync(CONFIG_DIR)) {
     fs.mkdirSync(CONFIG_DIR, { recursive: true });
   }
 }
 
-// 读取已保存的配置
+// 从 ~/.claude.json 读取已保存的配置
 export function loadConfig(): WecomConfig | null {
   try {
-    if (fs.existsSync(CONFIG_FILE)) {
-      const content = fs.readFileSync(CONFIG_FILE, 'utf-8');
-      return JSON.parse(content);
+    // 优先从 ~/.claude.json 读取
+    if (fs.existsSync(CLAUDE_CONFIG_FILE)) {
+      const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
+      const claudeConfig = JSON.parse(content);
+      const mcpConfig = claudeConfig.mcpServers?.['wecom-aibot'];
+      if (mcpConfig?.env) {
+        const { WECOM_BOT_ID, WECOM_SECRET, WECOM_TARGET_USER } = mcpConfig.env;
+        if (WECOM_BOT_ID && WECOM_SECRET && WECOM_TARGET_USER) {
+          return {
+            botId: WECOM_BOT_ID,
+            secret: WECOM_SECRET,
+            targetUserId: WECOM_TARGET_USER,
+          };
+        }
+      }
     }
   } catch (err) {
     console.error('[config] 读取配置失败:', err);
@@ -54,35 +66,21 @@ export function loadConfig(): WecomConfig | null {
   return null;
 }
 
-// 删除已保存的配置（连接失败时让用户重新输入）
+// 删除配置（从 ~/.claude.json）
 export function deleteConfig() {
-  try {
-    if (fs.existsSync(CONFIG_FILE)) {
-      fs.unlinkSync(CONFIG_FILE);
-      console.log('[config] 已删除配置文件');
-    }
-  } catch (err) {
-    console.error('[config] 删除配置失败:', err);
-  }
-}
-
-// 删除 MCP Server 配置（从 ~/.claude.json）
-export function deleteMcpConfig() {
   try {
     if (fs.existsSync(CLAUDE_CONFIG_FILE)) {
       const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
       const claudeConfig = JSON.parse(content);
 
-      if (claudeConfig.mcpServers && claudeConfig.mcpServers['wecom-aibot']) {
+      if (claudeConfig.mcpServers?.['wecom-aibot']) {
         delete claudeConfig.mcpServers['wecom-aibot'];
         fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
-        console.log('[config] 已从 ~/.claude.json 删除 wecom-aibot MCP 配置');
-      } else {
-        console.log('[config] ~/.claude.json 中未找到 wecom-aibot 配置');
+        console.log('[config] 已从 ~/.claude.json 删除 wecom-aibot 配置');
       }
     }
   } catch (err) {
-    console.error('[config] 删除 MCP 配置失败:', err);
+    console.error('[config] 删除配置失败:', err);
   }
 }
 
@@ -133,12 +131,11 @@ export function deleteSkills() {
 export function uninstall() {
   console.log('\n[config] 开始卸载 wecom-aibot-mcp...\n');
 
-  deleteConfig();
-  deleteMcpConfig();
+  deleteConfig();  // 删除 ~/.claude.json 中的配置
   deleteHook();
   deleteSkills();
 
-  // 删除配置目录
+  // 删除运行时文件目录
   if (fs.existsSync(CONFIG_DIR)) {
     try {
       // 删除所有 port-* 和 headless-* 文件
@@ -281,7 +278,7 @@ done
 }
 
 // 写入 MCP Server 配置到 ~/.claude.json
-function writeMcpServerConfig(config: WecomConfig) {
+function writeMcpServerConfig(config: WecomConfig, instanceName?: string) {
   try {
     // 读取现有配置
     let claudeConfig: any = {};
@@ -293,14 +290,15 @@ function writeMcpServerConfig(config: WecomConfig) {
     // 确保 mcpServers 存在
     if (!claudeConfig.mcpServers) claudeConfig.mcpServers = {};
 
-    // 检查是否已有 wecom-aibot 配置
-    if (claudeConfig.mcpServers['wecom-aibot']) {
-      console.log('[config] ~/.claude.json 中已存在 wecom-aibot 配置，跳过写入');
-      return true;
+    const name = instanceName || 'wecom-aibot';
+
+    // 检查是否已存在同名配置
+    if (claudeConfig.mcpServers[name] && !instanceName) {
+      console.log(`[config] ~/.claude.json 中已存在 ${name} 配置，将更新`);
     }
 
     // 写入 MCP Server 配置
-    claudeConfig.mcpServers['wecom-aibot'] = {
+    claudeConfig.mcpServers[name] = {
       command: 'npx',
       args: ['@vrs-soft/wecom-aibot-mcp'],
       env: {
@@ -311,14 +309,15 @@ function writeMcpServerConfig(config: WecomConfig) {
     };
 
     fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
-    console.log(`[config] MCP Server 配置已写入 ~/.claude.json`);
+    console.log(`[config] MCP Server 配置已写入 ~/.claude.json (实例名: ${name})`);
     return true;
   } catch (err) {
     console.error('[config] 写入 ~/.claude.json 失败:', err);
     console.log('[config] ⚠️  请手动将以下配置添加到 ~/.claude.json:');
+    const name = instanceName || 'wecom-aibot';
     console.log(JSON.stringify({
       mcpServers: {
-        'wecom-aibot': {
+        [name]: {
           command: 'npx',
           args: ['@vrs-soft/wecom-aibot-mcp'],
           env: {
@@ -330,6 +329,79 @@ function writeMcpServerConfig(config: WecomConfig) {
       },
     }, null, 2));
     return false;
+  }
+}
+
+// 添加新的 MCP 配置（用于多 bot 场景）
+export async function addMcpConfig() {
+  const rl = createRL();
+
+  try {
+    console.log('\n添加新的企业微信机器人配置\n');
+
+    // 获取实例名称
+    const instanceName = await question(rl, 'MCP 实例名称（如 wecom-aibot-zhangsan）: ');
+    if (!instanceName) {
+      console.log('[config] 实例名称不能为空');
+      return;
+    }
+
+    // 检查名称是否已存在
+    if (fs.existsSync(CLAUDE_CONFIG_FILE)) {
+      const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
+      const claudeConfig = JSON.parse(content);
+      if (claudeConfig.mcpServers?.[instanceName]) {
+        console.log(`[config] 实例名称 "${instanceName}" 已存在，请使用其他名称`);
+        return;
+      }
+    }
+
+    // 获取 Bot ID
+    let botId = await question(rl, 'Bot ID: ');
+    while (!botId) {
+      console.log('Bot ID 不能为空');
+      botId = await question(rl, 'Bot ID: ');
+    }
+
+    // 获取 Secret
+    let secret = await question(rl, 'Secret: ');
+    while (!secret) {
+      console.log('Secret 不能为空');
+      secret = await question(rl, 'Secret: ');
+    }
+
+    // 获取默认目标用户
+    console.log('\n请输入默认交互用户的 User ID（企业微信用户账号）\n');
+    let targetUserId = await question(rl, '默认目标用户 ID: ');
+    while (!targetUserId) {
+      console.log('用户 ID 不能为空');
+      targetUserId = await question(rl, '默认目标用户 ID: ');
+    }
+
+    const config: WecomConfig = { botId, secret, targetUserId };
+
+    // 确认配置
+    console.log('\n─────────────────────────────────────');
+    console.log('配置确认：');
+    console.log(`  实例名称:   ${instanceName}`);
+    console.log(`  Bot ID:     ${botId}`);
+    console.log(`  Secret:     ${secret.slice(0, 8)}...${secret.slice(-4)}`);
+    console.log(`  目标用户:   ${targetUserId}`);
+    console.log('─────────────────────────────────────\n');
+
+    const confirm = await question(rl, '确认添加配置？(Y/n): ');
+    if (confirm.toLowerCase() === 'n') {
+      console.log('[config] 已取消');
+      return;
+    }
+
+    // 写入配置
+    writeMcpServerConfig(config, instanceName);
+    console.log(`\n[config] ✅ 已添加新机器人配置: ${instanceName}`);
+    console.log('[config] 请重启 Claude Code 以加载新的 MCP 服务\n');
+
+  } finally {
+    rl.close();
   }
 }
 
@@ -421,16 +493,14 @@ export function ensureHookInstalled() {
   installSkills();
 }
 
-// 保存配置（并自动写入 MCP 权限和 Server 配置）
+// 保存配置（直接写入 ~/.claude.json）
 export function saveConfig(config: WecomConfig) {
-  ensureConfigDir();
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
-  console.log(`[config] 配置已保存到 ${CONFIG_FILE}`);
+  ensureConfigDir();  // 确保运行时文件目录存在
 
-  // 自动写入 MCP Server 配置到 ~/.claude.json
+  // 写入 MCP Server 配置到 ~/.claude.json
   writeMcpServerConfig(config);
 
-  // 自动写入 MCP 工具权限和 Hook 到 ~/.claude/settings.local.json
+  // 写入 MCP 工具权限和 Hook 到 ~/.claude/settings.local.json
   writeMcpPermissions();
 }
 

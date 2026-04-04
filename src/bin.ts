@@ -5,7 +5,7 @@
  * npx 运行入口
  */
 import * as readline from 'readline';
-import { getOrInitConfig, runConfigWizard, loadConfig, saveConfig, deleteConfig, uninstall, ensureHookInstalled, WecomConfig } from './config-wizard.js';
+import { getOrInitConfig, runConfigWizard, loadConfig, saveConfig, deleteConfig, uninstall, addMcpConfig, ensureHookInstalled, WecomConfig } from './config-wizard.js';
 import { initClient, WecomClient } from './client.js';
 import { registerTools } from './tools/index.js';
 import { startHttpServer } from './http-server.js';
@@ -43,7 +43,8 @@ function showHelp() {
 选项:
   --help, -h      显示帮助信息
   --version, -v   显示版本号
-  --config        重新配置（修改 Bot ID / Secret / 目标用户）
+  --config        重新配置默认机器人（修改 Bot ID / Secret / 目标用户）
+  --add           添加新的机器人配置（多机器人场景）
   --status        显示当前配置状态
   --uninstall     卸载并删除所有配置（包括 MCP 配置、hook、skill）
 
@@ -139,6 +140,11 @@ async function main() {
 
   if (args.includes('--uninstall')) {
     uninstall();
+    process.exit(0);
+  }
+
+  if (args.includes('--add')) {
+    await addMcpConfig();
     process.exit(0);
   }
 
