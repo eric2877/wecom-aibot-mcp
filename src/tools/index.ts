@@ -433,5 +433,62 @@ ${jsonSnippet}
     }
   );
 
-  console.log('[mcp] 已注册 9 个工具: send_message, send_approval_request, get_approval_result, check_connection, get_pending_messages, get_setup_guide, add_robot_config, enter_headless_mode, exit_headless_mode');
+  // ============================================
+  // 工具 10: 等待用户消息并识别用户 ID
+  // ============================================
+  server.tool(
+    'detect_user_from_message',
+    '等待用户发送消息并返回正确的用户 ID。用于配置时识别正确的企业微信账号。',
+    {
+      timeout: z.number().optional().describe('等待超时时间（秒），默认 60 秒'),
+    },
+    async ({ timeout = 60 }) => {
+      const timeoutMs = timeout * 1000;
+      const startTime = Date.now();
+
+      console.log(`[mcp] 等待用户消息（超时: ${timeout}秒）...`);
+
+      // 轮询等待消息
+      while (Date.now() - startTime < timeoutMs) {
+        const messages = client.getPendingMessages(false);
+        if (messages.length > 0) {
+          const msg = messages[0];
+          const result = {
+            userId: msg.from_userid,
+            chatId: msg.chatid,
+            chatType: msg.chattype,
+            message: msg.content,
+            hint: `正确的用户 ID 是: ${msg.from_userid}（请在配置中使用此 ID）`,
+          };
+          // 清空消息队列
+          client.getPendingMessages(true);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(result, null, 2),
+              },
+            ],
+          };
+        }
+        // 等待 1 秒后再检查
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              error: 'timeout',
+              message: `等待超时（${timeout}秒），未收到用户消息`,
+              hint: '请让目标用户在企业微信中给机器人发送一条消息后重试',
+            }),
+          },
+        ],
+      };
+    }
+  );
+
+  console.log('[mcp] 已注册 10 个工具: send_message, send_approval_request, get_approval_result, check_connection, get_pending_messages, get_setup_guide, add_robot_config, enter_headless_mode, exit_headless_mode, detect_user_from_message');
 }

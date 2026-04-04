@@ -32,6 +32,7 @@ const MCP_TOOL_PERMISSIONS = [
   'mcp__wecom-aibot__add_robot_config',
   'mcp__wecom-aibot__enter_headless_mode',
   'mcp__wecom-aibot__exit_headless_mode',
+  'mcp__wecom-aibot__detect_user_from_message',
 ];
 
 // 确保配置目录存在（用于存储端口文件、hook脚本等运行时文件）
@@ -64,6 +65,36 @@ export function loadConfig(): WecomConfig | null {
     console.error('[config] 读取配置失败:', err);
   }
   return null;
+}
+
+// 获取所有 wecom-aibot 相关的 MCP 实例
+export function listAllMcpInstances(): Array<{ name: string; config: WecomConfig }> {
+  const instances: Array<{ name: string; config: WecomConfig }> = [];
+  try {
+    if (fs.existsSync(CLAUDE_CONFIG_FILE)) {
+      const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
+      const claudeConfig = JSON.parse(content);
+      const mcpServers = claudeConfig.mcpServers || {};
+
+      for (const [name, server] of Object.entries(mcpServers)) {
+        // 检查是否是 wecom-aibot 相关的配置
+        const serverConfig = server as any;
+        if (serverConfig?.env?.WECOM_BOT_ID) {
+          instances.push({
+            name,
+            config: {
+              botId: serverConfig.env.WECOM_BOT_ID,
+              secret: serverConfig.env.WECOM_SECRET,
+              targetUserId: serverConfig.env.WECOM_TARGET_USER,
+            },
+          });
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[config] 读取配置失败:', err);
+  }
+  return instances;
 }
 
 // 删除配置（从 ~/.claude.json）
@@ -494,11 +525,11 @@ export function ensureHookInstalled() {
 }
 
 // 保存配置（直接写入 ~/.claude.json）
-export function saveConfig(config: WecomConfig) {
+export function saveConfig(config: WecomConfig, instanceName?: string) {
   ensureConfigDir();  // 确保运行时文件目录存在
 
   // 写入 MCP Server 配置到 ~/.claude.json
-  writeMcpServerConfig(config);
+  writeMcpServerConfig(config, instanceName);
 
   // 写入 MCP 工具权限和 Hook 到 ~/.claude/settings.local.json
   writeMcpPermissions();
@@ -536,16 +567,53 @@ async function fetchUserList(botId: string, secret: string): Promise<Array<{ use
 /**
  * 运行配置向导
  */
-export async function runConfigWizard(): Promise<WecomConfig> {
+export async function runConfigWizard(): Promise<{ config: WecomConfig; instanceName: string }> {
   console.log('\n');
   console.log('╔════════════════════════════════════════════════════════════╗');
   console.log('║     企业微信智能机器人 MCP 服务 - 配置向导                  ║');
   console.log('╚════════════════════════════════════════════════════════════╝');
-  console.log('\n请提供以下配置信息：\n');
 
   const rl = createRL();
 
   try {
+    // 检查是否有多个机器人配置
+    const instances = listAllMcpInstances();
+    let instanceName = 'wecom-aibot';
+
+    if (instances.length > 1) {
+      // 多个机器人，让用户选择要修改哪个
+      console.log('\n检测到多个机器人配置，请选择要修改的：\n');
+      instances.forEach((inst, idx) => {
+        console.log(`  ${idx + 1}. ${inst.name} (Bot ID: ${inst.config.botId.slice(0, 12)}...)`);
+      });
+      console.log(`  ${instances.length + 1}. 添加新机器人\n`);
+
+      const choice = await question(rl, '请输入序号: ');
+      const choiceNum = parseInt(choice);
+
+      if (choiceNum >= 1 && choiceNum <= instances.length) {
+        instanceName = instances[choiceNum - 1].name;
+        console.log(`\n已选择修改: ${instanceName}\n`);
+      } else if (choiceNum === instances.length + 1) {
+        // 添加新机器人
+        const newName = await question(rl, '请输入新实例名称: ');
+        if (!newName) {
+          console.log('[config] 实例名称不能为空');
+          process.exit(1);
+        }
+        instanceName = newName;
+        console.log(`\n将创建新实例: ${instanceName}\n`);
+      } else {
+        console.log('[config] 无效选择');
+        process.exit(1);
+      }
+    } else if (instances.length === 1) {
+      instanceName = instances[0].name;
+      console.log(`\n将修改现有配置: ${instanceName}\n`);
+    } else {
+      console.log('\n将创建默认配置: wecom-aibot\n');
+    }
+
     // 1. 获取 Bot ID
     let botId = await question(rl, 'Bot ID: ');
     while (!botId) {
@@ -560,43 +628,106 @@ export async function runConfigWizard(): Promise<WecomConfig> {
       secret = await question(rl, 'Secret: ');
     }
 
-    // 3. 获取默认目标用户
-    console.log('\n请输入默认交互用户的 User ID（企业微信用户账号）');
-    console.log('提示：User ID 通常是员工的企业微信账号，如 "zhangsan"、"lisi" 等\n');
-
-    let targetUserId = await question(rl, '默认目标用户 ID: ');
-    while (!targetUserId) {
-      console.log('用户 ID 不能为空');
-      targetUserId = await question(rl, '默认目标用户 ID: ');
-    }
-
-    const config: WecomConfig = {
-      botId,
-      secret,
-      targetUserId,
-    };
-
-    // 4. 确认配置
+    // 3. 目标用户 ID 稍后通过消息自动识别
     console.log('\n─────────────────────────────────────');
     console.log('配置确认：');
+    console.log(`  实例名称:   ${instanceName}`);
     console.log(`  Bot ID:     ${botId}`);
     console.log(`  Secret:     ${secret.slice(0, 8)}...${secret.slice(-4)}`);
-    console.log(`  目标用户:   ${targetUserId}`);
+    console.log(`  目标用户:   （将通过消息自动识别）`);
     console.log('─────────────────────────────────────\n');
 
-    const confirm = await question(rl, '确认保存配置？(Y/n): ');
+    const confirm = await question(rl, '确认配置？(Y/n): ');
 
     if (confirm.toLowerCase() === 'n') {
       console.log('[config] 配置已取消');
       process.exit(0);
     }
 
-    saveConfig(config);
-    return config;
+    // 返回临时配置（targetUserId 稍后填充）
+    const config: WecomConfig = {
+      botId,
+      secret,
+      targetUserId: '',  // 稍后通过消息识别
+    };
+
+    return { config, instanceName };
 
   } finally {
     rl.close();
   }
+}
+
+/**
+ * 通过等待用户消息来识别用户 ID
+ */
+export async function detectUserIdFromMessage(
+  botId: string,
+  secret: string,
+  timeoutSeconds: number = 60
+): Promise<string | null> {
+  // 动态导入 client 模块避免循环依赖
+  const { initClient } = await import('./client.js');
+
+  return new Promise((resolve) => {
+    console.log(`\n[config] 正在连接企业微信...`);
+
+    const client = initClient(botId, secret, 'placeholder');
+
+    const cleanup = () => {
+      client.disconnect();
+    };
+
+    // 设置超时
+    const timeout = setTimeout(() => {
+      cleanup();
+      console.log(`\n[config] 等待超时（${timeoutSeconds}秒），未收到用户消息`);
+      resolve(null);
+    }, timeoutSeconds * 1000);
+
+    // 检查连接状态
+    setTimeout(() => {
+      if (!client.isConnected()) {
+        clearTimeout(timeout);
+        cleanup();
+        console.log('\n[config] 连接失败，请检查 Bot ID 和 Secret');
+        resolve(null);
+      } else {
+        console.log('\n[config] ✅ 连接成功！');
+        console.log('\n╔════════════════════════════════════════════════════════╗');
+        console.log('║  请让需要接收审批消息的人，在企业微信中给机器人发送      ║');
+        console.log('║  一条消息（任意内容），系统将自动识别其用户 ID          ║');
+        console.log('╚════════════════════════════════════════════════════════╝');
+        console.log(`\n[config] 等待消息中...（${timeoutSeconds}秒内）`);
+
+        // 轮询等待消息
+        const pollInterval = setInterval(async () => {
+          const messages = client.getPendingMessages(false);
+          if (messages.length > 0) {
+            clearTimeout(timeout);
+            clearInterval(pollInterval);
+
+            const msg = messages[0];
+            const userId = msg.from_userid;
+
+            console.log(`\n[config] ✅ 收到消息！`);
+            console.log(`[config] 识别到用户 ID: ${userId}`);
+
+            // 发送确认消息
+            try {
+              await client.sendText(`**机器人配置成功！**\n\n默认向用户 ID: \`${userId}\` 发送消息互动。\n\n您现在可以使用 Claude Code 审批功能了。`, userId);
+              console.log(`[config] 已发送确认消息到 ${userId}`);
+            } catch (err) {
+              console.log(`[config] 发送确认消息失败: ${err}`);
+            }
+
+            cleanup();
+            resolve(userId);
+          }
+        }, 1000);
+      }
+    }, 3000);
+  });
 }
 
 /**
@@ -646,5 +777,6 @@ export async function getOrInitConfig(): Promise<WecomConfig> {
 
   // 4. TTY 模式下运行配置向导
   console.log('[config] 未找到有效配置，启动配置向导...\n');
-  return runConfigWizard();
+  const result = await runConfigWizard();
+  return result.config;
 }

@@ -196,6 +196,40 @@ class WecomClient {
     return this.targetUserId;
   }
 
+  // 验证目标用户（尝试发送测试消息）
+  async verifyTargetUser(userId?: string): Promise<{ valid: boolean; error?: string }> {
+    const targetId = userId || this.targetUserId;
+    if (!this.connected) {
+      return { valid: false, error: 'WebSocket 未连接' };
+    }
+
+    try {
+      // 尝试发送一条简单的验证消息（使用 markdown 格式）
+      await this.wsClient.sendMessage(targetId, {
+        msgtype: 'markdown',
+        markdown: { content: '【系统消息】机器人配置验证成功，此消息可忽略。' },
+      });
+      console.log(`[wecom] 用户验证成功: ${targetId}`);
+      return { valid: true };
+    } catch (err: any) {
+      const errorMsg = err.message || String(err);
+      console.error(`[wecom] 用户验证失败: ${errorMsg}`);
+
+      // 解析错误类型
+      if (errorMsg.includes('93006') || errorMsg.includes('invalid chatid')) {
+        return { valid: false, error: '用户 ID 格式无效，请使用企业微信通讯录中的"账号"字段（通常是拼音格式，如 liuyang），不是中文名称' };
+      } else if (errorMsg.includes('60011') || errorMsg.includes('no privilege')) {
+        return { valid: false, error: '用户不在机器人可见范围内，请在企业微信管理后台添加可见范围' };
+      } else if (errorMsg.includes('60012') || errorMsg.includes('user not exist')) {
+        return { valid: false, error: '用户 ID 不存在，请确认填写的是企业微信通讯录中的"账号"字段' };
+      } else if (errorMsg.includes('60013') || errorMsg.includes('not friend')) {
+        return { valid: false, error: '用户未添加机器人为好友，请先在企业微信中添加机器人' };
+      }
+
+      return { valid: false, error: errorMsg };
+    }
+  }
+
   // 发送文本消息（主动推送）
   async sendText(content: string, targetUser?: string): Promise<boolean> {
     const userId = targetUser || this.targetUserId;
