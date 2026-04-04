@@ -150,12 +150,10 @@ if [[ -z "$TASK_ID" ]]; then
   exit 0
 fi
 
-# 轮询审批结果
-MAX_POLL=300
-POLL_COUNT=0
-while [[ $POLL_COUNT -lt $MAX_POLL ]]; do
+# 轮询审批结果（无限等待，适合 headless 模式）
+while true; do
   sleep 2
-  STATUS=$(curl -s "http://127.0.0.1:$PORT/approval_status/$TASK_ID" 2>/dev/null)
+  STATUS=$(curl -s -m 5 "http://127.0.0.1:$PORT/approval_status/$TASK_ID" 2>/dev/null)
   RESULT=$(echo "$STATUS" | jq -r '.result // empty')
 
   if [[ "$RESULT" == "allow-once" || "$RESULT" == "allow-always" ]]; then
@@ -165,11 +163,7 @@ while [[ $POLL_COUNT -lt $MAX_POLL ]]; do
     printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"用户拒绝"}}}'
     exit 0
   fi
-
-  POLL_COUNT=$((POLL_COUNT + 1))
 done
-
-exit 0
 `;
 
   ensureConfigDir();
