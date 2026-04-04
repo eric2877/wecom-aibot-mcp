@@ -142,6 +142,7 @@ npm link
    - 检查配置完整性
    - 注册权限预授权
    - 生成审批 Hook 脚本
+   - 安装 headless-mode skill 文件
 
 ### 第五步：验证连接
 

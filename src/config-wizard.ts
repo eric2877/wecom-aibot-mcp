@@ -224,6 +224,46 @@ function writeMcpServerConfig(config: WecomConfig) {
   }
 }
 
+// 安装 skill 文件到 ~/.claude/skills/
+function installSkills() {
+  try {
+    const claudeSkillsDir = path.join(os.homedir(), '.claude', 'skills', 'headless-mode');
+    const skillFile = path.join(claudeSkillsDir, 'SKILL.md');
+
+    // 检查是否已存在
+    if (fs.existsSync(skillFile)) {
+      console.log('[config] skill 文件已存在，跳过安装');
+      return;
+    }
+
+    // 确保目录存在
+    if (!fs.existsSync(claudeSkillsDir)) {
+      fs.mkdirSync(claudeSkillsDir, { recursive: true });
+    }
+
+    // 从包内复制 skill 文件
+    // 包安装后 skills 目录在包根目录下
+    const packageDir = path.dirname(require.main?.filename || __dirname);
+    const sourceSkillFile = path.join(packageDir, '..', 'skills', 'headless-mode', 'SKILL.md');
+
+    if (fs.existsSync(sourceSkillFile)) {
+      fs.copyFileSync(sourceSkillFile, skillFile);
+      console.log(`[config] skill 文件已安装: ${skillFile}`);
+    } else {
+      // 开发模式：从源码目录复制
+      const devSkillFile = path.join(process.cwd(), 'skills', 'headless-mode', 'SKILL.md');
+      if (fs.existsSync(devSkillFile)) {
+        fs.copyFileSync(devSkillFile, skillFile);
+        console.log(`[config] skill 文件已安装: ${skillFile}`);
+      } else {
+        console.log('[config] ⚠️  skill 文件未找到，请手动创建 ~/.claude/skills/headless-mode/SKILL.md');
+      }
+    }
+  } catch (err) {
+    console.error('[config] 安装 skill 文件失败:', err);
+  }
+}
+
 // 写入 MCP 工具权限 + 注册 PermissionRequest hook 到 Claude settings
 function writeMcpPermissions() {
   try {
@@ -269,6 +309,7 @@ function writeMcpPermissions() {
 // 确保 hook 已安装（幂等，可多次调用）
 export function ensureHookInstalled() {
   writeMcpPermissions();
+  installSkills();
 }
 
 // 保存配置（并自动写入 MCP 权限和 Server 配置）
