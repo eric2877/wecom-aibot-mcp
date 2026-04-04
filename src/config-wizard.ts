@@ -241,10 +241,10 @@ function installSkills() {
       fs.mkdirSync(claudeSkillsDir, { recursive: true });
     }
 
-    // 从包内复制 skill 文件
-    // 包安装后 skills 目录在包根目录下
-    const packageDir = path.dirname(require.main?.filename || __dirname);
-    const sourceSkillFile = path.join(packageDir, '..', 'skills', 'headless-mode', 'SKILL.md');
+    // 从包内复制 skill 文件（ESM 模式）
+    // __dirname 在 ESM 中不可用，使用 import.meta.url
+    const currentDir = path.dirname(new URL(import.meta.url).pathname);
+    const sourceSkillFile = path.join(currentDir, '..', 'skills', 'headless-mode', 'SKILL.md');
 
     if (fs.existsSync(sourceSkillFile)) {
       fs.copyFileSync(sourceSkillFile, skillFile);
@@ -435,12 +435,13 @@ export function uninstall() {
   const skillFile = path.join(skillDir, 'SKILL.md');
   if (fs.existsSync(skillFile)) {
     fs.rmSync(skillFile);
-    // 如果目录为空，删除目录
-    if (fs.existsSync(skillDir) && fs.readdirSync(skillDir).length === 0) {
-      fs.rmSync(skillDir);
-    }
     console.log(`[uninstall] 已删除 skill 文件: ${skillFile}`);
     cleaned++;
+  }
+  // 如果目录存在且为空，删除目录
+  if (fs.existsSync(skillDir) && fs.readdirSync(skillDir).length === 0) {
+    fs.rmSync(skillDir, { recursive: true });
+    console.log(`[uninstall] 已删除空目录: ${skillDir}`);
   }
 
   console.log(`\n[uninstall] 清理完成，共清理 ${cleaned} 项配置\n`);
