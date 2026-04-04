@@ -68,15 +68,58 @@ PermissionRequest Hook 拦截
 
 ### 前置要求
 
-- Node.js >= 18
+- **Node.js >= 18**（必需）
 - 企业微信账号（有创建机器人权限）
 - Claude Code 已安装
+
+### 安装 Node.js
+
+**检查版本**：
+```bash
+node --version
+# 输出应 >= v18.0.0
+```
+
+**安装方式**：
+
+**macOS**：
+```bash
+# 使用 Homebrew
+brew install node
+
+# 或使用 nvm（推荐，可管理多版本）
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
+nvm install 18
+nvm use 18
+```
+
+**Windows**：
+```bash
+# 使用 winget
+winget install OpenJS.NodeJS.LTS
+
+# 或下载安装包：https://nodejs.org/
+```
+
+**Linux**：
+```bash
+# Ubuntu/Debian
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# 或使用 nvm
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
+nvm install 18
+nvm use 18
+```
 
 ### 方式一：npx 直接运行（推荐）
 
 ```bash
 npx @vrs-soft/wecom-aibot-mcp
 ```
+
+运行后会自动启动配置向导，配置完成后自动退出。
 
 ### 方式二：全局安装
 

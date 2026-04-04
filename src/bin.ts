@@ -143,6 +143,7 @@ async function main() {
   }
 
   const reconfig = args.includes('--config');
+  const isInteractive = process.stdin.isTTY;  // 是否为用户交互模式
 
   console.log('');
   console.log('  ╔════════════════════════════════════════════════════════╗');
@@ -153,12 +154,28 @@ async function main() {
 
   // 获取或初始化配置
   let config: WecomConfig;
+  let ranWizard = false;  // 是否运行了配置向导
 
   if (reconfig) {
     console.log('[config] 重新配置模式\n');
     config = await runConfigWizard();
+    ranWizard = true;
   } else {
-    config = await getOrInitConfig();
+    // 检查是否已有配置
+    const savedConfig = loadConfig();
+    if (savedConfig && savedConfig.botId && savedConfig.secret && savedConfig.targetUserId) {
+      config = savedConfig;
+    } else if (isInteractive) {
+      // TTY 模式下没有配置，启动配置向导
+      console.log('[config] 未找到配置，启动配置向导...\n');
+      config = await runConfigWizard();
+      ranWizard = true;
+    } else {
+      // 非 TTY 模式（MCP stdio），必须有配置
+      console.error('[config] 未找到配置，且当前为非交互模式。');
+      console.error('[config] 请在终端运行: npx @vrs-soft/wecom-aibot-mcp --config');
+      process.exit(1);
+    }
   }
 
   // 确保 hook 已安装（幂等，每次启动检查）
@@ -181,53 +198,47 @@ async function main() {
     // 删除无效配置，让用户重新输入
     deleteConfig();
 
-    // 非 TTY 模式直接退出
-    if (!process.stdin.isTTY) {
-      console.log('[mcp] 当前为非交互模式，请手动修复配置后重试');
-      process.exit(1);
-    }
-
-    // TTY 模式询问是否重新配置
-    console.log('\n是否重新配置？(Y/n): ');
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-
-    const answer = await new Promise<string>((resolve) => {
-      rl.question('', (a) => resolve(a.trim().toLowerCase()));
-    });
-    rl.close();
-
-    if (answer !== 'n') {
-      console.log('\n[mcp] 启动重新配置...\n');
-      config = await runConfigWizard();
-      // 重新初始化并验证连接
-      const newClient = initClient(config.botId, config.secret, config.targetUserId);
-      const newConnected = await waitForConnection(newClient, 10000);
-      if (!newConnected) {
-        console.log('[mcp] 连接仍然失败，请稍后再试（新建机器人需等待约 2 分钟同步）');
-        deleteConfig();
-        process.exit(1);
-      }
-      wecomClient.disconnect();
-      // 替换客户端引用（需要重新初始化后续服务）
-      await startHttpServer(newClient);
-      const server = new McpServer({
-        name: 'wecom-aibot-mcp',
-        version: VERSION,
+    if (isInteractive) {
+      // TTY 模式询问是否重新配置
+      console.log('\n是否重新配置？(Y/n): ');
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
       });
-      registerTools(server, newClient);
-      const transport = new StdioServerTransport();
-      await server.connect(transport);
-      setInterval(() => newClient.cleanupMessages(), 60000);
-      console.log('[mcp] MCP Server 已就绪');
-      return;
-    } else {
-      process.exit(1);
+
+      const answer = await new Promise<string>((resolve) => {
+        rl.question('', (a) => resolve(a.trim().toLowerCase()));
+      });
+      rl.close();
+
+      if (answer !== 'n') {
+        console.log('\n[mcp] 启动重新配置...\n');
+        config = await runConfigWizard();
+        const newClient = initClient(config.botId, config.secret, config.targetUserId);
+        const newConnected = await waitForConnection(newClient, 10000);
+        if (!newConnected) {
+          console.log('[mcp] 连接仍然失败，请稍后再试（新建机器人需等待约 2 分钟同步）');
+          deleteConfig();
+          process.exit(1);
+        }
+        // 连接成功，如果是交互模式则退出
+        console.log('\n[mcp] ✅ 配置成功！');
+        console.log('[mcp] 请重启 Claude Code 以加载 MCP 服务\n');
+        process.exit(0);
+      }
     }
+    process.exit(1);
   }
 
+  // 连接成功
+  if (isInteractive && (ranWizard || reconfig)) {
+    // 用户手动运行配置向导，配置成功后退出
+    console.log('\n[mcp] ✅ 配置成功！');
+    console.log('[mcp] 请重启 Claude Code 以加载 MCP 服务\n');
+    process.exit(0);
+  }
+
+  // 非 TTY 模式（MCP stdio），启动 MCP Server
   // 启动本地 HTTP 服务（用于 hooks 审批）
   await startHttpServer(wecomClient);
 
