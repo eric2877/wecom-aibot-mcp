@@ -80,7 +80,7 @@ Claude Code 配置示例:
     }
   }
 
-更多信息: https://github.com/various/wecom-aibot-mcp
+更多信息: https://github.com/eric2877/wecom-aibot-mcp
 `);
 }
 
