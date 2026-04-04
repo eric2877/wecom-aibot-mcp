@@ -401,37 +401,53 @@ export async function addMcpConfig() {
       secret = await question(rl, 'Secret: ');
     }
 
-    // 获取默认目标用户
-    console.log('\n请输入默认交互用户的 User ID（企业微信用户账号）\n');
-    let targetUserId = await question(rl, '默认目标用户 ID: ');
-    while (!targetUserId) {
-      console.log('用户 ID 不能为空');
-      targetUserId = await question(rl, '默认目标用户 ID: ');
+    rl.close();
+
+    // 先连接验证凭证
+    console.log('\n[config] 正在连接企业微信...');
+    const { initClient } = await import('./client.js');
+    const client = initClient(botId, secret, 'placeholder');
+
+    // 等待连接（最多10秒）
+    const connected = await new Promise<boolean>((resolve) => {
+      const startTime = Date.now();
+      const checkInterval = setInterval(() => {
+        if (client.isConnected()) {
+          clearInterval(checkInterval);
+          resolve(true);
+        } else if (Date.now() - startTime > 10000) {
+          clearInterval(checkInterval);
+          resolve(false);
+        }
+      }, 500);
+    });
+
+    if (!connected) {
+      console.log('\n[config] ❌ 连接失败，请检查 Bot ID 和 Secret 是否正确');
+      console.log('[config] 新建机器人需要等待约 2 分钟同步时间');
+      console.log('[config] 如需授权，请访问企业微信管理后台完成授权');
+      return;
+    }
+
+    // 通过消息自动识别用户 ID
+    const targetUserId = await detectUserIdFromMessage(client, 60);
+
+    if (!targetUserId) {
+      console.log('\n[config] 未能在规定时间内识别用户 ID');
+      console.log('[config] 请重新运行: npx @vrs-soft/wecom-aibot-mcp --add');
+      return;
     }
 
     const config: WecomConfig = { botId, secret, targetUserId };
 
-    // 确认配置
-    console.log('\n─────────────────────────────────────');
-    console.log('配置确认：');
-    console.log(`  实例名称:   ${instanceName}`);
-    console.log(`  Bot ID:     ${botId}`);
-    console.log(`  Secret:     ${secret.slice(0, 8)}...${secret.slice(-4)}`);
-    console.log(`  目标用户:   ${targetUserId}`);
-    console.log('─────────────────────────────────────\n');
-
-    const confirm = await question(rl, '确认添加配置？(Y/n): ');
-    if (confirm.toLowerCase() === 'n') {
-      console.log('[config] 已取消');
-      return;
-    }
-
     // 写入配置
     writeMcpServerConfig(config, instanceName);
     console.log(`\n[config] ✅ 已添加新机器人配置: ${instanceName}`);
+    console.log(`[config] 用户 ID: ${targetUserId}`);
     console.log('[config] 请重启 Claude Code 以加载新的 MCP 服务\n');
 
-  } finally {
+  } catch (err) {
+    console.error('[config] 添加配置失败:', err);
     rl.close();
   }
 }
