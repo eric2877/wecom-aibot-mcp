@@ -54,6 +54,115 @@ export function loadConfig(): WecomConfig | null {
   return null;
 }
 
+// 删除已保存的配置（连接失败时让用户重新输入）
+export function deleteConfig() {
+  try {
+    if (fs.existsSync(CONFIG_FILE)) {
+      fs.unlinkSync(CONFIG_FILE);
+      console.log('[config] 已删除配置文件');
+    }
+  } catch (err) {
+    console.error('[config] 删除配置失败:', err);
+  }
+}
+
+// 删除 MCP Server 配置（从 ~/.claude.json）
+export function deleteMcpConfig() {
+  try {
+    if (fs.existsSync(CLAUDE_CONFIG_FILE)) {
+      const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
+      const claudeConfig = JSON.parse(content);
+
+      if (claudeConfig.mcpServers && claudeConfig.mcpServers['wecom-aibot']) {
+        delete claudeConfig.mcpServers['wecom-aibot'];
+        fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
+        console.log('[config] 已从 ~/.claude.json 删除 wecom-aibot MCP 配置');
+      } else {
+        console.log('[config] ~/.claude.json 中未找到 wecom-aibot 配置');
+      }
+    }
+  } catch (err) {
+    console.error('[config] 删除 MCP 配置失败:', err);
+  }
+}
+
+// 删除 PermissionRequest hook（从 ~/.claude/settings.local.json）
+export function deleteHook() {
+  try {
+    if (fs.existsSync(CLAUDE_SETTINGS_FILE)) {
+      const content = fs.readFileSync(CLAUDE_SETTINGS_FILE, 'utf-8');
+      const settings = JSON.parse(content);
+
+      if (settings.hooks && settings.hooks['PermissionRequest']) {
+        // 只删除 wecom-aibot 相关的 hook
+        settings.hooks['PermissionRequest'] = settings.hooks['PermissionRequest'].filter(
+          (hook: any) => !hook.hooks?.some?.((h: any) => h.command?.includes?.('wecom-aibot-mcp'))
+        );
+        if (settings.hooks['PermissionRequest'].length === 0) {
+          delete settings.hooks['PermissionRequest'];
+        }
+        fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(settings, null, 2));
+        console.log('[config] 已删除 PermissionRequest hook');
+      }
+
+      // 删除 hook 脚本文件
+      if (fs.existsSync(HOOK_SCRIPT_PATH)) {
+        fs.unlinkSync(HOOK_SCRIPT_PATH);
+        console.log('[config] 已删除 hook 脚本文件');
+      }
+    }
+  } catch (err) {
+    console.error('[config] 删除 hook 失败:', err);
+  }
+}
+
+// 删除 skill 文件
+export function deleteSkills() {
+  try {
+    const skillDir = path.join(os.homedir(), '.claude', 'skills', 'headless-mode');
+    if (fs.existsSync(skillDir)) {
+      fs.rmSync(skillDir, { recursive: true });
+      console.log('[config] 已删除 skill 文件');
+    }
+  } catch (err) {
+    console.error('[config] 删除 skill 失败:', err);
+  }
+}
+
+// 完全卸载（删除所有相关配置）
+export function uninstall() {
+  console.log('\n[config] 开始卸载 wecom-aibot-mcp...\n');
+
+  deleteConfig();
+  deleteMcpConfig();
+  deleteHook();
+  deleteSkills();
+
+  // 删除配置目录
+  if (fs.existsSync(CONFIG_DIR)) {
+    try {
+      // 删除所有 port-* 和 headless-* 文件
+      const files = fs.readdirSync(CONFIG_DIR);
+      for (const file of files) {
+        if (file.startsWith('port-') || file.startsWith('headless-')) {
+          fs.unlinkSync(path.join(CONFIG_DIR, file));
+        }
+      }
+      // 如果目录为空，删除目录
+      const remainingFiles = fs.readdirSync(CONFIG_DIR);
+      if (remainingFiles.length === 0) {
+        fs.rmSync(CONFIG_DIR);
+        console.log('[config] 已删除配置目录');
+      }
+    } catch (err) {
+      console.error('[config] 删除配置目录失败:', err);
+    }
+  }
+
+  console.log('\n[config] 卸载完成');
+  console.log('[config] 如需重新安装，请运行: npx @vrs-soft/wecom-aibot-mcp --config\n');
+}
+
 // 生成并写入 hook 脚本（多实例 + headless 模式支持）
 function writeHookScript() {
   const script = `#!/bin/bash

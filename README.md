@@ -345,6 +345,29 @@ Claude：（设置定时任务）
 
 ## 故障排查
 
+### 认证失败（错误码 40058）
+
+**可能原因**：
+- 机器人未授权
+- Bot ID 或 Secret 配置错误
+- 新建机器人需要等待同步时间
+
+**解决方法**：
+```
+1. 新建机器人需要等待约 2 分钟同步时间，请稍后再试
+
+2. 完成机器人授权（任选其一）：
+   • 在电脑端企业微信APP中打开：机器人详情 → 可使用权限 → 授权
+   • 打开浏览器访问授权页面，使用手机企业微信扫码：
+     https://work.weixin.qq.com/ai/aiHelper/authorizationPage?str_aibotid={BotID}&type=6&from=chat&forceInnerBrowser=1
+
+3. 确认 Bot ID 和 Secret 是否正确：
+   npx @vrs-soft/wecom-aibot-mcp --status
+
+4. 如需重新配置：
+   npx @vrs-soft/wecom-aibot-mcp --config
+```
+
 ### 无法收到消息
 
 **可能原因**：
@@ -394,6 +417,72 @@ ls ~/.wecom-aibot-mcp/port-*
 # 或手动清理
 rm ~/.wecom-aibot-mcp/port-*
 ```
+
+## 卸载
+
+如需完全卸载，运行：
+
+```bash
+npx @vrs-soft/wecom-aibot-mcp --uninstall
+```
+
+这会删除：
+- 配置文件：`~/.wecom-aibot-mcp/config.json`
+- MCP 配置：`~/.claude.json` 中的 `wecom-aibot` 条目
+- Hook 脚本：`~/.wecom-aibot-mcp/permission-hook.sh`
+- Hook 配置：`~/.claude/settings.local.json` 中的 PermissionRequest hook
+- Skill 文件：`~/.claude/skills/headless-mode/`
+
+卸载后如需重新安装：
+
+```bash
+npx @vrs-soft/wecom-aibot-mcp --config
+```
+
+## 修改和增加 Bot
+
+### 修改现有 Bot 配置
+
+如果需要更换机器人或修改目标用户：
+
+```bash
+npx @vrs-soft/wecom-aibot-mcp --config
+```
+
+这会重新启动配置向导，让你输入新的 Bot ID、Secret 和目标用户 ID。
+
+### 增加多个 Bot（多用户场景）
+
+每个用户可以使用独立的机器人，在 `~/.claude.json` 中配置多个 MCP Server 实例：
+
+```json
+{
+  "mcpServers": {
+    "wecom-aibot-zhangsan": {
+      "command": "npx",
+      "args": ["@vrs-soft/wecom-aibot-mcp"],
+      "env": {
+        "WECOM_BOT_ID": "bot_zhangsan",
+        "WECOM_SECRET": "secret_zhangsan",
+        "WECOM_TARGET_USER": "zhangsan"
+      }
+    },
+    "wecom-aibot-lisi": {
+      "command": "npx",
+      "args": ["@vrs-soft/wecom-aibot-mcp"],
+      "env": {
+        "WECOM_BOT_ID": "bot_lisi",
+        "WECOM_SECRET": "secret_lisi",
+        "WECOM_TARGET_USER": "lisi"
+      }
+    }
+  }
+}
+```
+
+使用环境变量配置时，每个实例自动独立运行，无需额外的配置文件。
+
+> ⚠️ 注意：同一个机器人同时只能保持一个 WebSocket 长连接，不要在多个实例中使用相同的 Bot ID。
 
 ## 安全建议
 

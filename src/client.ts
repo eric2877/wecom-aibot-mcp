@@ -33,8 +33,10 @@ class WecomClient {
   private messages: MessageRecord[] = [];
   private connected = false;
   private targetUserId: string;
+  private botId: string;  // 保存 botId 用于生成授权 URL
 
   constructor(botId: string, secret: string, targetUserId: string) {
+    this.botId = botId;
     this.targetUserId = targetUserId;
     this.wsClient = new AiBot.WSClient({
       botId,
@@ -44,6 +46,11 @@ class WecomClient {
     });
 
     this.setupEventHandlers();
+  }
+
+  // 生成授权页面 URL
+  getAuthUrl(): string {
+    return `https://work.weixin.qq.com/ai/aiHelper/authorizationPage?str_aibotid=${this.botId}&type=6&from=chat&forceInnerBrowser=1`;
   }
 
   private setupEventHandlers() {
@@ -67,6 +74,20 @@ class WecomClient {
 
     this.wsClient.on('error', (err: Error) => {
       console.error(`[wecom] 错误: ${err.message}`);
+
+      // 检测授权相关错误（40058: invalid Request Parameter）
+      if (err.message.includes('40058') || err.message.includes('invalid Request Parameter')) {
+        console.log('');
+        console.log('  ⚠️  机器人未授权或配置有误，请检查以下事项：');
+        console.log('');
+        console.log('  1. 新建机器人需要等待约 2 分钟同步时间，请稍后再试');
+        console.log('  2. 确认 Bot ID 和 Secret 是否正确');
+        console.log('  3. 完成机器人授权（任选其一）：');
+        console.log('     • 在电脑端企业微信APP中打开：机器人详情 → 可使用权限 → 授权');
+        console.log('     • 打开浏览器访问以下地址，使用手机企业微信扫码授权：');
+        console.log(`       ${this.getAuthUrl()}`);
+        console.log('');
+      }
     });
 
     // 监听所有消息（存储到队列）
