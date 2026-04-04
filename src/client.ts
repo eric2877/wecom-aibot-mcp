@@ -23,6 +23,8 @@ interface MessageRecord {
   content: string;
   timestamp: number;
   from_userid: string;
+  chatid: string;      // 单聊=userid，群聊=群ID
+  chattype: 'single' | 'group';  // 会话类型
 }
 
 class WecomClient {
@@ -94,6 +96,9 @@ class WecomClient {
     const msgid = body.msgid;
     const from_userid = body.from?.userid || '';
     const msgtype = body.msgtype;
+    const chattype = body.chattype || 'single';
+    // 群聊时 chatid 在 body.chatid，单聊时就是 from_userid
+    const chatid = body.chatid || from_userid;
 
     let content = '';
     if (msgtype === 'text') {
@@ -111,8 +116,11 @@ class WecomClient {
         content,
         timestamp: Date.now(),
         from_userid,
+        chatid,
+        chattype,
       });
-      console.log(`[wecom] 收到消息: ${from_userid} -> ${content.slice(0, 100)}`);
+      const source = chattype === 'group' ? `群聊(${chatid})` : '单聊';
+      console.log(`[wecom] 收到${source}消息: ${from_userid} -> ${content.slice(0, 100)}`);
     }
   }
 

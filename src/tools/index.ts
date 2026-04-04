@@ -51,10 +51,10 @@ export function registerTools(server: McpServer, client: WecomClient) {
   // ============================================
   server.tool(
     'send_message',
-    '向企业微信发送消息（用于通知用户）',
+    '向企业微信发送消息（用于通知用户）。群聊时传入 chatid 可回复到群里。',
     {
       content: z.string().describe('消息内容（支持 Markdown）'),
-      target_user: z.string().optional().describe('目标用户 ID（可选，默认使用配置的 TARGET_USER_ID）'),
+      target_user: z.string().optional().describe('目标用户/群 ID（可选，默认使用配置的 TARGET_USER_ID）。群聊时使用 get_pending_messages 返回的 chatid'),
     },
     async ({ content, target_user }) => {
       const success = await client.sendText(content, target_user);
@@ -164,10 +164,12 @@ export function registerTools(server: McpServer, client: WecomClient) {
         messages: messages.map(m => ({
           content: m.content,
           from: m.from_userid,
+          chatid: m.chatid,
+          chattype: m.chattype,
           time: new Date(m.timestamp).toISOString(),
         })),
         hint: messages.length > 0
-          ? '以上是用户主动发送的消息，请根据内容决定如何处理'
+          ? '以上是用户主动发送的消息，群聊消息回复时会发到群里'
           : '暂无待处理消息',
       };
       return {
