@@ -66,21 +66,21 @@ export function registerTools(server: McpServer, client: WecomClient) {
   );
 
   // ============================================
-  // 工具 3: 获取审批结果（阻塞等待）
+  // 工具 3: 获取审批结果（非阻塞）
   // ============================================
   server.tool(
     'get_approval_result',
-    '阻塞等待审批结果。用户点击卡片按钮后返回结果，永不过期，直到用户响应。',
+    '查询审批任务当前状态（非阻塞，立即返回）。返回值：pending（等待中）、allow-once（允许一次）、allow-always（永久允许）、deny（拒绝）。',
     {
       task_id: z.string().describe('审批任务 ID'),
     },
     async ({ task_id }) => {
-      const result = await client.getApprovalResult(task_id, 0); // 0 表示无限等待
+      const result = client.getApprovalResult(task_id);
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({ taskId: task_id, result }),
+            text: JSON.stringify({ taskId: task_id, status: result }),
           },
         ],
       };

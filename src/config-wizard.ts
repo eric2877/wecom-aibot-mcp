@@ -53,11 +53,11 @@ export function loadConfig(): WecomConfig | null {
   return null;
 }
 
-// 生成并写入 hook 脚本
+// 生成并写入 hook 脚本（非阻塞轮询模式）
 function writeHookScript() {
   const script = `#!/bin/bash
 # wecom-aibot-mcp PermissionRequest hook
-# 将权限请求转发到本地审批服务，阻塞直到微信用户响应
+# 非阻塞模式：发送审批请求后轮询结果
 
 INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
@@ -83,7 +83,7 @@ if ! echo "$HEALTH" | jq -e '.connected == true' > /dev/null 2>&1; then
   exit 0
 fi
 
-# 转发审批请求，阻塞等待用户在微信响应
+# 发送审批请求（非阻塞，立即返回 taskId）
 TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}')
 BODY=$(jq -n --arg tool_name "$TOOL_NAME" --argjson tool_input "$TOOL_INPUT" \
   '{"tool_name":$tool_name,"tool_input":$tool_input}')
@@ -91,23 +91,33 @@ RESPONSE=$(curl -s -X POST "http://127.0.0.1:${HOOK_PORT}/approve" \\
   -H "Content-Type: application/json" \\
   -d "$BODY")
 
-DECISION=$(echo "$RESPONSE" | jq -r '.decision // "ask"')
-REASON=$(echo "$RESPONSE" | jq -r '.reason // ""')
+TASK_ID=$(echo "$RESPONSE" | jq -r '.taskId // empty')
+if [[ -z "$TASK_ID" ]]; then
+  # 发送失败，回退默认 UI
+  exit 0
+fi
 
-case "$DECISION" in
-  allow)
+# 轮询审批结果（每 2 秒检查一次，最多 300 次 = 10 分钟）
+MAX_POLL=300
+POLL_COUNT=0
+while [[ $POLL_COUNT -lt $MAX_POLL ]]; do
+  sleep 2
+  STATUS=$(curl -s "http://127.0.0.1:${HOOK_PORT}/approval_status/$TASK_ID")
+  RESULT=$(echo "$STATUS" | jq -r '.result // empty')
+
+  if [[ "$RESULT" == "allow-once" || "$RESULT" == "allow-always" ]]; then
     printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
     exit 0
-    ;;
-  deny)
-    printf '%s\\n' "{\\"hookSpecificOutput\\":{\\"hookEventName\\":\\"PermissionRequest\\",\\"decision\\":{\\"behavior\\":\\"deny\\",\\"message\\":\\"$REASON\\"}}}"
+  elif [[ "$RESULT" == "deny" ]]; then
+    printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"用户拒绝"}}}'
     exit 0
-    ;;
-  *)
-    # ask 或未知，回退到默认 UI
-    exit 0
-    ;;
-esac
+  fi
+
+  POLL_COUNT=$((POLL_COUNT + 1))
+done
+
+# 超时，回退默认 UI
+exit 0
 `;
 
   ensureConfigDir();

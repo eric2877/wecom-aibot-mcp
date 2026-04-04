@@ -277,7 +277,64 @@ wss://openws.work.weixin.qq.com
 | `feedback_event` | 用户对机器人回复进行反馈 | — |
 | `disconnected_event` | 新连接建立导致旧连接被踢 | 需重新连接 |
 
-### 4.4 流式消息回复
+### 4.4 将机器人拉入群聊
+
+智能机器人支持被拉入群聊，群成员 @ 机器人即可触发消息回调，适合作为团队共享的 AI 助手。
+
+**群聊支持的能力**
+
+| 能力 | 是否支持 |
+|------|---------|
+| 被 @ 后回复文本消息 | ✅ |
+| 被 @ 后回复图文混排消息 | ✅ |
+| 机器人主动向群推送消息 | ✅ |
+| 接收群成员发送的图片/语音/文件 | ❌（仅单聊支持） |
+
+> ⚠️ 群聊中只有被 @ 时才触发回调，机器人不会收到其他成员的普通聊天消息。
+
+**通过 chattype 区分单聊与群聊**
+
+收到消息回调时，通过 `chattype` 字段判断来源，`chatid` 为群聊 ID：
+
+```javascript
+client.on('message', async (msg) => {
+  const isGroup = msg.body.chattype === 'group';
+  const chatId = msg.body.chatid; // 群聊 ID，单聊时不存在
+
+  if (isGroup) {
+    console.log(`来自群聊 ${chatId} 的消息`);
+  } else {
+    console.log(`来自单聊的消息`);
+  }
+
+  // 回复逻辑相同，企业微信自动将回复发到对应会话
+  const userText = extractText(msg);
+  await replyWithClaude(client, msg, userText);
+});
+```
+
+**主动向群推送消息**
+
+无需用户触发，可通过 `aibot_send_msg` 主动向群发送消息，适合定时提醒、任务通知等场景：
+
+```javascript
+send({
+  cmd: 'aibot_send_msg',
+  headers: { req_id: uuidv4() },
+  body: {
+    chattype: 'group',
+    chatid: '目标群聊ID',
+    msgtype: 'text',
+    text: { content: '这是一条主动推送的消息' }
+  }
+});
+```
+
+**发送频率限制**
+
+无论是回复消息还是主动推送，同一会话的限制为 30 条/分钟，1000 条/小时。
+
+### 4.5 流式消息回复
 
 长连接模式下，开发者主动推送流式更新（无需等待回调），通过 `stream.id` 关联同一条消息：
 
@@ -313,7 +370,7 @@ wss://openws.work.weixin.qq.com
 
 > ⚠️ 流式消息从首次发送起，必须在 **6 分钟内**完成所有更新并设置 `finish=true`，否则消息将自动结束。
 
-### 4.5 心跳保活
+### 4.6 心跳保活
 
 每 30 秒发送一次 `ping`：
 

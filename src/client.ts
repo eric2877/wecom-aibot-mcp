@@ -14,6 +14,7 @@ interface ApprovalRecord {
   resolved: boolean;
   result?: 'allow-once' | 'allow-always' | 'deny';
   timestamp: number;
+  toolName?: string;  // 审批的工具名称
 }
 
 // 消息队列（用于等待用户回复）
@@ -133,8 +134,17 @@ class WecomClient {
       approval.resolved = true;
       approval.result = eventKey as 'allow-once' | 'allow-always' | 'deny';
       approval.timestamp = Date.now();
+
+      // 发送确认消息给用户
+      const resultText = eventKey === 'allow-once' ? '✅ 已允许（本次）'
+        : eventKey === 'allow-always' ? '✅ 已允许（永久）'
+        : '❌ 已拒绝';
+      const toolInfo = approval.toolName ? `: ${approval.toolName}` : '';
+
+      this.sendText(`**审批结果**${toolInfo}\n\n${resultText}`).catch(err => {
+        console.error('[wecom] 发送审批确认失败:', err);
+      });
     }
-    // 不再尝试更新卡片，避免参数错误
   }
 
   // 连接
@@ -192,11 +202,15 @@ class WecomClient {
       throw new Error('WebSocket 未连接');
     }
 
+    // 从 title 中提取工具名称（格式: 【待审批】Bash）
+    const toolName = title.replace('【待审批】', '');
+
     // 存储审批记录
     this.approvals.set(taskId, {
       taskId,
       resolved: false,
       timestamp: Date.now(),
+      toolName,
     });
 
     // 发送模板卡片
@@ -219,30 +233,23 @@ class WecomClient {
     return taskId;
   }
 
-  // 获取审批结果（轮询，timeoutMs=0 表示无限等待）
-  getApprovalResult(taskId: string, timeoutMs = 0): Promise<'allow-once' | 'allow-always' | 'deny' | 'timeout'> {
-    return new Promise((resolve) => {
-      const startTime = Date.now();
-      const pollInterval = 1000; // 1秒轮询
+  // 获取审批结果（非阻塞，立即返回当前状态）
+  getApprovalResult(taskId: string): 'pending' | 'allow-once' | 'allow-always' | 'deny' {
+    const approval = this.approvals.get(taskId);
+    if (!approval) {
+      return 'pending';
+    }
+    if (approval.resolved) {
+      return approval.result!;
+    }
+    return 'pending';
+  }
 
-      const poll = () => {
-        const approval = this.approvals.get(taskId);
-        if (approval?.resolved) {
-          resolve(approval.result!);
-          return;
-        }
-
-        // timeoutMs=0 表示无限等待
-        if (timeoutMs > 0 && Date.now() - startTime > timeoutMs) {
-          resolve('timeout');
-          return;
-        }
-
-        setTimeout(poll, pollInterval);
-      };
-
-      poll();
-    });
+  // 获取所有待处理的审批任务 ID（供 hook 轮询使用）
+  getPendingApprovals(): string[] {
+    return Array.from(this.approvals.entries())
+      .filter(([_, a]) => !a.resolved)
+      .map(([taskId, _]) => taskId);
   }
 
   // 获取最新消息（用于等待回复）

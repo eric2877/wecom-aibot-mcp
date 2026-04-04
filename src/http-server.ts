@@ -41,7 +41,7 @@ export function startHttpServer(client: WecomClient, port: number = HOOK_PORT): 
         return;
       }
 
-      // 审批接口
+      // 审批接口（非阻塞，发送卡片后立即返回）
       if (req.method === 'POST' && req.url === '/approve') {
         let body = '';
         req.on('data', (chunk) => { body += chunk; });
@@ -56,6 +56,15 @@ export function startHttpServer(client: WecomClient, port: number = HOOK_PORT): 
             res.end(JSON.stringify({ error: (err as Error).message }));
           }
         });
+        return;
+      }
+
+      // 审批状态查询接口（非阻塞）
+      if (req.method === 'GET' && req.url?.startsWith('/approval_status/')) {
+        const taskId = req.url.replace('/approval_status/', '');
+        const result = getApprovalStatus(taskId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
         return;
       }
 
@@ -96,9 +105,14 @@ export function stopHttpServer() {
 }
 
 /**
- * 处理审批请求
+ * 处理审批请求（非阻塞）
+ *
+ * 流程：
+ * 1. 发送审批卡片到微信
+ * 2. 立即返回 taskId，状态为 pending
+ * 3. Hook 脚本负责轮询 /approval_status/{taskId} 获取结果
  */
-async function handleApprovalRequest(request: ApprovalRequest): Promise<ApprovalResponse> {
+async function handleApprovalRequest(request: ApprovalRequest): Promise<{ taskId: string; status: string }> {
   if (!sharedClient) {
     throw new Error('WecomClient 未初始化');
   }
@@ -122,34 +136,27 @@ async function handleApprovalRequest(request: ApprovalRequest): Promise<Approval
   const title = `【待审批】${tool_name}`;
   const requestId = `hook_${Date.now()}`;
 
-  try {
-    // 发送审批请求
-    const taskId = await sharedClient.sendApprovalRequest(
-      title,
-      description,
-      requestId
-    );
+  // 发送审批请求（非阻塞）
+  const taskId = await sharedClient.sendApprovalRequest(
+    title,
+    description,
+    requestId
+  );
 
-    console.log(`[http] 审批请求已发送: ${taskId}`);
+  console.log(`[http] 审批请求已发送: ${taskId}`);
 
-    // 等待审批结果（无限等待）
-    const result = await sharedClient.getApprovalResult(taskId, 0);
+  // 立即返回，不等待结果
+  return { taskId, status: 'pending' };
+}
 
-    console.log(`[http] 审批结果: ${result}`);
-
-    // 转换结果
-    if (result === 'allow-once') {
-      return { decision: 'allow' };
-    } else if (result === 'allow-always') {
-      // TODO: 记录永久允许，需要持久化存储
-      return { decision: 'allow' };
-    } else if (result === 'deny') {
-      return { decision: 'deny', reason: '用户拒绝' };
-    } else {
-      return { decision: 'ask' };
-    }
-  } catch (err) {
-    console.error(`[http] 审批失败:`, err);
-    throw err;
+/**
+ * 查询审批状态（非阻塞）
+ */
+function getApprovalStatus(taskId: string): { status: string; result?: string } {
+  if (!sharedClient) {
+    return { status: 'error', result: 'WecomClient 未初始化' };
   }
+
+  const result = sharedClient.getApprovalResult(taskId);
+  return { status: result, result: result === 'pending' ? undefined : result };
 }
