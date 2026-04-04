@@ -1,6 +1,6 @@
 {
   "name": "@vrs-soft/wecom-aibot-mcp",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "企业微信智能机器人 MCP 服务 - Claude Code 审批通道",
   "type": "module",
   "main": "dist/index.js",
