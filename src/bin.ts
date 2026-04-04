@@ -257,11 +257,23 @@ async function main() {
   await server.connect(transport);
 
   // 定期清理过期消息
-  setInterval(() => {
+  const cleanupInterval = setInterval(() => {
     wecomClient.cleanupMessages();
   }, 60000);
 
   console.log('[mcp] MCP Server 已就绪');
+
+  // 退出处理：清理资源
+  const gracefulShutdown = () => {
+    console.log('[mcp] 正在关闭...');
+    clearInterval(cleanupInterval);
+    wecomClient.disconnect();
+    process.exit(0);
+  };
+
+  // 监听进程信号
+  process.on('SIGINT', gracefulShutdown);
+  process.on('SIGTERM', gracefulShutdown);
 }
 
 main().catch((err) => {
