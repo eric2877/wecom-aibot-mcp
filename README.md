@@ -58,6 +58,12 @@ PermissionRequest Hook 拦截
       执行或拒绝操作
 ```
 
+### 审批卡片示例
+
+![审批卡片](docs/approval-card.png)
+
+用户在企业微信中收到审批卡片，点击按钮即可远程决策：
+
 ## 安装
 
 ### 前置要求

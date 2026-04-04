@@ -229,8 +229,8 @@ class WecomClient {
         main_title: { title },
         sub_title_text: description,
         button_list: [
-          { text: '允许一次', key: 'allow-once', style: 1 },
-          { text: '永久允许', key: 'allow-always', style: 1 },
+          { text: '允许', key: 'allow-once', style: 1 },
+          { text: '默认', key: 'allow-always', style: 1 },
           { text: '拒绝', key: 'deny', style: 2 },
         ],
         task_id: taskId,
