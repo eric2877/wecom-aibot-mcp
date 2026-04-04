@@ -18,10 +18,10 @@ function showHelp() {
 企业微信智能机器人 MCP 服务 v${VERSION}
 
 安装:
-  npx @various/wecom-aibot-mcp
+  npx @vrs-soft/wecom-aibot-mcp
 
 用法:
-  npx @various/wecom-aibot-mcp [选项]
+  npx @vrs-soft/wecom-aibot-mcp [选项]
 
 选项:
   --help, -h      显示帮助信息
@@ -44,7 +44,7 @@ Claude Code 配置示例:
     "mcpServers": {
       "wecom-aibot": {
         "command": "npx",
-        "args": ["@various/wecom-aibot-mcp"],
+        "args": ["@vrs-soft/wecom-aibot-mcp"],
         "env": {
           "WECOM_BOT_ID": "your_bot_id",
           "WECOM_SECRET": "your_secret",
@@ -61,7 +61,7 @@ Claude Code 配置示例:
     "mcpServers": {
       "wecom-aibot-user1": {
         "command": "npx",
-        "args": ["@various/wecom-aibot-mcp"],
+        "args": ["@vrs-soft/wecom-aibot-mcp"],
         "env": {
           "WECOM_BOT_ID": "bot_user1",
           "WECOM_SECRET": "secret_user1",
@@ -70,7 +70,7 @@ Claude Code 配置示例:
       },
       "wecom-aibot-user2": {
         "command": "npx",
-        "args": ["@various/wecom-aibot-mcp"],
+        "args": ["@vrs-soft/wecom-aibot-mcp"],
         "env": {
           "WECOM_BOT_ID": "bot_user2",
           "WECOM_SECRET": "secret_user2",

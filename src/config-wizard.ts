@@ -199,7 +199,7 @@ function writeMcpServerConfig(config: WecomConfig) {
     // 写入 MCP Server 配置
     claudeConfig.mcpServers['wecom-aibot'] = {
       command: 'npx',
-      args: ['@various/wecom-aibot-mcp'],
+      args: ['@vrs-soft/wecom-aibot-mcp'],
       env: {
         WECOM_BOT_ID: config.botId,
         WECOM_SECRET: config.secret,
@@ -217,7 +217,7 @@ function writeMcpServerConfig(config: WecomConfig) {
       mcpServers: {
         'wecom-aibot': {
           command: 'npx',
-          args: ['@various/wecom-aibot-mcp'],
+          args: ['@vrs-soft/wecom-aibot-mcp'],
           env: {
             WECOM_BOT_ID: config.botId,
             WECOM_SECRET: config.secret,

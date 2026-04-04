@@ -1,5 +1,5 @@
 {
-  "name": "@various/wecom-aibot-mcp",
+  "name": "@vrs-soft/wecom-aibot-mcp",
   "version": "1.0.0",
   "description": "企业微信智能机器人 MCP 服务 - Claude Code 审批通道",
   "type": "module",
@@ -23,14 +23,13 @@
     "mcp",
     "claude-code",
     "approval",
-    "智能机器人",
-    "various"
+    "智能机器人"
   ],
   "author": "",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/various/wecom-aibot-mcp.git"
+    "url": "git+https://github.com/eric2877/wecom-aibot-mcp.git"
   },
   "dependencies": {
     "@wecom/aibot-node-sdk": "^1.0.4",

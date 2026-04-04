@@ -195,7 +195,7 @@ export function registerTools(server: McpServer, client: WecomClient) {
 ## 安装方式
 
 \`\`\`bash
-npx @various/wecom-aibot-mcp
+npx @vrs-soft/wecom-aibot-mcp
 \`\`\`
 
 ## 首次配置
@@ -243,7 +243,7 @@ npx @various/wecom-aibot-mcp
   "mcpServers": {
     "wecom-aibot": {
       "command": "npx",
-      "args": ["@various/wecom-aibot-mcp"],
+      "args": ["@vrs-soft/wecom-aibot-mcp"],
       "env": {
         "WECOM_BOT_ID": "your_bot_id",
         "WECOM_SECRET": "your_secret",
@@ -263,7 +263,7 @@ npx @various/wecom-aibot-mcp
   "mcpServers": {
     "wecom-aibot-zhangsan": {
       "command": "npx",
-      "args": ["@various/wecom-aibot-mcp"],
+      "args": ["@vrs-soft/wecom-aibot-mcp"],
       "env": {
         "WECOM_BOT_ID": "bot_zhangsan",
         "WECOM_SECRET": "secret_zhangsan",
@@ -272,7 +272,7 @@ npx @various/wecom-aibot-mcp
     },
     "wecom-aibot-lisi": {
       "command": "npx",
-      "args": ["@various/wecom-aibot-mcp"],
+      "args": ["@vrs-soft/wecom-aibot-mcp"],
       "env": {
         "WECOM_BOT_ID": "bot_lisi",
         "WECOM_SECRET": "secret_lisi",
@@ -328,7 +328,7 @@ npx @various/wecom-aibot-mcp
     async ({ instance_name, bot_id, secret, target_user }) => {
       const config = {
         "command": "npx",
-        "args": ["@various/wecom-aibot-mcp"],
+        "args": ["@vrs-soft/wecom-aibot-mcp"],
         "env": {
           "WECOM_BOT_ID": bot_id,
           "WECOM_SECRET": secret,
@@ -354,7 +354,7 @@ ${jsonSnippet}
   "mcpServers": {
     "wecom-aibot": {
       "command": "npx",
-      "args": ["@various/wecom-aibot-mcp"],
+      "args": ["@vrs-soft/wecom-aibot-mcp"],
       "env": {
         "WECOM_BOT_ID": "existing_bot",
         "WECOM_SECRET": "existing_secret",
