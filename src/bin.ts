@@ -4,14 +4,31 @@
  *
  * npx 运行入口
  */
-import { getOrInitConfig, runConfigWizard, loadConfig, saveConfig, ensureHookInstalled, uninstall, WecomConfig } from './config-wizard.js';
-import { initClient } from './client.js';
+import * as readline from 'readline';
+import { getOrInitConfig, runConfigWizard, loadConfig, saveConfig, deleteConfig, uninstall, addMcpConfig, detectUserIdFromMessage, ensureHookInstalled, WecomConfig } from './config-wizard.js';
+import { initClient, WecomClient } from './client.js';
 import { registerTools } from './tools/index.js';
 import { startHttpServer } from './http-server.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.6';
+
+// 等待连接验证（最多等待 10 秒）
+async function waitForConnection(client: WecomClient, timeoutMs = 10000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const startTime = Date.now();
+    const checkInterval = setInterval(() => {
+      if (client.isConnected()) {
+        clearInterval(checkInterval);
+        resolve(true);
+      } else if (Date.now() - startTime > timeoutMs) {
+        clearInterval(checkInterval);
+        resolve(false);
+      }
+    }, 500);
+  });
+}
 
 function showHelp() {
   console.log(`
@@ -26,9 +43,10 @@ function showHelp() {
 选项:
   --help, -h      显示帮助信息
   --version, -v   显示版本号
-  --config        重新配置（修改 Bot ID / Secret / 目标用户）
+  --config        重新配置默认机器人（修改 Bot ID / Secret / 目标用户）
+  --add           添加新的机器人配置（多机器人场景）
   --status        显示当前配置状态
-  --uninstall     卸载并清除所有配置（彻底移除 MCP）
+  --uninstall     卸载并删除所有配置（包括 MCP 配置、hook、skill）
 
 配置方式（按优先级）:
   1. 环境变量（推荐多实例场景）:
@@ -120,13 +138,18 @@ async function main() {
     process.exit(0);
   }
 
-  // 卸载并彻底清除所有配置
   if (args.includes('--uninstall')) {
     uninstall();
     process.exit(0);
   }
 
+  if (args.includes('--add')) {
+    await addMcpConfig();
+    process.exit(0);
+  }
+
   const reconfig = args.includes('--config');
+  const isInteractive = process.stdin.isTTY;  // 是否为用户交互模式
 
   console.log('');
   console.log('  ╔════════════════════════════════════════════════════════╗');
@@ -137,20 +160,33 @@ async function main() {
 
   // 获取或初始化配置
   let config: WecomConfig;
+  let ranWizard = false;  // 是否运行了配置向导
+  let instanceName = 'wecom-aibot';
 
   if (reconfig) {
-    // --config 只用于修改已有配置，不能重新安装
-    const existingConfig = loadConfig();
-    if (!existingConfig) {
-      console.log('[config] 未找到已保存的配置');
-      console.log('[config] 如需安装，请直接运行: npx @vrs-soft/wecom-aibot-mcp');
-      console.log('[config] 或设置环境变量: WECOM_BOT_ID, WECOM_SECRET, WECOM_TARGET_USER');
+    console.log('[config] 重新配置模式\n');
+    const result = await runConfigWizard();
+    config = result.config;
+    instanceName = result.instanceName;
+    ranWizard = true;
+  } else {
+    // 检查是否已有配置
+    const savedConfig = loadConfig();
+    if (savedConfig && savedConfig.botId && savedConfig.secret && savedConfig.targetUserId) {
+      config = savedConfig;
+    } else if (isInteractive) {
+      // TTY 模式下没有配置，启动配置向导
+      console.log('[config] 未找到配置，启动配置向导...\n');
+      const result = await runConfigWizard();
+      config = result.config;
+      instanceName = result.instanceName;
+      ranWizard = true;
+    } else {
+      // 非 TTY 模式（MCP stdio），必须有配置
+      console.error('[config] 未找到配置，且当前为非交互模式。');
+      console.error('[config] 请在终端运行: npx @vrs-soft/wecom-aibot-mcp --config');
       process.exit(1);
     }
-    console.log('[config] 重新配置模式\n');
-    config = await runConfigWizard();
-  } else {
-    config = await getOrInitConfig();
   }
 
   // 确保 hook 已安装（幂等，每次启动检查）
@@ -158,10 +194,57 @@ async function main() {
 
   // 初始化 WebSocket 客户端
   console.log(`[mcp] 初始化企业微信客户端...`);
-  console.log(`[mcp] 默认目标用户: ${config.targetUserId}`);
 
-  const wecomClient = initClient(config.botId, config.secret, config.targetUserId);
+  const wecomClient = initClient(config.botId, config.secret, config.targetUserId || 'placeholder');
 
+  // 等待连接验证
+  console.log('[mcp] 等待连接验证...');
+  const connected = await waitForConnection(wecomClient, 10000);
+
+  if (!connected) {
+    console.log('[mcp] 连接失败，可能是配置错误或机器人未授权');
+    console.log('[mcp] 请检查上面的错误提示，修复后重新配置');
+
+    // 删除无效配置，让用户重新输入
+    deleteConfig();
+
+    if (isInteractive) {
+      console.log('\n请检查：');
+      console.log('  1. Bot ID 和 Secret 是否正确');
+      console.log('  2. 新建机器人需等待约 2 分钟同步');
+      console.log('  3. 是否已完成授权（机器人详情 → 可使用权限 → 授权）');
+      console.log('\n修复后重新运行: npx @vrs-soft/wecom-aibot-mcp --config');
+    }
+    process.exit(1);
+  }
+
+  // 连接成功
+  if (isInteractive && (ranWizard || reconfig)) {
+    // 需要通过消息自动识别用户 ID
+    console.log('\n[mcp] ✅ 机器人连接成功！');
+
+    // 提示用户发送消息来识别用户 ID
+    const userId = await detectUserIdFromMessage(wecomClient, 60);
+
+    if (!userId) {
+      console.log('\n[mcp] 未能在规定时间内识别用户 ID');
+      console.log('[mcp] 请重新运行配置：npx @vrs-soft/wecom-aibot-mcp --config');
+      process.exit(1);
+    }
+
+    // 更新配置中的用户 ID
+    config.targetUserId = userId;
+
+    // 保存最终配置
+    saveConfig(config, instanceName);
+
+    console.log('\n[mcp] ✅ 配置完成！');
+    console.log(`[mcp] 用户 ID: ${userId}`);
+    console.log('[mcp] 请重启 Claude Code 以加载 MCP 服务\n');
+    process.exit(0);
+  }
+
+  // 非 TTY 模式（MCP stdio），启动 MCP Server
   // 启动本地 HTTP 服务（用于 hooks 审批）
   await startHttpServer(wecomClient);
 
@@ -180,11 +263,23 @@ async function main() {
   await server.connect(transport);
 
   // 定期清理过期消息
-  setInterval(() => {
+  const cleanupInterval = setInterval(() => {
     wecomClient.cleanupMessages();
   }, 60000);
 
   console.log('[mcp] MCP Server 已就绪');
+
+  // 退出处理：清理资源
+  const gracefulShutdown = () => {
+    console.log('[mcp] 正在关闭...');
+    clearInterval(cleanupInterval);
+    wecomClient.disconnect();
+    process.exit(0);
+  };
+
+  // 监听进程信号
+  process.on('SIGINT', gracefulShutdown);
+  process.on('SIGTERM', gracefulShutdown);
 }
 
 main().catch((err) => {

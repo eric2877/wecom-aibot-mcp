@@ -33,8 +33,10 @@ class WecomClient {
   private messages: MessageRecord[] = [];
   private connected = false;
   private targetUserId: string;
+  private botId: string;  // 保存 botId 用于生成授权 URL
 
   constructor(botId: string, secret: string, targetUserId: string) {
+    this.botId = botId;
     this.targetUserId = targetUserId;
     this.wsClient = new AiBot.WSClient({
       botId,
@@ -44,6 +46,11 @@ class WecomClient {
     });
 
     this.setupEventHandlers();
+  }
+
+  // 生成授权页面 URL
+  getAuthUrl(): string {
+    return `https://work.weixin.qq.com/ai/aiHelper/authorizationPage?str_aibotid=${this.botId}&type=6&from=chat&forceInnerBrowser=1`;
   }
 
   private setupEventHandlers() {
@@ -67,6 +74,20 @@ class WecomClient {
 
     this.wsClient.on('error', (err: Error) => {
       console.error(`[wecom] 错误: ${err.message}`);
+
+      // 检测授权相关错误（40058: invalid Request Parameter）
+      if (err.message.includes('40058') || err.message.includes('invalid Request Parameter')) {
+        console.log('');
+        console.log('  ⚠️  机器人未授权或配置有误，请检查以下事项：');
+        console.log('');
+        console.log('  1. 新建机器人需要等待约 2 分钟同步时间，请稍后再试');
+        console.log('  2. 确认 Bot ID 和 Secret 是否正确');
+        console.log('  3. 完成机器人授权（任选其一）：');
+        console.log('     • 在电脑端企业微信APP中打开：机器人详情 → 可使用权限 → 授权');
+        console.log('     • 打开浏览器访问以下地址，使用手机企业微信扫码授权：');
+        console.log(`       ${this.getAuthUrl()}`);
+        console.log('');
+      }
     });
 
     // 监听所有消息（存储到队列）
@@ -173,6 +194,40 @@ class WecomClient {
   // 获取默认目标用户
   getDefaultTargetUser(): string {
     return this.targetUserId;
+  }
+
+  // 验证目标用户（尝试发送测试消息）
+  async verifyTargetUser(userId?: string): Promise<{ valid: boolean; error?: string }> {
+    const targetId = userId || this.targetUserId;
+    if (!this.connected) {
+      return { valid: false, error: 'WebSocket 未连接' };
+    }
+
+    try {
+      // 尝试发送一条简单的验证消息（使用 markdown 格式）
+      await this.wsClient.sendMessage(targetId, {
+        msgtype: 'markdown',
+        markdown: { content: '【系统消息】机器人配置验证成功，此消息可忽略。' },
+      });
+      console.log(`[wecom] 用户验证成功: ${targetId}`);
+      return { valid: true };
+    } catch (err: any) {
+      const errorMsg = err.message || String(err);
+      console.error(`[wecom] 用户验证失败: ${errorMsg}`);
+
+      // 解析错误类型
+      if (errorMsg.includes('93006') || errorMsg.includes('invalid chatid')) {
+        return { valid: false, error: '用户 ID 格式无效，请使用企业微信通讯录中的"账号"字段（通常是拼音格式，如 liuyang），不是中文名称' };
+      } else if (errorMsg.includes('60011') || errorMsg.includes('no privilege')) {
+        return { valid: false, error: '用户不在机器人可见范围内，请在企业微信管理后台添加可见范围' };
+      } else if (errorMsg.includes('60012') || errorMsg.includes('user not exist')) {
+        return { valid: false, error: '用户 ID 不存在，请确认填写的是企业微信通讯录中的"账号"字段' };
+      } else if (errorMsg.includes('60013') || errorMsg.includes('not friend')) {
+        return { valid: false, error: '用户未添加机器人为好友，请先在企业微信中添加机器人' };
+      }
+
+      return { valid: false, error: errorMsg };
+    }
   }
 
   // 发送文本消息（主动推送）
