@@ -224,7 +224,7 @@ async function main() {
     console.log('\n[mcp] ✅ 机器人连接成功！');
 
     // 提示用户发送消息来识别用户 ID
-    const userId = await detectUserIdFromMessage(config.botId, config.secret, 60);
+    const userId = await detectUserIdFromMessage(wecomClient, 60);
 
     if (!userId) {
       console.log('\n[mcp] 未能在规定时间内识别用户 ID');

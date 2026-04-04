@@ -454,9 +454,9 @@ function installSkills() {
     }
 
     // 从包内复制 skill 文件
-    // 包安装后 skills 目录在包根目录下
-    const packageDir = path.dirname(require.main?.filename || __dirname);
-    const sourceSkillFile = path.join(packageDir, '..', 'skills', 'headless-mode', 'SKILL.md');
+    // ES modules: 使用 import.meta.url 获取当前模块路径
+    const currentDir = path.dirname(new URL(import.meta.url).pathname);
+    const sourceSkillFile = path.join(currentDir, '..', 'skills', 'headless-mode', 'SKILL.md');
 
     if (fs.existsSync(sourceSkillFile)) {
       fs.copyFileSync(sourceSkillFile, skillFile);
@@ -659,74 +659,56 @@ export async function runConfigWizard(): Promise<{ config: WecomConfig; instance
 }
 
 /**
- * 通过等待用户消息来识别用户 ID
+ * 通过等待用户消息来识别用户 ID（使用已有的 client）
  */
 export async function detectUserIdFromMessage(
-  botId: string,
-  secret: string,
+  client: any,
   timeoutSeconds: number = 60
 ): Promise<string | null> {
-  // 动态导入 client 模块避免循环依赖
-  const { initClient } = await import('./client.js');
-
   return new Promise((resolve) => {
-    console.log(`\n[config] 正在连接企业微信...`);
+    if (!client.isConnected()) {
+      console.log('\n[config] 客户端未连接');
+      resolve(null);
+      return;
+    }
 
-    const client = initClient(botId, secret, 'placeholder');
-
-    const cleanup = () => {
-      client.disconnect();
-    };
+    console.log('\n[config] ✅ 连接成功！');
+    console.log('\n╔════════════════════════════════════════════════════════╗');
+    console.log('║  请让需要接收审批消息的人，在企业微信中给机器人发送      ║');
+    console.log('║  一条消息（任意内容），系统将自动识别其用户 ID          ║');
+    console.log('╚════════════════════════════════════════════════════════╝');
+    console.log(`\n[config] 等待消息中...（${timeoutSeconds}秒内）`);
 
     // 设置超时
     const timeout = setTimeout(() => {
-      cleanup();
       console.log(`\n[config] 等待超时（${timeoutSeconds}秒），未收到用户消息`);
       resolve(null);
     }, timeoutSeconds * 1000);
 
-    // 检查连接状态
-    setTimeout(() => {
-      if (!client.isConnected()) {
+    // 轮询等待消息
+    const pollInterval = setInterval(async () => {
+      const messages = client.getPendingMessages(false);
+      if (messages.length > 0) {
         clearTimeout(timeout);
-        cleanup();
-        console.log('\n[config] 连接失败，请检查 Bot ID 和 Secret');
-        resolve(null);
-      } else {
-        console.log('\n[config] ✅ 连接成功！');
-        console.log('\n╔════════════════════════════════════════════════════════╗');
-        console.log('║  请让需要接收审批消息的人，在企业微信中给机器人发送      ║');
-        console.log('║  一条消息（任意内容），系统将自动识别其用户 ID          ║');
-        console.log('╚════════════════════════════════════════════════════════╝');
-        console.log(`\n[config] 等待消息中...（${timeoutSeconds}秒内）`);
+        clearInterval(pollInterval);
 
-        // 轮询等待消息
-        const pollInterval = setInterval(async () => {
-          const messages = client.getPendingMessages(false);
-          if (messages.length > 0) {
-            clearTimeout(timeout);
-            clearInterval(pollInterval);
+        const msg = messages[0];
+        const userId = msg.from_userid;
 
-            const msg = messages[0];
-            const userId = msg.from_userid;
+        console.log(`\n[config] ✅ 收到消息！`);
+        console.log(`[config] 识别到用户 ID: ${userId}`);
 
-            console.log(`\n[config] ✅ 收到消息！`);
-            console.log(`[config] 识别到用户 ID: ${userId}`);
+        // 发送确认消息
+        try {
+          await client.sendText(`**机器人配置成功！**\n\n默认向用户 ID: \`${userId}\` 发送消息互动。\n\n您现在可以使用 Claude Code 审批功能了。`, userId);
+          console.log(`[config] 已发送确认消息到 ${userId}`);
+        } catch (err) {
+          console.log(`[config] 发送确认消息失败: ${err}`);
+        }
 
-            // 发送确认消息
-            try {
-              await client.sendText(`**机器人配置成功！**\n\n默认向用户 ID: \`${userId}\` 发送消息互动。\n\n您现在可以使用 Claude Code 审批功能了。`, userId);
-              console.log(`[config] 已发送确认消息到 ${userId}`);
-            } catch (err) {
-              console.log(`[config] 发送确认消息失败: ${err}`);
-            }
-
-            cleanup();
-            resolve(userId);
-          }
-        }, 1000);
+        resolve(userId);
       }
-    }, 3000);
+    }, 1000);
   });
 }
 
