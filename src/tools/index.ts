@@ -24,6 +24,7 @@ import {
   loadHeadlessState,
   getAllHeadlessStates,
   setAutoApprove,
+  HeadlessState,
 } from '../headless-state.js';
 import { listAllRobots } from '../config-wizard.js';
 import {
@@ -38,24 +39,40 @@ import {
 
 // 辅助函数：获取客户端或返回错误
 async function getConnectedClient(projectDir?: string) {
-  const dir = projectDir || process.cwd();
-  const state = loadHeadlessState(dir);
-  if (!state) {
+  let state: HeadlessState | null = null;
+  let resolvedProjectDir: string | null = null;
+
+  if (projectDir) {
+    // 传入了 projectDir，直接使用
+    state = loadHeadlessState(projectDir);
+    resolvedProjectDir = projectDir;
+  } else {
+    // 未传入 projectDir，从全局索引获取当前 headless 项目
+    const allStates = getAllHeadlessStates();
+    if (allStates.length > 0) {
+      // 使用第一个 headless 项目
+      resolvedProjectDir = allStates[0].projectDir;
+      state = allStates[0].state;
+    }
+  }
+
+  if (!state || !resolvedProjectDir) {
     return {
       error: '未在微信模式',
       client: null,
       projectDir: null,
     };
   }
-  const client = await getClient(state.projectDir);
+
+  const client = await getClient(resolvedProjectDir);
   if (!client) {
     return {
       error: '未连接机器人，请先进入微信模式',
       client: null,
-      projectDir: state.projectDir,
+      projectDir: resolvedProjectDir,
     };
   }
-  return { error: null, client, projectDir: state.projectDir };
+  return { error: null, client, projectDir: resolvedProjectDir };
 }
 
 export function registerTools(server: McpServer) {

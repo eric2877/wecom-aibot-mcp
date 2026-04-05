@@ -17,6 +17,7 @@ export interface WecomConfig {
   secret: string;
   targetUserId: string;
   targetUserName?: string;
+  nameTag?: string;  // 机器人名称
 }
 
 const CONFIG_DIR = path.join(os.homedir(), '.wecom-aibot-mcp');
@@ -417,11 +418,14 @@ function writeMcpServerConfig(config: WecomConfig, instanceName?: string) {
   try {
     // 1. 写入机器人配置到 ~/.wecom-aibot-mcp/config.json
     ensureConfigDir();
-    const botConfig = {
+    const botConfig: any = {
       botId: config.botId,
       secret: config.secret,
       targetUserId: config.targetUserId,
     };
+    if (config.nameTag) {
+      botConfig.nameTag = config.nameTag;
+    }
     fs.writeFileSync(BOT_CONFIG_FILE, JSON.stringify(botConfig, null, 2));
     console.log('[config] 机器人配置已写入 ~/.wecom-aibot-mcp/config.json');
 
@@ -582,12 +586,14 @@ export async function addMcpConfig() {
 export function listAllRobots(): Array<{ name: string; botId: string; targetUserId: string; isDefault: boolean }> {
   const robots: Array<{ name: string; botId: string; targetUserId: string; isDefault: boolean }> = [];
 
-  // 默认配置
+  // 主配置文件（config.json）
   if (fs.existsSync(BOT_CONFIG_FILE)) {
     try {
       const config = JSON.parse(fs.readFileSync(BOT_CONFIG_FILE, 'utf-8'));
+      // 使用 nameTag，如果没有则用 botId 前缀
+      const name = config.nameTag || `机器人-${config.botId?.slice(0, 8) || 'unknown'}`;
       robots.push({
-        name: config.nameTag || '默认机器人',
+        name,
         botId: config.botId,
         targetUserId: config.targetUserId,
         isDefault: true,
@@ -603,8 +609,9 @@ export function listAllRobots(): Array<{ name: string; botId: string; targetUser
     for (const file of files) {
       try {
         const config = JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, file), 'utf-8'));
+        const name = config.nameTag || file.replace('.json', '');
         robots.push({
-          name: config.nameTag || file,
+          name,
           botId: config.botId,
           targetUserId: config.targetUserId,
           isDefault: false,
@@ -787,6 +794,7 @@ export async function runConfigWizard(): Promise<{ config: WecomConfig; instance
     // 检查是否有多个机器人配置
     const instances = listAllMcpInstances();
     let instanceName = 'wecom-aibot';
+    let robotName = '';
 
     if (instances.length > 1) {
       // 多个机器人，让用户选择要修改哪个
@@ -804,13 +812,13 @@ export async function runConfigWizard(): Promise<{ config: WecomConfig; instance
         console.log(`\n已选择修改: ${instanceName}\n`);
       } else if (choiceNum === instances.length + 1) {
         // 添加新机器人
-        const newName = await question(rl, '请输入新实例名称: ');
+        const newName = await question(rl, '请输入新机器人名称: ');
         if (!newName) {
-          console.log('[config] 实例名称不能为空');
+          console.log('[config] 机器人名称不能为空');
           process.exit(1);
         }
-        instanceName = newName;
-        console.log(`\n将创建新实例: ${instanceName}\n`);
+        robotName = newName;
+        console.log(`\n将创建新机器人: ${robotName}\n`);
       } else {
         console.log('[config] 无效选择');
         process.exit(1);
@@ -819,7 +827,15 @@ export async function runConfigWizard(): Promise<{ config: WecomConfig; instance
       instanceName = instances[0].name;
       console.log(`\n将修改现有配置: ${instanceName}\n`);
     } else {
-      console.log('\n将创建默认配置: wecom-aibot\n');
+      // 首次配置，要求输入机器人名称
+      console.log('\n首次配置，请输入机器人信息：\n');
+      const newName = await question(rl, '机器人名称（用于识别，如"工作机器人"）: ');
+      if (!newName) {
+        console.log('[config] 机器人名称不能为空');
+        process.exit(1);
+      }
+      robotName = newName;
+      console.log(`\n将创建机器人: ${robotName}\n`);
     }
 
     // 1. 获取 Bot ID
@@ -839,7 +855,7 @@ export async function runConfigWizard(): Promise<{ config: WecomConfig; instance
     // 3. 目标用户 ID 稍后通过消息自动识别
     console.log('\n─────────────────────────────────────');
     console.log('配置确认：');
-    console.log(`  实例名称:   ${instanceName}`);
+    console.log(`  机器人名称: ${robotName || instanceName}`);
     console.log(`  Bot ID:     ${botId}`);
     console.log(`  Secret:     ${secret.slice(0, 8)}...${secret.slice(-4)}`);
     console.log(`  目标用户:   （将通过消息自动识别）`);
@@ -857,6 +873,7 @@ export async function runConfigWizard(): Promise<{ config: WecomConfig; instance
       botId,
       secret,
       targetUserId: '',  // 稍后通过消息识别
+      nameTag: robotName || undefined,
     };
 
     return { config, instanceName };
