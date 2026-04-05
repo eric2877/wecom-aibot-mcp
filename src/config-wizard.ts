@@ -2,7 +2,10 @@
  * 配置向导模块
  *
  * 首次运行时引导用户配置 Bot ID、Secret 和默认目标用户
- * 配置直接存储在 ~/.claude.json 的 mcpServers.wecom-aibot.env 中
+ *
+ * 配置存储位置：
+ * - 机器人配置：~/.wecom-aibot-mcp/config.json
+ * - MCP 配置：~/.claude.json (仅 URL)
  */
 import * as readline from 'readline';
 import * as fs from 'fs';
@@ -17,22 +20,14 @@ export interface WecomConfig {
 }
 
 const CONFIG_DIR = path.join(os.homedir(), '.wecom-aibot-mcp');
+const BOT_CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const CLAUDE_CONFIG_FILE = path.join(os.homedir(), '.claude.json');
 const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.local.json');
 const HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.sh');
 
 // MCP 工具权限列表（需要预授权以避免 headless 模式阻断）
 const MCP_TOOL_PERMISSIONS = [
-  'mcp__wecom-aibot__send_message',
-  'mcp__wecom-aibot__send_approval_request',
-  'mcp__wecom-aibot__get_approval_result',
-  'mcp__wecom-aibot__check_connection',
-  'mcp__wecom-aibot__get_pending_messages',
-  'mcp__wecom-aibot__get_setup_guide',
-  'mcp__wecom-aibot__add_robot_config',
-  'mcp__wecom-aibot__enter_headless_mode',
-  'mcp__wecom-aibot__exit_headless_mode',
-  'mcp__wecom-aibot__detect_user_from_message',
+  'mcp__wecom-aibot__*',  // 允许所有 wecom-aibot 工具
 ];
 
 // 确保配置目录存在（用于存储端口文件、hook脚本等运行时文件）
@@ -42,23 +37,19 @@ function ensureConfigDir() {
   }
 }
 
-// 从 ~/.claude.json 读取已保存的配置
+// 从 ~/.wecom-aibot-mcp/config.json 读取已保存的配置
 export function loadConfig(): WecomConfig | null {
   try {
-    // 优先从 ~/.claude.json 读取
-    if (fs.existsSync(CLAUDE_CONFIG_FILE)) {
-      const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
-      const claudeConfig = JSON.parse(content);
-      const mcpConfig = claudeConfig.mcpServers?.['wecom-aibot'];
-      if (mcpConfig?.env) {
-        const { WECOM_BOT_ID, WECOM_SECRET, WECOM_TARGET_USER } = mcpConfig.env;
-        if (WECOM_BOT_ID && WECOM_SECRET && WECOM_TARGET_USER) {
-          return {
-            botId: WECOM_BOT_ID,
-            secret: WECOM_SECRET,
-            targetUserId: WECOM_TARGET_USER,
-          };
-        }
+    // 从机器人配置文件读取
+    if (fs.existsSync(BOT_CONFIG_FILE)) {
+      const content = fs.readFileSync(BOT_CONFIG_FILE, 'utf-8');
+      const config = JSON.parse(content);
+      if (config.botId && config.secret && config.targetUserId) {
+        return {
+          botId: config.botId,
+          secret: config.secret,
+          targetUserId: config.targetUserId,
+        };
       }
     }
   } catch (err) {
@@ -69,32 +60,12 @@ export function loadConfig(): WecomConfig | null {
 
 // 获取所有 wecom-aibot 相关的 MCP 实例
 export function listAllMcpInstances(): Array<{ name: string; config: WecomConfig }> {
-  const instances: Array<{ name: string; config: WecomConfig }> = [];
-  try {
-    if (fs.existsSync(CLAUDE_CONFIG_FILE)) {
-      const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
-      const claudeConfig = JSON.parse(content);
-      const mcpServers = claudeConfig.mcpServers || {};
-
-      for (const [name, server] of Object.entries(mcpServers)) {
-        // 检查是否是 wecom-aibot 相关的配置
-        const serverConfig = server as any;
-        if (serverConfig?.env?.WECOM_BOT_ID) {
-          instances.push({
-            name,
-            config: {
-              botId: serverConfig.env.WECOM_BOT_ID,
-              secret: serverConfig.env.WECOM_SECRET,
-              targetUserId: serverConfig.env.WECOM_TARGET_USER,
-            },
-          });
-        }
-      }
-    }
-  } catch (err) {
-    console.error('[config] 读取配置失败:', err);
+  // 现在只有一个主配置文件
+  const config = loadConfig();
+  if (config) {
+    return [{ name: 'wecom-aibot', config }];
   }
-  return instances;
+  return [];
 }
 
 // 删除配置（从 ~/.claude.json）
@@ -155,6 +126,90 @@ export function deleteSkills() {
     }
   } catch (err) {
     console.error('[config] 删除 skill 失败:', err);
+  }
+}
+
+// 删除单个 MCP 配置（按实例名）
+export function deleteMcpConfig(instanceName: string): boolean {
+  try {
+    if (!fs.existsSync(CLAUDE_CONFIG_FILE)) {
+      console.log('[config] ~/.claude.json 不存在');
+      return false;
+    }
+
+    const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
+    const claudeConfig = JSON.parse(content);
+
+    if (!claudeConfig.mcpServers?.[instanceName]) {
+      console.log(`[config] 实例 "${instanceName}" 不存在`);
+      return false;
+    }
+
+    // 检查是否是 wecom-aibot 相关配置
+    const serverConfig = claudeConfig.mcpServers[instanceName];
+    if (!serverConfig?.env?.WECOM_BOT_ID) {
+      console.log(`[config] "${instanceName}" 不是企业微信机器人配置`);
+      return false;
+    }
+
+    delete claudeConfig.mcpServers[instanceName];
+    fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
+    console.log(`[config] 已删除实例: ${instanceName}`);
+    return true;
+  } catch (err) {
+    console.error('[config] 删除配置失败:', err);
+    return false;
+  }
+}
+
+// 交互式删除机器人配置
+export async function deleteMcpConfigInteractive(instanceName?: string): Promise<void> {
+  const instances = listAllMcpInstances();
+
+  if (instances.length === 0) {
+    console.log('[config] 没有找到任何企业微信机器人配置');
+    return;
+  }
+
+  // 如果提供了实例名，直接删除
+  if (instanceName) {
+    deleteMcpConfig(instanceName);
+    return;
+  }
+
+  // 否则显示列表让用户选择
+  console.log('\n企业微信机器人配置列表：\n');
+  instances.forEach((inst, idx) => {
+    console.log(`  ${idx + 1}. ${inst.name} (Bot ID: ${inst.config.botId.slice(0, 12)}..., 用户: ${inst.config.targetUserId})`);
+  });
+  console.log(`  0. 取消\n`);
+
+  const rl = createRL();
+  try {
+    const choice = await question(rl, '请选择要删除的配置序号: ');
+    const choiceNum = parseInt(choice);
+
+    if (choiceNum === 0) {
+      console.log('[config] 已取消');
+      return;
+    }
+
+    if (choiceNum < 1 || choiceNum > instances.length) {
+      console.log('[config] 无效选择');
+      return;
+    }
+
+    const selected = instances[choiceNum - 1];
+    const confirm = await question(rl, `确认删除 "${selected.name}"？(y/N): `);
+
+    if (confirm.toLowerCase() === 'y') {
+      deleteMcpConfig(selected.name);
+      console.log(`[config] 请重启 Claude Code 以生效\n`);
+    } else {
+      console.log('[config] 已取消');
+    }
+  } finally {
+    rl.close();
   }
 }
 
@@ -303,8 +358,63 @@ while [[ $POLL_COUNT -lt $MAX_POLL ]]; do
   fi
 done
 
-# 超时处理：拒绝操作
-printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"审批超时（10分钟）"}}}'
+# 超时处理：智能代批
+# 规则：删除命令→拒绝，项目内操作→允许，项目外操作→拒绝
+
+# 检查是否是删除命令
+IS_DELETE=0
+if [[ "$TOOL_NAME" == "Bash" ]]; then
+  CMD=$(echo "$TOOL_INPUT" | jq -r '.command // empty')
+  if [[ "$CMD" =~ ^rm\\ ]] || [[ "$CMD" =~ \\ rm\\ ]] || \
+     [[ "$CMD" =~ ^rmdir\\ ]] || [[ "$CMD" =~ \\ rmdir\\ ]] || \
+     [[ "$CMD" =~ ^unlink\\ ]] || [[ "$CMD" =~ rm\\ -rf ]]; then
+    IS_DELETE=1
+  fi
+fi
+
+# 删除操作 → 永远拒绝
+if [[ $IS_DELETE -eq 1 ]]; then
+  printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"超时自动拒绝：删除操作需人工确认"}}}'
+  exit 0
+fi
+
+# 检查操作路径是否在项目内
+IS_IN_PROJECT=0
+
+case "$TOOL_NAME" in
+  Bash)
+    CMD=$(echo "$TOOL_INPUT" | jq -r '.command // empty')
+    if [[ "$CMD" == *"$PROJECT_DIR"* ]] || \
+       [[ "$CMD" =~ ^\\./ ]] || \
+       [[ "$CMD" =~ ^npm\\ ]] || \
+       [[ "$CMD" =~ ^npx\\ ]] || \
+       [[ "$CMD" =~ ^git\\ ]] || \
+       [[ "$CMD" =~ ^node\\ ]]; then
+      IS_IN_PROJECT=1
+    fi
+    ;;
+  Write|Edit)
+    FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
+    if [[ "$FILE_PATH" == "$PROJECT_DIR"* ]] || [[ "$FILE_PATH" != /* ]]; then
+      IS_IN_PROJECT=1
+    fi
+    ;;
+  *)
+    FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // .path // .directory // empty')
+    if [[ -n "$FILE_PATH" ]]; then
+      if [[ "$FILE_PATH" == "$PROJECT_DIR"* ]] || [[ "$FILE_PATH" != /* ]]; then
+        IS_IN_PROJECT=1
+      fi
+    fi
+    ;;
+esac
+
+# 根据项目内/外决策
+if [[ $IS_IN_PROJECT -eq 1 ]]; then
+  printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","message":"超时自动允许：项目内操作"}}}'
+else
+  printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"超时自动拒绝：项目外操作需人工确认"}}}'
+fi
 `;
 
   ensureConfigDir();
@@ -315,51 +425,51 @@ printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","deci
 // 写入 MCP Server 配置到 ~/.claude.json
 function writeMcpServerConfig(config: WecomConfig, instanceName?: string) {
   try {
-    // 读取现有配置
+    // 1. 写入机器人配置到 ~/.wecom-aibot-mcp/config.json
+    ensureConfigDir();
+    const botConfig = {
+      botId: config.botId,
+      secret: config.secret,
+      targetUserId: config.targetUserId,
+    };
+    fs.writeFileSync(BOT_CONFIG_FILE, JSON.stringify(botConfig, null, 2));
+    console.log('[config] 机器人配置已写入 ~/.wecom-aibot-mcp/config.json');
+
+    // 2. 写入 MCP 配置到 ~/.claude.json（仅 URL）
     let claudeConfig: any = {};
     if (fs.existsSync(CLAUDE_CONFIG_FILE)) {
       const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
       claudeConfig = JSON.parse(content);
     }
 
-    // 确保 mcpServers 存在
     if (!claudeConfig.mcpServers) claudeConfig.mcpServers = {};
 
     const name = instanceName || 'wecom-aibot';
 
-    // 检查是否已存在同名配置
-    if (claudeConfig.mcpServers[name] && !instanceName) {
-      console.log(`[config] ~/.claude.json 中已存在 ${name} 配置，将更新`);
-    }
-
-    // 写入 MCP Server 配置
+    // HTTP Transport 配置格式
     claudeConfig.mcpServers[name] = {
-      command: 'npx',
-      args: ['@vrs-soft/wecom-aibot-mcp'],
-      env: {
-        WECOM_BOT_ID: config.botId,
-        WECOM_SECRET: config.secret,
-        WECOM_TARGET_USER: config.targetUserId,
-      },
+      url: 'http://127.0.0.1:18963/mcp',
     };
 
     fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
-    console.log(`[config] MCP Server 配置已写入 ~/.claude.json (实例名: ${name})`);
+    console.log(`[config] MCP 配置已写入 ~/.claude.json (实例名: ${name})`);
     return true;
   } catch (err) {
-    console.error('[config] 写入 ~/.claude.json 失败:', err);
-    console.log('[config] ⚠️  请手动将以下配置添加到 ~/.claude.json:');
-    const name = instanceName || 'wecom-aibot';
+    console.error('[config] 写入配置失败:', err);
+    console.log('[config] ⚠️  请手动配置:');
+    console.log('');
+    console.log('~/.wecom-aibot-mcp/config.json:');
+    console.log(JSON.stringify({
+      botId: config.botId,
+      secret: config.secret,
+      targetUserId: config.targetUserId,
+    }, null, 2));
+    console.log('');
+    console.log('~/.claude.json:');
     console.log(JSON.stringify({
       mcpServers: {
-        [name]: {
-          command: 'npx',
-          args: ['@vrs-soft/wecom-aibot-mcp'],
-          env: {
-            WECOM_BOT_ID: config.botId,
-            WECOM_SECRET: config.secret,
-            WECOM_TARGET_USER: config.targetUserId,
-          },
+        'wecom-aibot': {
+          url: 'http://127.0.0.1:18963/mcp',
         },
       },
     }, null, 2));

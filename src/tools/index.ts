@@ -26,6 +26,7 @@ import {
   loadHeadlessState,
   isHeadlessMode,
   getAllHeadlessStates,
+  setAutoApprove,
 } from '../headless-state.js';
 import { getConfig, getConfigSource, hasProjectConfig } from '../project-config.js';
 
@@ -555,5 +556,53 @@ npx @vrs-soft/wecom-aibot-mcp --config
     }
   );
 
-  console.log('[mcp] 已注册 12 个工具: send_message, send_approval_request, get_approval_result, check_connection, get_pending_messages, get_setup_guide, add_robot_config, list_robots, get_robot_status, enter_headless_mode, exit_headless_mode, detect_user_from_message');
+  // ============================================
+  // 工具 13: 设置自动审批开关
+  // ============================================
+  server.tool(
+    'set_auto_approve',
+    '设置超时自动审批开关。开启后，审批请求超时（10分钟）将自动决策：项目内操作允许，删除操作拒绝。',
+    {
+      enabled: z.boolean().describe('是否启用自动审批'),
+    },
+    async ({ enabled }) => {
+      const state = loadHeadlessState();
+
+      if (!state) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                status: 'error',
+                message: '未在 headless 模式，请先进入微信模式',
+              }),
+            },
+          ],
+        };
+      }
+
+      // 更新状态
+      const updatedState = setAutoApprove(enabled);
+
+      // 发送确认消息
+      const statusText = enabled ? '已开启' : '已关闭';
+      await client.sendText(`【系统】自动审批${statusText}\n\n${enabled ? '超时 10 分钟后将自动处理审批请求。' : '审批请求将一直等待您的响应。'}`);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'success',
+              autoApprove: updatedState?.autoApprove,
+              message: `自动审批已${statusText}`,
+            }),
+          },
+        ],
+      };
+    }
+  );
+
+  console.log('[mcp] 已注册 13 个工具: send_message, send_approval_request, get_approval_result, check_connection, get_pending_messages, get_setup_guide, add_robot_config, list_robots, get_robot_status, enter_headless_mode, exit_headless_mode, detect_user_from_message, set_auto_approve');
 }

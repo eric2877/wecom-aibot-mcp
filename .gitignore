@@ -1,11 +1,12 @@
-node_modules/
-dist/
-.env
-.env.*
-*.log
-.DS_Store
-*.tgz
-design/
 
 # Claude Code 项目配置（包含用户特定路径）
+# Design documents (internal)
+*.log
+*.tgz
+.DS_Store
 .claude/
+.env
+.env.*
+design/
+dist/
+node_modules/

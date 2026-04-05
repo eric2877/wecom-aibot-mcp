@@ -17,6 +17,7 @@ export interface HeadlessState {
   projectDir: string;    // 项目目录路径
   timestamp: number;     // 进入时间戳
   agentName?: string;    // 智能体名称
+  autoApprove?: boolean; // 智能代批开关（默认 true）
 }
 
 // 配置目录
@@ -103,6 +104,29 @@ export function exitHeadlessMode(): HeadlessState | null {
 
   // 2. 清除项目级 Hook 配置
   clearProjectHook(state.projectDir);
+
+  return state;
+}
+
+/**
+ * 更新 autoApprove 设置
+ *
+ * @param enabled 是否启用智能代批
+ * @returns 更新后的状态或 null
+ */
+export function setAutoApprove(enabled: boolean): HeadlessState | null {
+  const state = loadHeadlessState();
+
+  if (!state) {
+    return null;
+  }
+
+  state.autoApprove = enabled;
+
+  // 写入状态文件
+  const stateFilePath = getHeadlessFilePath();
+  fs.writeFileSync(stateFilePath, JSON.stringify(state, null, 2));
+  console.log(`[headless] 已${enabled ? '启用' : '禁用'}智能代批`);
 
   return state;
 }

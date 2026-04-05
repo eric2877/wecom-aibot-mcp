@@ -15,6 +15,7 @@ import {
   loadConfig,
   saveConfig,
   deleteConfig,
+  deleteMcpConfigInteractive,
   uninstall,
   addMcpConfig,
   detectUserIdFromMessage,
@@ -59,6 +60,7 @@ function showHelp() {
   --version, -v   显示版本号
   --config        重新配置默认机器人（修改 Bot ID / Secret / 目标用户）
   --add           添加新的机器人配置（多机器人场景）
+  --delete [名称] 删除指定的机器人配置（无参数则显示列表选择）
   --status        显示当前配置状态
   --uninstall     卸载并删除所有配置（包括 MCP 配置、hook、skill）
 
@@ -130,6 +132,14 @@ async function main() {
 
   if (args.includes('--add')) {
     await addMcpConfig();
+    process.exit(0);
+  }
+
+  // --delete 命令：删除单个机器人配置
+  const deleteIndex = args.indexOf('--delete');
+  if (deleteIndex !== -1) {
+    const instanceName = args[deleteIndex + 1]; // 可选参数：实例名
+    await deleteMcpConfigInteractive(instanceName);
     process.exit(0);
   }
 

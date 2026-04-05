@@ -9,13 +9,13 @@
 - 🔐 **远程审批**：敏感操作通过微信卡片审批，支持"允许一次/永久允许/拒绝"
 - 💬 **消息推送**：任务进度、完成通知实时推送到微信
 - 📱 **Headless 模式**：离开电脑时切换到微信交互
-- 🔄 **多实例支持**：多个 Claude Code 可同时运行，自动分配端口
-- 🧹 **自动清理**：进程退出后自动清理残留文件
+- 🔄 **智能代批**：超时自动审批，项目内操作允许，删除操作拒绝
+- 🔄 **多机器人支持**：支持配置多个机器人，适用于团队场景
 
 ## 架构
 
 ```
-┌─────────────────┐      MCP (stdio)      ┌──────────────────┐
+┌─────────────────┐      MCP (HTTP)       ┌──────────────────┐
 │  Claude Code    │  ──────────────────▶  │  wecom-aibot-mcp │
 │  (MCP Client)   │                       │  MCP Server      │
 └─────────────────┘                       └──────────────────┘
@@ -58,11 +58,17 @@ PermissionRequest Hook 拦截
       执行或拒绝操作
 ```
 
-### 审批卡片示例
+### 智能代批
 
-<img src="docs/approval-card.png" width="30%" alt="审批卡片示例" />
+开启「自动审批」后，审批请求超时（10分钟）会自动决策：
 
-用户在企业微信中收到审批卡片，点击按钮即可远程决策：
+| 操作类型 | 条件 | 自动决策 |
+|---------|------|---------|
+| Bash | 包含 rm/rmdir/unlink | ❌ 拒绝 |
+| Bash | 项目内操作或常见命令 | ✅ 允许 |
+| Bash | 无法判断范围 | ❌ 拒绝 |
+| Write/Edit | 项目内文件 | ✅ 允许 |
+| Write/Edit | 项目外文件 | ❌ 拒绝 |
 
 ## 安装
 
@@ -113,31 +119,6 @@ nvm install 18
 nvm use 18
 ```
 
-### 方式一：npx 直接运行（推荐）
-
-```bash
-npx @vrs-soft/wecom-aibot-mcp
-```
-
-运行后会自动启动配置向导，配置完成后自动退出。
-
-### 方式二：全局安装
-
-```bash
-npm install -g @vrs-soft/wecom-aibot-mcp
-wecom-aibot-mcp
-```
-
-### 方式三：从源码安装
-
-```bash
-git clone https://github.com/eric2877/wecom-aibot-mcp.git
-cd wecom-aibot-mcp
-npm install
-npm run build
-npm link
-```
-
 ## 快速开始
 
 ### 第一步：创建企业微信机器人
@@ -169,6 +150,68 @@ npx @vrs-soft/wecom-aibot-mcp
 
 > ✅ 无需手动查找用户 ID，系统会自动识别并回复确认消息
 
+### 常用命令
+
+| 命令 | 说明 |
+|------|------|
+| `npx @vrs-soft/wecom-aibot-mcp` | 首次配置向导 |
+| `npx @vrs-soft/wecom-aibot-mcp --config` | 修改现有配置 |
+| `npx @vrs-soft/wecom-aibot-mcp --add` | 添加新机器人 |
+| `npx @vrs-soft/wecom-aibot-mcp --delete` | 删除机器人配置 |
+| `npx @vrs-soft/wecom-aibot-mcp --uninstall` | 完全卸载 |
+| `npx @vrs-soft/wecom-aibot-mcp --server` | 启动 HTTP 服务模式 |
+| `npx @vrs-soft/wecom-aibot-mcp --status` | 查看当前状态 |
+
+### 添加新机器人（--add）
+
+适用于多用户场景，每个用户使用独立机器人：
+
+```bash
+npx @vrs-soft/wecom-aibot-mcp --add
+```
+
+交互流程：
+1. 输入机器人名称（如"张三的审批助手"）
+2. 输入 Bot ID
+3. 输入 Secret
+4. 发送消息识别用户 ID
+5. 选择添加到 MCP 配置的位置
+
+### 删除机器人配置（--delete）
+
+```bash
+npx @vrs-soft/wecom-aibot-mcp --delete
+```
+
+交互流程：
+1. 显示已配置的机器人列表
+2. 选择要删除的机器人
+3. 确认删除
+
+也可以直接指定机器人名称：
+```bash
+npx @vrs-soft/wecom-aibot-mcp --delete "张三的审批助手"
+```
+
+### 完全卸载（--uninstall）
+
+删除所有配置和文件：
+
+```bash
+npx @vrs-soft/wecom-aibot-mcp --uninstall
+```
+
+这会删除：
+- 配置目录：`~/.wecom-aibot-mcp/`
+- MCP 配置：`~/.claude.json` 中的所有 `wecom-aibot-*` 条目
+- 全局 Hook 配置：`~/.claude/settings.local.json` 中的 PermissionRequest hook
+- Skill 文件：`~/.claude/skills/headless-mode/`
+
+卸载后如需重新安装：
+```bash
+npx @vrs-soft/wecom-aibot-mcp --config
+```
+
 ### 第三步：配置 Claude Code
 
 编辑 `~/.claude.json`（不存在则创建）：
@@ -177,29 +220,38 @@ npx @vrs-soft/wecom-aibot-mcp
 {
   "mcpServers": {
     "wecom-aibot": {
-      "command": "npx",
-      "args": ["@vrs-soft/wecom-aibot-mcp"],
-      "env": {
-        "WECOM_BOT_ID": "你的Bot ID",
-        "WECOM_SECRET": "你的Secret",
-        "WECOM_TARGET_USER": "目标用户ID"
-      }
+      "url": "http://127.0.0.1:18963/mcp"
     }
   }
 }
 ```
 
-### 第四步：重启 Claude Code
+> 使用 HTTP Transport，无需在配置中传递环境变量，配置向导会自动管理。
+
+### 第四步：启动 MCP 服务
+
+```bash
+npx @vrs-soft/wecom-aibot-mcp --server
+```
+
+服务启动后会显示：
+```
+╔════════════════════════════════════════════════════════╗
+║   企业微信智能机器人 MCP 服务 v1.0.6                   ║
+║   Claude Code 审批通道                                 ║
+╚════════════════════════════════════════════════════════╝
+
+[mcp] MCP Server 已启动: http://127.0.0.1:18963
+[mcp] MCP endpoint: http://127.0.0.1:18963/mcp
+[mcp] 健康检查: http://127.0.0.1:18963/health
+```
+
+### 第五步：重启 Claude Code
 
 1. 运行 `/mcp` 命令
 2. 选择「Reconnect」重新连接 MCP 服务
-3. 首次连接时会自动：
-   - 检查配置完整性
-   - 注册权限预授权
-   - 生成审批 Hook 脚本
-   - 安装 headless-mode skill 文件
 
-### 第五步：验证连接
+### 第六步：验证连接
 
 ```
 你：检查微信连接状态
@@ -255,7 +307,31 @@ Claude：（调用 exit_headless_mode）
 微信收到：【进度】已退出微信模式，恢复终端交互。
 ```
 
-### 场景 3：群聊机器人
+### 场景 3：开启智能代批
+
+```
+你：开启自动审批
+
+Claude：（调用 set_auto_approve）
+微信收到：【系统】自动审批已开启，超时 10 分钟后将自动处理审批请求。
+
+[你离开电脑去开会，超过 10 分钟未响应]
+
+Claude：（自动审批，项目内操作允许）
+微信收到：
+┌─────────────────────────┐
+│ 【自动审批简报】         │
+│                         │
+│ 由于您长时间未响应，系统 │
+│ 已代为处理：             │
+│                         │
+│ ✅ npm run build        │
+│ ✅ 修改 src/index.ts    │
+│ ❌ rm -rf dist (删除操作)│
+└─────────────────────────┘
+```
+
+### 场景 4：群聊机器人
 
 将机器人拉入群聊，@机器人 即可触发：
 
@@ -269,45 +345,6 @@ Claude：（执行命令，通过 send_message 发送结果到群聊）
 │ 📋 服务器日志摘要         │
 │                         │
 │ 最近 10 条错误日志...    │
-└─────────────────────────┘
-```
-
-### 场景 4：长时间任务监控
-
-```
-你：帮我跑一遍测试套件，有失败的通知我
-
-Claude：（调用 send_message）
-微信收到：【进度】开始运行测试套件，共 128 个用例...
-
-[测试运行中...]
-
-Claude：（调用 send_message）
-微信收到：
-┌─────────────────────────┐
-│ ⚠️ 测试失败              │
-│                         │
-│ 失败用例：test/auth.spec.ts│
-│ 原因：登录超时            │
-│                         │
-│ 总计：125 通过，3 失败    │
-└─────────────────────────┘
-```
-
-### 场景 5：定时任务提醒
-
-结合 Cron 工具实现定时提醒：
-
-```
-你：每天早上 9 点提醒我开站会
-
-Claude：（设置定时任务）
-
-每天 9:00 微信收到：
-┌─────────────────────────┐
-│ ⏰ 每日提醒              │
-│                         │
-│ 该开站会了！             │
 └─────────────────────────┘
 ```
 
@@ -326,6 +363,7 @@ Claude：（设置定时任务）
 |------|------|------|
 | `send_approval_request` | 发送审批卡片 | `title`, `description`, `request_id` |
 | `get_approval_result` | 获取审批结果 | `task_id` |
+| `set_auto_approve` | 设置自动审批开关 | `enabled`(布尔值) |
 
 ### 模式控制
 
@@ -340,57 +378,63 @@ Claude：（设置定时任务）
 | 工具 | 说明 |
 |------|------|
 | `get_setup_guide` | 获取安装指南 |
-| `add_robot_config` | 生成新机器人配置片段 |
+| `list_robots` | 列出所有机器人及状态 |
+| `get_robot_status` | 查看机器人详细状态 |
 
-## 多用户配置
+## 多机器人配置
 
 ### 场景：团队共享
 
-每个开发者使用独立的机器人：
+使用 `--add` 命令添加多个机器人：
+
+```bash
+# 添加张三的机器人
+npx @vrs-soft/wecom-aibot-mcp --add
+# 输入名称：张三的审批助手
+# 输入 Bot ID 和 Secret
+# 发送消息识别用户
+
+# 添加李四的机器人
+npx @vrs-soft/wecom-aibot-mcp --add
+# 输入名称：李四的审批助手
+# ...
+```
+
+配置完成后，`~/.claude.json` 会包含多个实例：
 
 ```json
 {
   "mcpServers": {
     "wecom-aibot-zhangsan": {
-      "command": "npx",
-      "args": ["@vrs-soft/wecom-aibot-mcp"],
-      "env": {
-        "WECOM_BOT_ID": "bot_zhangsan",
-        "WECOM_SECRET": "secret_zhangsan",
-        "WECOM_TARGET_USER": "zhangsan"
-      }
+      "url": "http://127.0.0.1:18963/mcp"
     },
     "wecom-aibot-lisi": {
-      "command": "npx",
-      "args": ["@vrs-soft/wecom-aibot-mcp"],
-      "env": {
-        "WECOM_BOT_ID": "bot_lisi",
-        "WECOM_SECRET": "secret_lisi",
-        "WECOM_TARGET_USER": "lisi"
-      }
+      "url": "http://127.0.0.1:18963/mcp"
     }
   }
 }
 ```
 
-### 多实例端口分配
+### 查看机器人列表
 
-当多个 Claude Code 实例同时运行时，HTTP 服务端口自动递增：
+```bash
+npx @vrs-soft/wecom-aibot-mcp --status
+```
 
-- 实例 1：端口 18963
-- 实例 2：端口 18964
-- 实例 3：端口 18965
-- ...
-
-端口文件存储在 `~/.wecom-aibot-mcp/port-{PID}`，进程退出后自动清理。
-
-## 环境变量
-
-| 变量 | 说明 | 必填 | 示例 |
-|------|------|------|------|
-| `WECOM_BOT_ID` | 机器人 ID | ✅ | `bot_abc123` |
-| `WECOM_SECRET` | 机器人密钥 | ✅ | `xyz789...` |
-| `WECOM_TARGET_USER` | 默认目标用户 | ✅ | `zhangsan` |
+或在 Claude Code 中：
+```
+你：列出所有机器人
+Claude：（调用 list_robots）
+返回：
+{
+  "robots": [
+    {"projectDir": "...", "status": "connected", "defaultUser": "zhangsan"},
+    {"projectDir": "...", "status": "connected", "defaultUser": "lisi"}
+  ],
+  "total": 2,
+  "available": 2
+}
+```
 
 ## 故障排查
 
@@ -438,11 +482,11 @@ Claude：（设置定时任务）
 # 1. 检查网络连通性
 curl -v wss://openws.work.weixin.qq.com
 
-# 2. 确认凭证正确
-cat ~/.wecom-aibot-mcp/config.json
+# 2. 检查 HTTP 服务状态
+curl http://127.0.0.1:18963/health
 
 # 3. 查看进程日志
-# 重启 Claude Code，观察启动日志
+# 重启 MCP 服务，观察启动日志
 ```
 
 ### 审批没发到微信
@@ -456,89 +500,23 @@ ls ~/.wecom-aibot-mcp/headless-*
 # 需要告诉 Claude：「现在开始通过微信联系」
 ```
 
-### 端口文件残留
+### 残留文件清理
 
 ```bash
 # 查看残留文件
-ls ~/.wecom-aibot-mcp/port-*
+ls ~/.wecom-aibot-mcp/
 
-# 重启 MCP 服务会自动清理孤儿文件
-# 或手动清理
-rm ~/.wecom-aibot-mcp/port-*
-```
-
-## 卸载
-
-如需完全卸载，运行：
-
-```bash
+# MCP 服务重启会自动清理孤儿文件
+# 或使用卸载命令彻底清理
 npx @vrs-soft/wecom-aibot-mcp --uninstall
 ```
-
-这会删除：
-- 配置文件：`~/.wecom-aibot-mcp/config.json`
-- MCP 配置：`~/.claude.json` 中的 `wecom-aibot` 条目
-- Hook 脚本：`~/.wecom-aibot-mcp/permission-hook.sh`
-- Hook 配置：`~/.claude/settings.local.json` 中的 PermissionRequest hook
-- Skill 文件：`~/.claude/skills/headless-mode/`
-
-卸载后如需重新安装：
-
-```bash
-npx @vrs-soft/wecom-aibot-mcp --config
-```
-
-## 修改和增加 Bot
-
-### 修改现有 Bot 配置
-
-如果需要更换机器人或修改目标用户：
-
-```bash
-npx @vrs-soft/wecom-aibot-mcp --config
-```
-
-这会重新启动配置向导，让你输入新的 Bot ID、Secret 和目标用户 ID。
-
-### 增加多个 Bot（多用户场景）
-
-每个用户可以使用独立的机器人，在 `~/.claude.json` 中配置多个 MCP Server 实例：
-
-```json
-{
-  "mcpServers": {
-    "wecom-aibot-zhangsan": {
-      "command": "npx",
-      "args": ["@vrs-soft/wecom-aibot-mcp"],
-      "env": {
-        "WECOM_BOT_ID": "bot_zhangsan",
-        "WECOM_SECRET": "secret_zhangsan",
-        "WECOM_TARGET_USER": "zhangsan"
-      }
-    },
-    "wecom-aibot-lisi": {
-      "command": "npx",
-      "args": ["@vrs-soft/wecom-aibot-mcp"],
-      "env": {
-        "WECOM_BOT_ID": "bot_lisi",
-        "WECOM_SECRET": "secret_lisi",
-        "WECOM_TARGET_USER": "lisi"
-      }
-    }
-  }
-}
-```
-
-使用环境变量配置时，每个实例自动独立运行，无需额外的配置文件。
-
-> ⚠️ 注意：同一个机器人同时只能保持一个 WebSocket 长连接，不要在多个实例中使用相同的 Bot ID。
 
 ## 安全建议
 
 1. **保护凭证**：Bot ID 和 Secret 不要提交到代码仓库
-2. **使用环境变量**：通过 `env` 传递敏感信息，而不是硬编码
-3. **定期轮换**：建议每 3 个月更换一次 Secret
-4. **权限最小化**：机器人的可见范围设置为需要的用户/部门即可
+2. **定期轮换**：建议每 3 个月更换一次 Secret
+3. **权限最小化**：机器人的可见范围设置为需要的用户/部门即可
+4. **谨慎使用自动审批**：仅在信任的环境下开启
 
 ## 开发
 
@@ -556,8 +534,8 @@ npm run dev
 # 构建
 npm run build
 
-# 运行
-npm start
+# 运行服务
+node dist/bin.js --server
 ```
 
 ## License
