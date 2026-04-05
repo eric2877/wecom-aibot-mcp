@@ -7,9 +7,13 @@
  * 支持 HTTP Transport 模式：
  * - 固定端口 18963
  * - 支持多 Claude Code 同时连接
+ *
+ * 连接管理：
+ * - 启动时不建立 WebSocket 连接
+ * - enter_headless_mode 时按需建立连接
+ * - exit_headless_mode 时断开连接
  */
 
-import * as readline from 'readline';
 import {
   runConfigWizard,
   loadConfig,
@@ -20,31 +24,18 @@ import {
   addMcpConfig,
   detectUserIdFromMessage,
   ensureHookInstalled,
+  listAllRobots,
   WecomConfig,
 } from './config-wizard.js';
 import { initClient, WecomClient } from './client.js';
 import { registerTools } from './tools/index.js';
 import { startHttpServer, HTTP_PORT } from './http-server.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { clearAllProjectHooks } from './headless-state.js';
+import { clearAllProjectHooks, getAllHeadlessStates } from './headless-state.js';
+import { loadStats, cleanupOldLogs } from './connection-log.js';
+import { startKeepaliveMonitor, stopKeepaliveMonitor } from './keepalive-monitor.js';
 
-const VERSION = '1.0.6';
-
-// 等待连接验证（最多等待 10 秒）
-async function waitForConnection(client: WecomClient, timeoutMs = 10000): Promise<boolean> {
-  return new Promise((resolve) => {
-    const startTime = Date.now();
-    const checkInterval = setInterval(() => {
-      if (client.isConnected()) {
-        clearInterval(checkInterval);
-        resolve(true);
-      } else if (Date.now() - startTime > timeoutMs) {
-        clearInterval(checkInterval);
-        resolve(false);
-      }
-    }, 500);
-  });
-}
+const VERSION = '1.0.7';
 
 function showHelp() {
   console.log(`
@@ -61,8 +52,8 @@ function showHelp() {
   --version, -v   显示版本号
   --config        重新配置默认机器人（修改 Bot ID / Secret / 目标用户）
   --add           添加新的机器人配置（多机器人场景）
+  --list          列出所有已配置的机器人
   --delete [名称] 删除指定的机器人配置（无参数则显示列表选择）
-  --status        显示当前配置状态
   --uninstall     卸载并删除所有配置（包括 MCP 配置、hook、skill）
 
 MCP 配置（HTTP Transport）:
@@ -97,15 +88,56 @@ function showVersion() {
 }
 
 function showStatus() {
-  const config = loadConfig();
-  if (config) {
-    console.log('当前配置:');
-    console.log(`  Bot ID:     ${config.botId}`);
-    console.log(`  Secret:     ${config.secret.slice(0, 8)}...${config.secret.slice(-4)}`);
-    console.log(`  目标用户:   ${config.targetUserId}`);
-  } else {
+  const allRobots = listAllRobots();
+  const headlessStates = getAllHeadlessStates();
+
+  if (allRobots.length === 0) {
     console.log('尚未配置，请运行 npx @vrs-soft/wecom-aibot-mcp 启动配置向导');
+    return;
   }
+
+  // 构建机器人占用信息
+  const robotUsage = new Map<string, { agentName: string; projectDir: string }>();
+  for (const { state } of headlessStates) {
+    if (state.robotName) {
+      robotUsage.set(state.robotName, {
+        agentName: state.agentName || '未知',
+        projectDir: state.projectDir,
+      });
+    }
+  }
+
+  console.log(`已配置 ${allRobots.length} 个机器人:\n`);
+
+  for (const robot of allRobots) {
+    const defaultTag = robot.isDefault ? ' (默认)' : '';
+    const usage = robotUsage.get(robot.name);
+    const statusTag = usage ? ` [使用中]` : '';
+
+    console.log(`  ${robot.name}${defaultTag}${statusTag}`);
+    console.log(`    Bot ID:     ${robot.botId}`);
+    console.log(`    目标用户:   ${robot.targetUserId}`);
+    if (usage) {
+      console.log(`    使用者:     ${usage.agentName} (${usage.projectDir})`);
+    }
+    console.log('');
+  }
+}
+
+// 等待连接验证（用于配置向导验证凭证）
+async function waitForConnection(client: WecomClient, timeoutMs = 10000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const startTime = Date.now();
+    const checkInterval = setInterval(() => {
+      if (client.isConnected()) {
+        clearInterval(checkInterval);
+        resolve(true);
+      } else if (Date.now() - startTime > timeoutMs) {
+        clearInterval(checkInterval);
+        resolve(false);
+      }
+    }, 500);
+  });
 }
 
 async function main() {
@@ -122,7 +154,7 @@ async function main() {
     process.exit(0);
   }
 
-  if (args.includes('--status')) {
+  if (args.includes('--status') || args.includes('--list')) {
     showStatus();
     process.exit(0);
   }
@@ -154,6 +186,10 @@ async function main() {
   console.log('  ║   Claude Code 审批通道                                 ║');
   console.log('  ╚════════════════════════════════════════════════════════╝');
   console.log('');
+
+  // 加载统计并清理旧日志（保留 1 小时）
+  loadStats();
+  cleanupOldLogs(1 / 24);  // 保留 1 小时
 
   // 获取或初始化配置
   let config: WecomConfig;
@@ -192,43 +228,41 @@ async function main() {
   // 清理残留的 headless 状态和 Hook 配置
   clearAllProjectHooks();
 
-  // 初始化 WebSocket 客户端
-  console.log(`[mcp] 初始化企业微信客户端...`);
+  // 配置向导模式：验证连接并识别用户 ID
+  if (isInteractive && (ranWizard || reconfig)) {
+    console.log('[mcp] 验证机器人连接...');
 
-  const wecomClient = initClient(config.botId, config.secret, config.targetUserId || 'placeholder');
+    // 临时建立连接验证凭证
+    const tempClient = initClient(config.botId, config.secret, config.targetUserId || 'placeholder');
+    const connected = await waitForConnection(tempClient, 10000);
 
-  // 等待连接验证
-  console.log('[mcp] 等待连接验证...');
-  const connected = await waitForConnection(wecomClient, 10000);
+    if (!connected) {
+      console.log('[mcp] 连接失败，可能是配置错误或机器人未授权');
+      console.log('[mcp] 请检查上面的错误提示，修复后重新配置');
 
-  if (!connected) {
-    console.log('[mcp] 连接失败，可能是配置错误或机器人未授权');
-    console.log('[mcp] 请检查上面的错误提示，修复后重新配置');
+      // 删除无效配置，让用户重新输入
+      deleteConfig();
 
-    // 删除无效配置，让用户重新输入
-    deleteConfig();
-
-    if (isInteractive) {
       console.log('\n请检查：');
       console.log('  1. Bot ID 和 Secret 是否正确');
       console.log('  2. 新建机器人需等待约 2 分钟同步');
       console.log('  3. 是否已完成授权（机器人详情 → 可使用权限 → 授权）');
       console.log('\n修复后重新运行: npx @vrs-soft/wecom-aibot-mcp --config');
-    }
-    process.exit(1);
-  }
 
-  // 连接成功
-  if (isInteractive && (ranWizard || reconfig)) {
-    // 需要通过消息自动识别用户 ID
+      tempClient.disconnect();
+      process.exit(1);
+    }
+
+    // 连接成功
     console.log('\n[mcp] ✅ 机器人连接成功！');
 
     // 提示用户发送消息来识别用户 ID
-    const userId = await detectUserIdFromMessage(wecomClient, 60);
+    const userId = await detectUserIdFromMessage(tempClient, 180);
 
     if (!userId) {
       console.log('\n[mcp] 未能在规定时间内识别用户 ID');
       console.log('[mcp] 请重新运行配置：npx @vrs-soft/wecom-aibot-mcp --config');
+      tempClient.disconnect();
       process.exit(1);
     }
 
@@ -241,36 +275,37 @@ async function main() {
     console.log('\n[mcp] ✅ 配置完成！');
     console.log(`[mcp] 用户 ID: ${userId}`);
     console.log('[mcp] 请重启 Claude Code 以加载 MCP 服务\n');
+
+    // 配置完成后断开连接
+    tempClient.disconnect();
     process.exit(0);
   }
 
-  // 创建 MCP Server
+  // 创建 MCP Server（不建立 WebSocket 连接）
   const server = new McpServer({
     name: 'wecom-aibot-mcp',
     version: VERSION,
   });
 
-  // 注册工具
-  registerTools(server, wecomClient);
+  // 注册工具（不传入 client，由 ConnectionManager 管理）
+  registerTools(server);
 
-  // 启动 HTTP 服务（包含 MCP endpoint）
+  // 启动 HTTP 服务
   console.log(`[mcp] 启动 MCP HTTP Server (端口: ${HTTP_PORT})...`);
-  await startHttpServer(wecomClient, server);
+  await startHttpServer(server);
 
-  // 定期清理过期消息
-  const cleanupInterval = setInterval(() => {
-    wecomClient.cleanupMessages();
-  }, 60000);
+  // 启动保活监控
+  startKeepaliveMonitor();
 
   console.log(`[mcp] MCP Server 已就绪`);
   console.log(`[mcp] HTTP endpoint: http://127.0.0.1:${HTTP_PORT}/mcp`);
   console.log(`[mcp] 健康检查: http://127.0.0.1:${HTTP_PORT}/health`);
+  console.log(`[mcp] 微信模式：enter_headless_mode 时建立连接`);
 
-  // 退出处理：清理资源
+  // 退出处理
   const gracefulShutdown = () => {
     console.log('[mcp] 正在关闭...');
-    clearInterval(cleanupInterval);
-    wecomClient.disconnect();
+    stopKeepaliveMonitor();
     process.exit(0);
   };
 

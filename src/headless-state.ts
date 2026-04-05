@@ -1,12 +1,11 @@
 /**
  * Headless 状态管理模块
  *
- * 管理微信模式的进入/退出状态，支持：
- * - 按进程 PID 区分状态文件
- * - 状态文件包含 projectDir 用于 ClientPool 查找
- * - 项目级 Hook 配置自动写入/清除
+ * 状态存储在项目目录：{projectDir}/.claude/headless.json
+ * 全局索引：~/.wecom-aibot-mcp/headless-index.json
  *
- * 状态文件路径：~/.wecom-aibot-mcp/headless-{PID}
+ * Hook 脚本直接检查 $(pwd)/.claude/headless.json
+ * 无需 PID 查找，100% 准确匹配
  */
 
 import * as fs from 'fs';
@@ -18,13 +17,17 @@ export interface HeadlessState {
   timestamp: number;     // 进入时间戳
   agentName?: string;    // 智能体名称
   autoApprove?: boolean; // 智能代批开关（默认 true）
+  robotName?: string;    // 当前使用的机器人名称
 }
 
 // 配置目录
 const CONFIG_DIR = path.join(os.homedir(), '.wecom-aibot-mcp');
 
-// 项目 settings.json 路径
-const PROJECT_SETTINGS_SUBDIR = '.claude';
+// 全局索引文件
+const HEADLESS_INDEX_FILE = path.join(CONFIG_DIR, 'headless-index.json');
+
+// 项目状态文件路径
+const PROJECT_STATE_FILE = 'headless.json';
 
 // Hook 脚本路径
 const HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.sh');
@@ -39,42 +42,73 @@ function ensureConfigDir(): void {
 }
 
 /**
- * 获取当前进程的 headless 状态文件路径
+ * 获取项目的 headless 状态文件路径
  */
-export function getHeadlessFilePath(pid?: number): string {
-  const processId = pid || process.pid;
-  return path.join(CONFIG_DIR, `headless-${processId}`);
+export function getProjectHeadlessFile(projectDir: string): string {
+  return path.join(projectDir, '.claude', PROJECT_STATE_FILE);
+}
+
+/**
+ * 读取全局索引
+ */
+function readHeadlessIndex(): string[] {
+  if (!fs.existsSync(HEADLESS_INDEX_FILE)) {
+    return [];
+  }
+  try {
+    const content = fs.readFileSync(HEADLESS_INDEX_FILE, 'utf-8');
+    return JSON.parse(content);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 写入全局索引
+ */
+function writeHeadlessIndex(projects: string[]): void {
+  ensureConfigDir();
+  fs.writeFileSync(HEADLESS_INDEX_FILE, JSON.stringify(projects, null, 2));
 }
 
 /**
  * 进入 headless 模式
  *
- * 1. 清理旧的孤儿状态文件
- * 2. 写入 headless 状态文件（含 projectDir）
+ * 1. 写入项目状态文件 {projectDir}/.claude/headless.json
+ * 2. 添加到全局索引 ~/.wecom-aibot-mcp/headless-index.json
  * 3. 写入项目级 Hook 配置
- *
- * @param projectDir 项目目录路径
- * @param agentName 智能体名称（可选）
  */
-export function enterHeadlessMode(projectDir: string, agentName?: string): HeadlessState {
+export function enterHeadlessMode(projectDir: string, agentName?: string, robotName?: string): HeadlessState {
   ensureConfigDir();
-
-  // 0. 清理旧的孤儿状态文件（服务重启后 PID 变化）
-  cleanupOrphanFiles();
 
   const state: HeadlessState = {
     projectDir,
     timestamp: Date.now(),
     agentName,
+    robotName,
+    autoApprove: true,  // 默认启用智能审批
   };
 
-  // 1. 写入状态文件
-  const stateFilePath = getHeadlessFilePath();
+  // 1. 写入项目状态文件
+  const stateFilePath = getProjectHeadlessFile(projectDir);
+  const stateDir = path.dirname(stateFilePath);
+
+  if (!fs.existsSync(stateDir)) {
+    fs.mkdirSync(stateDir, { recursive: true });
+  }
+
   fs.writeFileSync(stateFilePath, JSON.stringify(state, null, 2));
   console.log(`[headless] 已进入微信模式: ${stateFilePath}`);
 
-  // 2. 写入项目级 Hook 配置
-  configureProjectHook(projectDir, agentName);
+  // 2. 添加到全局索引
+  const index = readHeadlessIndex();
+  if (!index.includes(projectDir)) {
+    index.push(projectDir);
+    writeHeadlessIndex(index);
+  }
+
+  // 3. 写入项目级 Hook 配置
+  configureProjectHook(projectDir);
 
   return state;
 }
@@ -82,27 +116,33 @@ export function enterHeadlessMode(projectDir: string, agentName?: string): Headl
 /**
  * 退出 headless 模式
  *
- * 1. 删除 headless 状态文件
- * 2. 清除项目级 Hook 配置
- *
- * @returns 退出前的状态或 null
+ * 1. 删除项目状态文件
+ * 2. 从全局索引移除
+ * 3. 清除项目级 Hook 配置
  */
-export function exitHeadlessMode(): HeadlessState | null {
-  const state = loadHeadlessState();
+export function exitHeadlessMode(projectDir?: string): HeadlessState | null {
+  // 如果未指定项目目录，使用当前目录
+  const dir = projectDir || process.cwd();
+  const state = loadHeadlessState(dir);
 
   if (!state) {
     console.log('[headless] 未在微信模式');
     return null;
   }
 
-  // 1. 删除状态文件
-  const stateFilePath = getHeadlessFilePath();
+  // 1. 删除项目状态文件
+  const stateFilePath = getProjectHeadlessFile(state.projectDir);
   if (fs.existsSync(stateFilePath)) {
     fs.unlinkSync(stateFilePath);
     console.log(`[headless] 已删除状态文件: ${stateFilePath}`);
   }
 
-  // 2. 清除项目级 Hook 配置
+  // 2. 从全局索引移除
+  const index = readHeadlessIndex();
+  const newIndex = index.filter(p => p !== state.projectDir);
+  writeHeadlessIndex(newIndex);
+
+  // 3. 清除项目级 Hook 配置
   clearProjectHook(state.projectDir);
 
   return state;
@@ -110,12 +150,10 @@ export function exitHeadlessMode(): HeadlessState | null {
 
 /**
  * 更新 autoApprove 设置
- *
- * @param enabled 是否启用智能代批
- * @returns 更新后的状态或 null
  */
-export function setAutoApprove(enabled: boolean): HeadlessState | null {
-  const state = loadHeadlessState();
+export function setAutoApprove(enabled: boolean, projectDir?: string): HeadlessState | null {
+  const dir = projectDir || process.cwd();
+  const state = loadHeadlessState(dir);
 
   if (!state) {
     return null;
@@ -124,7 +162,7 @@ export function setAutoApprove(enabled: boolean): HeadlessState | null {
   state.autoApprove = enabled;
 
   // 写入状态文件
-  const stateFilePath = getHeadlessFilePath();
+  const stateFilePath = getProjectHeadlessFile(state.projectDir);
   fs.writeFileSync(stateFilePath, JSON.stringify(state, null, 2));
   console.log(`[headless] 已${enabled ? '启用' : '禁用'}智能代批`);
 
@@ -132,12 +170,11 @@ export function setAutoApprove(enabled: boolean): HeadlessState | null {
 }
 
 /**
- * 加载当前进程的 headless 状态
- *
- * @returns HeadlessState 或 null
+ * 加载指定项目的 headless 状态
  */
-export function loadHeadlessState(): HeadlessState | null {
-  const stateFilePath = getHeadlessFilePath();
+export function loadHeadlessState(projectDir?: string): HeadlessState | null {
+  const dir = projectDir || process.cwd();
+  const stateFilePath = getProjectHeadlessFile(dir);
 
   if (!fs.existsSync(stateFilePath)) {
     return null;
@@ -153,19 +190,18 @@ export function loadHeadlessState(): HeadlessState | null {
 }
 
 /**
- * 检查是否在 headless 模式
+ * 检查指定项目是否在 headless 模式
  */
-export function isHeadlessMode(): boolean {
-  return fs.existsSync(getHeadlessFilePath());
+export function isHeadlessMode(projectDir?: string): boolean {
+  const dir = projectDir || process.cwd();
+  return fs.existsSync(getProjectHeadlessFile(dir));
 }
 
 /**
  * 配置项目级 Hook
- *
- * 写入 {项目}/.claude/settings.json
  */
-function configureProjectHook(projectDir: string, agentName?: string): void {
-  const settingsDir = path.join(projectDir, PROJECT_SETTINGS_SUBDIR);
+function configureProjectHook(projectDir: string): void {
+  const settingsDir = path.join(projectDir, '.claude');
   const settingsPath = path.join(settingsDir, 'settings.json');
 
   // 确保目录存在
@@ -209,11 +245,9 @@ function configureProjectHook(projectDir: string, agentName?: string): void {
 
 /**
  * 清除项目级 Hook 配置
- *
- * 从 {项目}/.claude/settings.json 删除 hooks 字段
  */
 function clearProjectHook(projectDir: string): void {
-  const settingsPath = path.join(projectDir, PROJECT_SETTINGS_SUBDIR, 'settings.json');
+  const settingsPath = path.join(projectDir, '.claude', 'settings.json');
 
   if (!fs.existsSync(settingsPath)) {
     return;
@@ -240,117 +274,94 @@ function clearProjectHook(projectDir: string): void {
 }
 
 /**
- * 清理所有孤儿状态文件及其 Hook 配置
+ * 清理所有孤儿状态文件
  *
- * 用于 MCP Server 启动时清理残留状态
- */
-export function clearAllProjectHooks(): void {
-  if (!fs.existsSync(CONFIG_DIR)) {
-    return;
-  }
-
-  try {
-    const files = fs.readdirSync(CONFIG_DIR);
-    const headlessFiles = files.filter(f => f.startsWith('headless-'));
-
-    for (const file of headlessFiles) {
-      const pid = parseInt(file.replace('headless-', ''), 10);
-
-      // 检查进程是否存在
-      try {
-        process.kill(pid, 0);
-        // 进程存在，不清理
-      } catch {
-        // 进程不存在，读取状态并清理 Hook
-        const filePath = path.join(CONFIG_DIR, file);
-        try {
-          const content = fs.readFileSync(filePath, 'utf-8');
-          const state = JSON.parse(content);
-          if (state.projectDir) {
-            clearProjectHook(state.projectDir);
-            console.log(`[headless] 已清理残留 Hook: ${state.projectDir}`);
-          }
-        } catch (e) {
-          // 解析失败，忽略
-        }
-
-        // 清理状态文件
-        fs.unlinkSync(filePath);
-        console.log(`[headless] 清理孤儿状态文件: ${file} (PID ${pid} 已不存在)`);
-      }
-    }
-  } catch (err) {
-    console.error('[headless] 清理孤儿文件失败:', err);
-  }
-}
-
-/**
- * 清理孤儿状态文件
- *
- * 检查进程是否存在，清理已终止进程的状态文件
+ * 扫描全局索引，检查每个项目的状态文件是否存在
+ * 如果状态文件不存在，从索引中移除并清理 Hook 配置
  */
 export function cleanupOrphanFiles(): void {
-  if (!fs.existsSync(CONFIG_DIR)) {
-    return;
+  ensureConfigDir();
+
+  const index = readHeadlessIndex();
+  const validProjects: string[] = [];
+
+  for (const projectDir of index) {
+    const stateFilePath = getProjectHeadlessFile(projectDir);
+
+    if (fs.existsSync(stateFilePath)) {
+      validProjects.push(projectDir);
+    } else {
+      // 状态文件不存在，清理 Hook 配置
+      clearProjectHook(projectDir);
+      console.log(`[headless] 清理孤儿项目: ${projectDir}`);
+    }
   }
 
-  try {
-    const files = fs.readdirSync(CONFIG_DIR);
-    const headlessFiles = files.filter(f => f.startsWith('headless-'));
-
-    for (const file of headlessFiles) {
-      const pid = parseInt(file.replace('headless-', ''), 10);
-
-      // 检查进程是否存在
-      try {
-        process.kill(pid, 0);
-        // 进程存在，不清理
-      } catch {
-        // 进程不存在，清理文件
-        const filePath = path.join(CONFIG_DIR, file);
-        fs.unlinkSync(filePath);
-        console.log(`[headless] 清理孤儿状态文件: ${file} (PID ${pid} 已不存在)`);
-      }
-    }
-  } catch (err) {
-    console.error('[headless] 清理孤儿文件失败:', err);
+  // 更新索引
+  if (validProjects.length !== index.length) {
+    writeHeadlessIndex(validProjects);
   }
 }
 
 /**
  * 获取所有 headless 状态
  *
- * @returns 所有活跃的 headless 状态列表
+ * 从全局索引读取，返回所有活跃状态
  */
 export function getAllHeadlessStates(): Array<{
-  pid: number;
+  projectDir: string;
   state: HeadlessState;
 }> {
-  const results: Array<{ pid: number; state: HeadlessState }> = [];
+  cleanupOrphanFiles();  // 先清理孤儿状态
 
-  if (!fs.existsSync(CONFIG_DIR)) {
-    return results;
-  }
+  const index = readHeadlessIndex();
+  const results: Array<{ projectDir: string; state: HeadlessState }> = [];
 
-  try {
-    const files = fs.readdirSync(CONFIG_DIR);
-    const headlessFiles = files.filter(f => f.startsWith('headless-'));
-
-    for (const file of headlessFiles) {
-      const pid = parseInt(file.replace('headless-', ''), 10);
-      const filePath = path.join(CONFIG_DIR, file);
-
-      try {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const state = JSON.parse(content);
-        results.push({ pid, state });
-      } catch (err) {
-        console.error(`[headless] 解析状态文件失败: ${filePath}`, err);
-      }
+  for (const projectDir of index) {
+    const state = loadHeadlessState(projectDir);
+    if (state) {
+      results.push({ projectDir, state });
     }
-  } catch (err) {
-    console.error('[headless] 获取所有状态失败:', err);
   }
 
   return results;
+}
+
+/**
+ * 检查机器人是否被占用
+ *
+ * 扫描所有 headless 项目，检查是否有使用该机器人
+ */
+export function checkRobotOccupied(robotName: string, excludeProjectDir?: string): {
+  occupied: boolean;
+  by?: { projectDir: string; agentName: string };
+} {
+  const allStates = getAllHeadlessStates();
+
+  for (const { projectDir, state } of allStates) {
+    // 排除当前项目
+    if (excludeProjectDir && projectDir === excludeProjectDir) {
+      continue;
+    }
+
+    // 检查是否使用同一机器人
+    if (state.robotName === robotName) {
+      return {
+        occupied: true,
+        by: {
+          projectDir,
+          agentName: state.agentName || '未知',
+        },
+      };
+    }
+  }
+
+  return { occupied: false };
+}
+
+/**
+ * 清理所有项目 Hook 配置（服务重启时）
+ */
+export function clearAllProjectHooks(): void {
+  cleanupOrphanFiles();
 }

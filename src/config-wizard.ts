@@ -25,6 +25,10 @@ const CLAUDE_CONFIG_FILE = path.join(os.homedir(), '.claude.json');
 const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.local.json');
 const HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.sh');
 
+// Skill 模板路径（包内）
+const SKILL_TEMPLATE_DIR = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'skills', 'headless-mode');
+const SKILL_TEMPLATE_FILE = path.join(SKILL_TEMPLATE_DIR, 'SKILL.md');
+
 // MCP 工具权限列表（需要预授权以避免 headless 模式阻断）
 const MCP_TOOL_PERMISSIONS = [
   'mcp__wecom-aibot__*',  // 允许所有 wecom-aibot 工具
@@ -253,10 +257,9 @@ function writeHookScript() {
 # HTTP Transport 版本
 #
 # 固定端口: 18963
-# 从 headless-{PID} 读取 projectDir
+# 直接检查 $(pwd)/.claude/headless.json
 
 MCP_PORT=18963
-CONFIG_DIR="$HOME/.wecom-aibot-mcp"
 
 INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
@@ -275,46 +278,12 @@ case "$TOOL_NAME" in
     ;;
 esac
 
-# 查找 headless 状态文件
-HEADLESS_FILE=""
-PARENT_PID=$PPID
-
-for i in {1..5}; do
-  if [[ -z "$PARENT_PID" ]] || [[ "$PARENT_PID" -eq 1 ]]; then
-    break
-  fi
-
-  CANDIDATE="$CONFIG_DIR/headless-$PARENT_PID"
-  if [[ -f "$CANDIDATE" ]]; then
-    HEADLESS_FILE="$CANDIDATE"
-    break
-  fi
-
-  CHILD_PIDS=$(pgrep -P "$PARENT_PID" 2>/dev/null)
-  for CHILD_PID in $CHILD_PIDS; do
-    CANDIDATE="$CONFIG_DIR/headless-$CHILD_PID"
-    if [[ -f "$CANDIDATE" ]]; then
-      HEADLESS_FILE="$CANDIDATE"
-      break 2
-    fi
-  done
-
-  PARENT_PID=$(ps -o ppid= -p "$PARENT_PID" 2>/dev/null | tr -d ' ')
-done
-
-# Fallback: 使用最新的 headless 文件
-if [[ -z "$HEADLESS_FILE" ]]; then
-  HEADLESS_FILE=$(ls -t "$CONFIG_DIR"/headless-* 2>/dev/null | head -1)
-fi
+# 直接检查项目目录的 headless 状态文件
+PROJECT_DIR=$(pwd)
+HEADLESS_FILE="$PROJECT_DIR/.claude/headless.json"
 
 # 不在 headless 模式
-if [[ -z "$HEADLESS_FILE" ]] || [[ ! -f "$HEADLESS_FILE" ]]; then
-  exit 0
-fi
-
-# 从 headless 文件读取 projectDir
-PROJECT_DIR=$(cat "$HEADLESS_FILE" 2>/dev/null | jq -r '.projectDir // empty')
-if [[ -z "$PROJECT_DIR" ]]; then
+if [[ ! -f "$HEADLESS_FILE" ]]; then
   exit 0
 fi
 
@@ -324,7 +293,7 @@ if ! echo "$HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
   exit 0
 fi
 
-# 发送审批请求
+# 发送审批请求（使用 pwd 作为 projectDir）
 TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}')
 BODY=$(jq -n --arg tool_name "$TOOL_NAME" --argjson tool_input "$TOOL_INPUT" --arg project_dir "$PROJECT_DIR" \\
   '{"tool_name":$tool_name,"tool_input":$tool_input,"projectDir":$project_dir}')
@@ -538,7 +507,7 @@ export async function addMcpConfig() {
     }
 
     // 通过消息自动识别用户 ID
-    const targetUserId = await detectUserIdFromMessage(client, 60);
+    const targetUserId = await detectUserIdFromMessage(client, 180);
 
     if (!targetUserId) {
       console.log('\n[config] 未能在规定时间内识别用户 ID');
@@ -589,7 +558,7 @@ export async function addMcpConfig() {
 }
 
 // 列出所有机器人配置
-function listAllRobots(): Array<{ name: string; botId: string; targetUserId: string; isDefault: boolean }> {
+export function listAllRobots(): Array<{ name: string; botId: string; targetUserId: string; isDefault: boolean }> {
   const robots: Array<{ name: string; botId: string; targetUserId: string; isDefault: boolean }> = [];
 
   // 默认配置
@@ -723,6 +692,32 @@ export function saveConfig(config: WecomConfig, instanceName?: string) {
 
   // 写入 MCP 工具权限和 Hook 到 ~/.claude/settings.local.json
   writeMcpPermissions();
+
+  // 安装 skill 到项目目录
+  installSkill(process.cwd());
+}
+
+/**
+ * 安装 headless-mode skill 到项目目录
+ */
+export function installSkill(projectDir: string): void {
+  const skillDir = path.join(projectDir, '.claude', 'skills', 'headless-mode');
+  const skillFile = path.join(skillDir, 'SKILL.md');
+
+  // 确保 skill 目录存在
+  if (!fs.existsSync(skillDir)) {
+    fs.mkdirSync(skillDir, { recursive: true });
+  }
+
+  // 检查模板文件是否存在
+  if (!fs.existsSync(SKILL_TEMPLATE_FILE)) {
+    console.log('[config] Skill 模板文件不存在，跳过安装');
+    return;
+  }
+
+  // 写入 skill 文件
+  fs.copyFileSync(SKILL_TEMPLATE_FILE, skillFile);
+  console.log(`[config] 已安装 skill 到 ${skillFile}`);
 }
 
 // 创建 readline 接口

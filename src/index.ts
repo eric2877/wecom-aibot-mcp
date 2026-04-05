@@ -45,7 +45,8 @@ export {
   isHeadlessMode,
   cleanupOrphanFiles,
   getAllHeadlessStates,
-  getHeadlessFilePath,
+  checkRobotOccupied,
+  getProjectHeadlessFile,
 } from './headless-state.js';
 export type { HeadlessState } from './headless-state.js';
 

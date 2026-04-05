@@ -1,176 +1,141 @@
 ---
 name: headless-mode
-description: 当用户说「现在开始通过微信联系」、「我要离开电脑前」、「切换到微信模式」时触发。进入微信模式，不间断轮询 get_pending_messages，只有审批时阻塞。
+description: 当用户说「现在开始通过微信联系」时触发，进入微信交互模式
 ---
 
 # Headless 微信交互模式
 
-**触发条件**：「现在开始通过微信联系」、「我要离开电脑前」、「切换到微信模式」
+## 触发
 
-## 激活后立即执行（必须按顺序）
+用户说：「现在开始通过微信联系」、「我要离开电脑前」、「切换到微信模式」
 
-**Step 1**：进入 headless 模式（写入状态文件，配置项目级 Hook）
+## 流程
+
+**Step 1**：调用 `enter_headless_mode(agent_name, project_dir)`
+- 如果返回 `select_robot`：展示列表，等待用户选择，再次调用带 robot_id 参数
+- 如果返回 `error: robot_occupied`：提示用户选择其他机器人
+- 如果返回 `entered`：继续 Step 2
+
+**重要**：`enter_headless_mode` 会自动在项目目录 `{项目}/.claude/settings.json` 中配置 PermissionRequest hook。无需手动配置。
+
+**Step 2**：发送确认消息：`【进度】已进入微信模式，所有交互将通过企业微信进行。`
+
+**Step 3**：**持续轮询** - 必须真正执行，不是打印文字
+
 ```
-mcp__wecom-aibot__enter_headless_mode:
-  agent_name: "{{智能体名称}}"
-  project_dir: "{{当前项目目录}}"
+循环执行：
+  调用 get_pending_messages(clear=true)
+  
+  如果有消息：
+    1. 处理消息（执行任务、回复等）
+    2. send_message 汇报结果
+    3. 继续循环
+  
+  如果无消息：
+    等待 5 秒
+    继续循环
+  
+  永不退出，除非收到结束指令
 ```
-
-此工具会自动：
-- 写入 headless 状态文件 `~/.wecom-aibot-mcp/headless-{PID}`（含 projectDir）
-- 配置项目级 Hook `{项目}/.claude/settings.json`
-- 建立 WebSocket 连接（如果未连接）
-
-**Step 2**：发送确认消息，明确已进入微信模式
-```
-mcp__wecom-aibot__send_message:
-  content: "【进度】已进入微信模式，所有交互将通过企业微信进行。请直接发消息给我。"
-```
-
-**Step 3**：立即进入不间断轮询循环
-```
-loop (永不退出):
-  调用 mcp__wecom-aibot__get_pending_messages
-  有消息 → 处理 → 汇报结果 → 继续轮询
-  无消息 → sleep（间隔动态调整）→ 继续轮询
-```
-
-## 核心规则
-
-1. **不间断轮询** `get_pending_messages`，间隔动态调整：
-   - **正常模式**：5 秒间隔（用户活跃时）
-   - **省电模式**：用户无响应超过 20 分钟后，间隔逐渐放大到 2 分钟
-   - 用户发新消息后，恢复 5 秒间隔
-2. **只有审批时阻塞**：hook 自动拦截敏感操作推送审批卡片，Claude 阻塞等待
-3. **审批结束后立即恢复轮询**
-4. 轮询永不退出，除非收到结束指令
-
-### 轮询间隔策略
-
-| 空闲时间 | 轮询间隔 | 说明 |
-|---------|---------|------|
-| < 20 分钟 | 5 秒 | 正常模式，快速响应 |
-| 20-30 分钟 | 30 秒 | 用户可能短暂离开 |
-| 30-60 分钟 | 1 分钟 | 用户可能在休息/开会 |
-| > 60 分钟 | 2 分钟 | 省电模式，降低 token 消耗 |
-
-**恢复机制**：收到新消息后立即恢复 5 秒间隔。
-
-**Why**：用户可能在休息、开会、睡觉，降低轮询频率减少 token 消耗。
 
 ## 处理用户消息
 
-1. 理解用户意图
-2. 直接执行所需工具（Bash、Edit、Write 等）
-   - hook 自动处理审批，Claude 阻塞等待用户响应
-3. 执行完毕后用 `send_message` 汇报结果
-4. **立即继续轮询**
-
-## 群聊消息处理
-
-`get_pending_messages` 返回的消息包含：
-- `chattype`: "single"（单聊）或 "group"（群聊）
-- `chatid`: 单聊=用户ID，群聊=群ID
-
-**回复群聊消息**：
-```
-mcp__wecom-aibot__send_message:
-  content: "回复内容"
-  target_user: "消息中的chatid"  # 群聊时传入 chatid，回复会发到群里
-```
-
-**注意**：群聊消息回复到群里，所有人可见。
-
-## 审批流程（自动）
-
-进入微信模式后，敏感操作会自动触发审批：
-
-```
-Claude 执行 Bash/Write/Edit 等敏感操作
-    ↓
-Hook 脚本拦截
-    ↓
-发送审批卡片到微信
-    ↓
-Claude 阻塞等待
-    ↓
-用户点击「允许」或「拒绝」
-    ↓
-Hook 返回 decision → Claude 继续执行
-    ↓
-恢复轮询
-```
-
-**Claude 无需手动调用 `send_approval_request`**。
-
-## 通讯工具
-
-- **发消息**：`mcp__wecom-aibot__send_message`
-- **接消息**：`mcp__wecom-aibot__get_pending_messages`（动态间隔轮询）
-- **不要**手动调用 `send_approval_request`（Hook 自动处理）
-
-## 消息格式
-
-- `【需要确认】` — 需要用户决策
-- `【问题】` — 阻塞性问题
-- `【进度】` — 里程碑汇报
-- `【完成】` — 当前任务完成，继续等待新消息（**不是退出轮询**）
+| 消息类型 | 示例 | 动作 |
+|---------|------|------|
+| 任务请求 | "帮我写个脚本" | 执行工具 → send_message 汇报结果 → 继续轮询 |
+| 智能审批 | "启用智能审批" | set_auto_approve(true) → send_message 确认 → 继续轮询 |
+| 智能审批 | "关闭智能审批" | set_auto_approve(false) → send_message 确认 → 继续轮询 |
+| 结束模式 | "结束微信模式"、"我回来了" | exit_headless_mode → 停止轮询 |
 
 ## 结束模式
 
-### 用户意图识别
+调用 `exit_headless_mode` 时会：
+1. 删除 headless 状态文件
+2. **自动删除**项目目录 `{项目}/.claude/settings.json` 中的 PermissionRequest hook 配置
+3. 发送退出通知
 
-在轮询过程中，如果收到用户消息，需判断是否要结束微信模式：
+无需手动清理 hook 配置。
 
-| 用户消息 | 判断 | 动作 |
+## 轮询间隔策略
+
+| 空闲时间 | 间隔 | 说明 |
 |---------|------|------|
-| 「结束微信模式」、「停止微信模式」、「退出微信模式」 | 明确终止 | 直接停止 |
-| 「我回来了」、「我回电脑了」 | 明确终止 | 直接停止 |
-| 「我已经回到电脑旁了」、「我在电脑前了」 | 可能终止 | **询问确认** |
-| 「休息一下」、「暂停一下」 | 不终止 | 继续轮询 |
+| < 20 分钟 | 5 秒 | 正常模式 |
+| 20-30 分钟 | 30 秒 | 用户可能短暂离开 |
+| 30-60 分钟 | 1 分钟 | 用户可能在休息 |
+| > 60 分钟 | 2 分钟 | 省电模式 |
 
-### 询问确认格式
+收到新消息后立即恢复 5 秒间隔。
 
-如果用户消息暗示可能在电脑前但不确定：
+## 审批处理
 
-```
-【需要确认】检测到您可能在电脑前了，是否结束微信模式？
-- 回复「是」或「结束」→ 退出微信模式
-- 回复「否」或「继续」→ 保持微信模式
-```
+进入微信模式后，执行敏感操作（Bash、Write、Edit等）时：
+1. 自动发送审批卡片到微信
+2. **阻塞等待**用户审批
+3. 审批结束后**立即恢复轮询**
 
-### 结束流程
+无需手动调用 send_approval_request。
 
-确认结束后：
-1. 调用 `mcp__wecom-aibot__exit_headless_mode`（删除状态文件，清除 Hook 配置）
-2. 发送：`【进度】已退出微信模式，恢复终端交互。`
-3. 停止轮询
+## 错误处理
 
----
+| 返回状态 | 说明 | 动作 |
+|---------|------|------|
+| `select_robot` | 多机器人需选择 | 展示列表，等待用户回复序号或名称 |
+| `error: robot_occupied` | 机器人已被占用 | 提示选择其他机器人或等待释放 |
+| `error: 未配置机器人` | 无机器人配置 | 提示运行 `npx @vrs-soft/wecom-aibot-mcp --config` |
 
-## 项目级配置说明
+## 群聊消息
 
-机器人配置在项目目录：
+get_pending_messages 返回 `chattype` 和 `chatid`：
+- 单聊：chatid = 用户ID
+- 群聊：chatid = 群ID
 
-```
-{项目}/.claude/wecom-aibot/config.json
-```
+群聊回复时：`send_message(content, target_user=chatid)`
+
+## 消息格式
+
+| 标签 | 用途 |
+|------|------|
+| `【需要确认】` | 需要用户决策 |
+| `【问题】` | 阻塞性问题 |
+| `【进度】` | 里程碑汇报 |
+| `【完成】` | 任务完成，继续轮询 |
+
+## Hook 配置说明
+
+### 自动配置
+
+`enter_headless_mode` 会自动在项目目录配置 hook：
+
+**文件位置**：`{项目}/.claude/settings.json`
 
 ```json
 {
-  "botId": "your_bot_id",
-  "secret": "your_secret",
-  "defaultUser": "zhangsan",
-  "nameTag": "张三"
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/eric/.wecom-aibot-mcp/permission-hook.sh",
+            "timeout": 600
+          }
+        ]
+      }
+    ]
+  }
 }
 ```
 
-如果项目未配置机器人，进入微信模式时会提示：
+### 自动清理
 
-```
-请先配置机器人: npx @vrs-soft/wecom-aibot-mcp --config
-```
+`exit_headless_mode` 会自动删除 hook 配置，恢复 settings.json 到原始状态。
 
----
+## 核心规则
 
-**核心原则**：进入微信模式后，轮询永不停止；只在审批时阻塞，审批后立即恢复轮询。
+1. **轮询永不退出**（除非收到明确结束指令）
+2. **持续调用 get_pending_messages**，不是打印"轮询中"
+3. **只有审批时阻塞**，审批后立即恢复轮询
+4. 处理完消息后**立即继续轮询**，不要停止
+5. **Hook 配置自动管理**，进入时添加，退出时删除

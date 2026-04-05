@@ -6,7 +6,13 @@
  */
 import AiBot from '@wecom/aibot-node-sdk';
 import type { WsFrame } from '@wecom/aibot-node-sdk';
-import { generateReqId } from '@wecom/aibot-node-sdk';
+import {
+  logConnected,
+  logAuthenticated,
+  logDisconnected,
+  logReconnecting,
+  logError,
+} from './connection-log.js';
 
 // 审批结果存储
 interface ApprovalRecord {
@@ -15,6 +21,10 @@ interface ApprovalRecord {
   result?: 'allow-once' | 'allow-always' | 'deny';
   timestamp: number;
   toolName?: string;  // 审批的工具名称
+  toolInput?: Record<string, unknown>;  // 工具输入（用于智能代批）
+  projectDir?: string;  // 项目目录（用于智能代批）
+  lastKeepaliveMinute?: number;  // 最后发送保活的分钟数
+  keepaliveCount?: number;       // 已发送保活次数
 }
 
 // 消息队列（用于等待用户回复）
@@ -53,8 +63,8 @@ class WecomClient {
     this.wsClient = new AiBot.WSClient({
       botId,
       secret,
-      heartbeatInterval: 30000,
-      maxReconnectAttempts: -1, // 无限重连
+      heartbeatInterval: 15000,  // 15 秒心跳，更快检测断线
+      maxReconnectAttempts: -1,  // 无限重连
     });
 
     this.setupEventHandlers();
@@ -72,7 +82,7 @@ class WecomClient {
 
   private setupEventHandlers() {
     this.wsClient.on('connected', () => {
-      console.log('[wecom] WebSocket 连接已建立');
+      logConnected();
     });
 
     this.wsClient.on('authenticated', () => {
@@ -80,7 +90,7 @@ class WecomClient {
       this.connected = true;
       this.wasReconnecting = false;
       this.reconnectAttempt = 0;
-      console.log('[wecom] 认证成功，长连接已就绪');
+      logAuthenticated();
 
       // 重连成功后发送通知
       if (wasReconnecting) {
@@ -96,7 +106,7 @@ class WecomClient {
       this.connected = false;
       this.wasReconnecting = true;
       this.lastDisconnectTime = Date.now();
-      console.log(`[wecom] 连接断开: ${reason}`);
+      logDisconnected(reason);
 
       // 发送断线通知
       this.sendText('【系统】连接中断，正在重连...').catch(err => {
@@ -106,11 +116,11 @@ class WecomClient {
 
     this.wsClient.on('reconnecting', (attempt: number) => {
       this.reconnectAttempt = attempt;
-      console.log(`[wecom] 正在重连 (第 ${attempt} 次)`);
+      logReconnecting(attempt);
     });
 
     this.wsClient.on('error', (err: Error) => {
-      console.error(`[wecom] 错误: ${err.message}`);
+      logError(err.message);
 
       // 检测授权相关错误（40058: invalid Request Parameter）
       if (err.message.includes('40058') || err.message.includes('invalid Request Parameter')) {
@@ -134,6 +144,7 @@ class WecomClient {
 
     // 监听模板卡片事件（审批结果）
     this.wsClient.on('event.template_card_event', (frame: WsFrame) => {
+      console.log('[wecom] 收到 template_card_event 事件');
       this.handleApprovalResponse(frame);
     });
 
@@ -374,6 +385,17 @@ class WecomClient {
     return Array.from(this.approvals.entries())
       .filter(([_, a]) => !a.resolved)
       .map(([taskId, _]) => taskId);
+  }
+
+  // 获取所有待处理审批记录（供保活监控使用）
+  getPendingApprovalsRecords(): ApprovalRecord[] {
+    return Array.from(this.approvals.values())
+      .filter(a => !a.resolved);
+  }
+
+  // 获取单个审批记录
+  getApprovalRecord(taskId: string): ApprovalRecord | undefined {
+    return this.approvals.get(taskId);
   }
 
   // 获取最新消息（用于等待回复）

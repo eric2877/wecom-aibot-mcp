@@ -7,8 +7,6 @@
  * - GET /approval_status/:taskId - 审批状态查询
  * - GET /health - 健康检查
  * - GET /state - 系统状态查询
- *
- * MCP 使用 stateless 模式：每个请求创建新的 transport 和 server 实例
  */
 
 import * as http from 'http';
@@ -16,22 +14,18 @@ import * as path from 'path';
 import * as os from 'os';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import type { WecomClient } from './client.js';
-import { getAllClients, getStats } from './client-pool.js';
 import { getAllHeadlessStates, loadHeadlessState } from './headless-state.js';
 import { registerTools } from './tools/index.js';
+import { getClient as getConnectedClient, getConnectionState } from './connection-manager.js';
 
 // 固定端口
 export const HTTP_PORT = 18963;
 
-// Hook 脚本路径（用于项目级配置）
+// Hook 脚本路径
 export const HOOK_SCRIPT_PATH = path.join(os.homedir(), '.wecom-aibot-mcp', 'permission-hook.sh');
 
 let httpServer: http.Server | null = null;
 let startTime: number = 0;
-
-// 全局 WecomClient 引用（用于非 MCP 端点）
-let globalClient: WecomClient;
 
 // 审批请求接口
 export interface ApprovalRequest {
@@ -40,7 +34,7 @@ export interface ApprovalRequest {
   projectDir?: string;
 }
 
-// 审批状态条目（单例，只保存当前请求）
+// 审批状态条目
 interface ApprovalEntry {
   taskId: string;
   status: 'pending' | 'allow-once' | 'deny';
@@ -49,51 +43,32 @@ interface ApprovalEntry {
   tool_input: Record<string, unknown>;
   projectDir?: string;
   description: string;
+  timer?: NodeJS.Timeout;
 }
 
-// 当前审批请求（单例）
-let currentApproval: ApprovalEntry | null = null;
+// 使用 Map 存储多个待处理审批
+const pendingApprovals: Map<string, ApprovalEntry> = new Map();
+const APPROVAL_TIMEOUT_MS = parseInt(process.env.APPROVAL_TIMEOUT_MS || '600000', 10);  // 默认 10 分钟，可通过环境变量配置
 
-// 超时计时器
-let approvalTimer: NodeJS.Timeout | null = null;
+const VERSION = '1.0.7';
 
-// 超时时间（毫秒）
-const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;  // 10 分钟
-
-// MCP Server 版本
-const VERSION = '1.0.6';
-
-/**
- * 创建 MCP Server 实例并注册工具
- */
 function createMcpServer(): McpServer {
   const server = new McpServer({
     name: 'wecom-aibot-mcp',
     version: VERSION,
   });
-
-  // 注册工具
-  registerTools(server, globalClient);
-
+  registerTools(server);
   return server;
 }
 
-/**
- * 启动 HTTP 服务
- *
- * MCP 端点使用 stateless 模式：每个请求创建新的 transport 和 server
- */
 export async function startHttpServer(
-  client: WecomClient,
-  _server: McpServer,  // 保留参数兼容，但不使用
+  _server: McpServer,
   port: number = HTTP_PORT
 ): Promise<void> {
   startTime = Date.now();
-  globalClient = client;  // 保存全局引用
 
   return new Promise((resolve, reject) => {
     httpServer = http.createServer(async (req, res) => {
-      // CORS headers
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
@@ -106,22 +81,15 @@ export async function startHttpServer(
 
       const url = req.url || '/';
 
-      // MCP endpoint - stateless 模式：每个请求创建新的 server + transport
+      // MCP endpoint
       if (url === '/mcp' || url.startsWith('/mcp?')) {
         let server: McpServer | null = null;
         try {
-          // 创建新的 transport（stateless 模式）
           const transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: undefined,  // stateless mode
+            sessionIdGenerator: undefined,
           });
-
-          // 创建新的 server 实例
           server = createMcpServer();
-
-          // 连接 server 到 transport
           await server.connect(transport);
-
-          // 处理请求
           await transport.handleRequest(req, res);
         } catch (err) {
           console.error('[http] MCP 请求处理失败:', err);
@@ -130,62 +98,59 @@ export async function startHttpServer(
             res.end(JSON.stringify({ error: (err as Error).message }));
           }
         } finally {
-          // 释放资源
           if (server) {
-            try {
-              await server.close();
-            } catch (e) {
-              // ignore close errors
-            }
+            try { await server.close(); } catch {}
           }
         }
         return;
       }
 
-      // 审批接口（非阻塞）
       if (req.method === 'POST' && url === '/approve') {
         await handleApprovalRequest(req, res);
         return;
       }
 
-      // 审批状态查询接口
       if (req.method === 'GET' && url.startsWith('/approval_status/')) {
         handleApprovalStatus(req, res, url);
         return;
       }
 
-      // 健康检查
       if (req.method === 'GET' && url === '/health') {
         handleHealthCheck(req, res);
         return;
       }
 
-      // 系统状态
       if (req.method === 'GET' && url === '/state') {
         handleStateQuery(req, res);
         return;
       }
 
-      // 代审批简报通知
       if (req.method === 'POST' && url === '/notify') {
         await handleNotify(req, res);
         return;
       }
 
-      // 设置智能代批开关
       if (req.method === 'POST' && url === '/set_auto_approve') {
         await handleSetAutoApprove(req, res);
         return;
       }
 
-      // 404
+      if (req.method === 'POST' && url === '/trigger_keepalive') {
+        await handleTriggerKeepalive(req, res);
+        return;
+      }
+
+      if (req.method === 'POST' && url === '/trigger_auto_approve') {
+        await handleTriggerAutoApprove(req, res);
+        return;
+      }
+
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not Found' }));
     });
 
     httpServer.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
-        console.error(`[http] 端口 ${port} 已被占用`);
         reject(new Error(`端口 ${port} 已被占用`));
       } else {
         reject(err);
@@ -200,9 +165,6 @@ export async function startHttpServer(
   });
 }
 
-/**
- * 停止 HTTP 服务
- */
 export function stopHttpServer(): void {
   if (httpServer) {
     httpServer.close();
@@ -211,51 +173,42 @@ export function stopHttpServer(): void {
   }
 }
 
-/**
- * 处理审批请求（非阻塞）
- *
- * 核心逻辑：
- * - autoApprove=false（默认）：只转发微信，不存储，不计时
- * - autoApprove=true：存储 + 启动计时器 + 超时后代批
- */
-async function handleApprovalRequest(
-  req: http.IncomingMessage,
-  res: http.ServerResponse
-): Promise<void> {
+async function handleApprovalRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
     const body = await readRequestBody(req);
     const request: ApprovalRequest = JSON.parse(body);
 
-    // 获取对应的 client
-    let client = globalClient;
-    let projectDir = request.projectDir;
+    const projectDir = request.projectDir || '';
 
-    // 从 headless 状态获取 projectDir（如果未提供）
-    if (!projectDir) {
-      const state = loadHeadlessState();
-      if (state) {
-        projectDir = state.projectDir;
+    // 去重检查：如果该项目已有待处理审批，返回已有的 taskId
+    const existingApproval = pendingApprovals.get(projectDir);
+    if (existingApproval && existingApproval.status === 'pending') {
+      const isSameOperation =
+        existingApproval.tool_name === request.tool_name &&
+        JSON.stringify(existingApproval.tool_input) === JSON.stringify(request.tool_input);
+
+      if (isSameOperation) {
+        console.log(`[http] 审批请求去重: ${existingApproval.taskId}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          taskId: existingApproval.taskId,
+          status: 'pending',
+          duplicated: true
+        }));
+        return;
       }
     }
 
-    // 查找 client
-    if (projectDir) {
-      const projectClient = getClient(projectDir);
-      if (projectClient) {
-        client = projectClient;
-      }
-    }
-
-    if (!client.isConnected()) {
+    // 获取 client（根据 projectDir）
+    const client = await getConnectedClient(projectDir);
+    if (!client) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'WebSocket 未连接' }));
+      res.end(JSON.stringify({ error: '未连接机器人，请先进入微信模式' }));
       return;
     }
 
-    // 构建审批描述
     const { tool_name, tool_input } = request;
     let description = '';
-
     if (tool_name === 'Bash') {
       description = `执行命令: ${(tool_input?.command as string) || '(unknown)'}`;
     } else if (tool_name === 'Write' || tool_name === 'Edit') {
@@ -266,29 +219,20 @@ async function handleApprovalRequest(
 
     const title = `【待审批】${tool_name}`;
     const requestId = `hook_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
-    // 发送审批请求
     const taskId = await client.sendApprovalRequest(title, description, requestId);
 
-    console.log(`[http] 审批请求已发送: ${taskId}`);
+    console.log(`[http] 审批请求已发送: ${taskId} (项目: ${projectDir})`);
 
-    // 检查 autoApprove 开关
-    const headlessState = loadHeadlessState();
-
-    if (!headlessState?.autoApprove) {
-      // autoApprove=false（默认）：不存储，不计时
+    // 检查该项目的 autoApprove 设置
+    const projectHeadlessState = loadHeadlessState(projectDir);
+    if (!projectHeadlessState?.autoApprove) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ taskId, status: 'pending', autoApprove: false }));
       return;
     }
 
-    // autoApprove=true：存储 + 启动计时器
-    if (approvalTimer) {
-      clearTimeout(approvalTimer);
-      approvalTimer = null;
-    }
-
-    currentApproval = {
+    // autoApprove=true 模式：存储审批并启动超时计时器
+    const entry: ApprovalEntry = {
       taskId,
       status: 'pending',
       timestamp: Date.now(),
@@ -298,9 +242,10 @@ async function handleApprovalRequest(
       description,
     };
 
-    approvalTimer = setTimeout(() => onApprovalTimeout(client), APPROVAL_TIMEOUT_MS);
+    // 启动超时计时器
+    entry.timer = setTimeout(() => onApprovalTimeout(projectDir), APPROVAL_TIMEOUT_MS);
 
-    console.log(`[http] 已启动超时计时器: ${taskId} (${APPROVAL_TIMEOUT_MS / 1000}秒)`);
+    pendingApprovals.set(projectDir, entry);
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ taskId, status: 'pending', autoApprove: true }));
@@ -311,318 +256,127 @@ async function handleApprovalRequest(
   }
 }
 
-/**
- * 审批超时处理
- */
-async function onApprovalTimeout(client: WecomClient): Promise<void> {
-  if (!currentApproval) {
+async function onApprovalTimeout(projectDir: string): Promise<void> {
+  const entry = pendingApprovals.get(projectDir);
+  if (!entry || entry.status !== 'pending') return;
+
+  const client = await getConnectedClient(projectDir);
+  if (!client) {
+    pendingApprovals.delete(projectDir);
     return;
   }
 
-  const entry = currentApproval;
-  const taskId = entry.taskId;
-
-  // 检查用户是否已响应
-  let result = client.getApprovalResult(taskId);
+  const result = client.getApprovalResult(entry.taskId);
   if (result === 'pending') {
-    const clients = getAllClients();
-    for (const c of clients) {
-      const status = c.getApprovalResult(taskId);
-      if (status !== 'pending') {
-        result = status;
-        break;
-      }
-    }
+    const decision = smartAutoApprove(entry.tool_name, entry.tool_input, projectDir);
+    entry.status = decision;
+    console.log(`[http] 超时智能代批: ${entry.taskId} -> ${decision} (项目: ${projectDir})`);
+
+    const decisionText = decision === 'allow-once' ? '✅ 已自动允许' : '❌ 已自动拒绝';
+    await client.sendText(`【自动审批】${decisionText}\n${entry.description}`);
   }
 
-  if (result !== 'pending') {
-    currentApproval = null;
-    approvalTimer = null;
-    return;
-  }
-
-  // 执行智能代批
-  const decision = smartAutoApprove(entry.tool_name, entry.tool_input, entry.projectDir);
-  entry.status = decision;
-
-  console.log(`[http] 超时智能代批: ${taskId} -> ${decision}`);
-
-  // 发送简报
-  const decisionText = decision === 'allow-once' ? '✅ 已自动允许' : '❌ 已自动拒绝';
-  const reason = getDecisionReason(entry.tool_name, entry.tool_input, entry.projectDir);
-
-  const brief = `【自动审批简报】
-由于您长时间未响应（>10分钟），系统已代为处理：
-
-${decisionText}
-  • [${entry.tool_name}] ${entry.description}
-
-理由：${reason}
-
-如需调整，请回复指令。`;
-
-  try {
-    await client.sendText(brief);
-    console.log(`[http] 已发送代批简报: ${taskId}`);
-  } catch (err) {
-    console.error('[http] 发送简报失败:', err);
-  }
-
-  approvalTimer = null;
+  pendingApprovals.delete(projectDir);
 }
 
-/**
- * 获取决策原因
- */
-function getDecisionReason(
-  tool_name: string,
-  tool_input: Record<string, unknown>,
-  projectDir?: string
-): string {
-  if (tool_name === 'Bash') {
-    const cmd = (tool_input?.command as string) || '';
-    if (/\brm\s/.test(cmd) || /\brmdir\s/.test(cmd) || /\bunlink\s/.test(cmd)) {
-      return '删除操作需人工确认';
-    }
-    if (projectDir && cmd.includes(projectDir)) {
-      return '项目内操作，风险可控';
-    }
-    if (/^(npm|npx|git|node)\s/.test(cmd) || /^\.\//.test(cmd)) {
-      return '项目内常见命令';
-    }
-    return '无法确认操作范围';
-  }
-
-  if (tool_name === 'Write' || tool_name === 'Edit') {
-    const filePath = (tool_input?.file_path as string) || '';
-    if (projectDir && filePath.startsWith(projectDir)) {
-      return '项目内文件操作';
-    }
-    if (!filePath.startsWith('/')) {
-      return '相对路径，假设在项目内';
-    }
-    return '项目外操作，需人工确认';
-  }
-
-  return '未知操作类型';
-}
-
-/**
- * 处理审批状态查询
- */
-function handleApprovalStatus(
-  _req: http.IncomingMessage,
-  res: http.ServerResponse,
-  url: string
-): void {
+function handleApprovalStatus(_req: http.IncomingMessage, res: http.ServerResponse, url: string): void {
   const taskId = url.replace('/approval_status/', '');
 
-  // 检查当前请求（单例）
-  if (currentApproval && currentApproval.taskId === taskId) {
-    let result = globalClient.getApprovalResult(taskId);
-    if (result === 'pending') {
-      const clients = getAllClients();
-      for (const client of clients) {
-        const status = client.getApprovalResult(taskId);
-        if (status !== 'pending') {
-          result = status;
-          break;
+  // 遍历所有待处理审批找到匹配的 taskId
+  for (const [projectDir, entry] of pendingApprovals) {
+    if (entry.taskId === taskId) {
+      getConnectedClient(projectDir).then(client => {
+        if (client) {
+          const result = client.getApprovalResult(taskId);
+          // 更新审批状态
+          if (result !== 'pending') {
+            entry.status = result as 'allow-once' | 'deny';
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: result, result }));
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'pending', result: 'pending' }));
         }
-      }
-    }
-
-    if (result !== 'pending') {
-      currentApproval.status = result as 'allow-once' | 'deny';
-      if (approvalTimer) {
-        clearTimeout(approvalTimer);
-        approvalTimer = null;
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: result, result }));
+      });
       return;
     }
-
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: currentApproval.status, result: currentApproval.status === 'pending' ? undefined : currentApproval.status }));
-    return;
   }
 
-  // autoApprove=false 模式
-  let result = globalClient.getApprovalResult(taskId);
-  if (result === 'pending') {
-    const clients = getAllClients();
-    for (const client of clients) {
-      const status = client.getApprovalResult(taskId);
-      if (status !== 'pending') {
-        result = status;
-        break;
-      }
-    }
-  }
-
+  // 没找到对应的待处理审批，返回 pending
   res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ status: result, result: result === 'pending' ? undefined : result }));
+  res.end(JSON.stringify({ status: 'pending', result: 'pending' }));
 }
 
-/**
- * 智能代批逻辑
- */
-function smartAutoApprove(
-  tool_name: string,
-  tool_input: Record<string, unknown>,
-  projectDir?: string
-): 'allow-once' | 'deny' {
+function smartAutoApprove(tool_name: string, tool_input: Record<string, unknown>, projectDir?: string): 'allow-once' | 'deny' {
   if (tool_name === 'Bash') {
     const cmd = (tool_input?.command as string) || '';
-    if (/\brm\s/.test(cmd) || /\brmdir\s/.test(cmd) || /\bunlink\s/.test(cmd)) {
-      return 'deny';
-    }
-    if (projectDir && cmd.includes(projectDir)) {
-      return 'allow-once';
-    }
-    if (/^(npm|npx|git|node)\s/.test(cmd) || /^\.\//.test(cmd)) {
-      return 'allow-once';
-    }
+    if (/\brm\s/.test(cmd) || /\brmdir\s/.test(cmd)) return 'deny';
+    if (/^(npm|npx|git|node)\s/.test(cmd)) return 'allow-once';
     return 'deny';
   }
-
   if (tool_name === 'Write' || tool_name === 'Edit') {
-    const filePath = (tool_input?.file_path as string) || '';
-    if (tool_input?.mode === 'delete') {
-      return 'deny';
-    }
-    if (projectDir && filePath.startsWith(projectDir)) {
-      return 'allow-once';
-    }
-    if (!filePath.startsWith('/')) {
-      return 'allow-once';
-    }
-    return 'deny';
+    if (tool_input?.mode === 'delete') return 'deny';
+    return 'allow-once';
   }
-
   return 'deny';
 }
 
-/**
- * 处理健康检查
- */
-function handleHealthCheck(
-  _req: http.IncomingMessage,
-  res: http.ServerResponse
-): void {
-  const stats = getStats();
-  const currentState = loadHeadlessState();
-
-  const health = {
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    uptime: Math.floor((Date.now() - startTime) / 1000),
-    components: {
-      websocket: {
-        status: globalClient.isConnected() ? 'AUTHENTICATED' : 'DISCONNECTED',
-        healthy: globalClient.isConnected(),
-      },
-      httpServer: {
-        status: 'RUNNING',
-        healthy: true,
-        port: HTTP_PORT,
-      },
-      clientPool: {
-        totalClients: stats.totalClients,
-        connectedClients: stats.connectedClients,
-      },
-    },
-    headless: currentState ? {
-      mode: 'HEADLESS',
-      projectDir: currentState.projectDir,
-      agentName: currentState.agentName,
-      enteredAt: new Date(currentState.timestamp).toISOString(),
-    } : {
-      mode: 'NORMAL',
-    },
-    pendingApprovals: 0,
-    pendingMessages: 0,
-  };
+function handleHealthCheck(_req: http.IncomingMessage, res: http.ServerResponse): void {
+  const state = getConnectionState();
+  const headlessState = loadHeadlessState();
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(health, null, 2));
+  res.end(JSON.stringify({
+    status: 'ok',
+    uptime: Math.floor((Date.now() - startTime) / 1000),
+    websocket: { connected: state.connected, robotName: state.robotName },
+    headless: headlessState ? { mode: 'HEADLESS', agentName: headlessState.agentName } : { mode: 'NORMAL' },
+  }, null, 2));
 }
 
-/**
- * 处理系统状态查询
- */
-function handleStateQuery(
-  _req: http.IncomingMessage,
-  res: http.ServerResponse
-): void {
-  const stats = getStats();
+function handleStateQuery(_req: http.IncomingMessage, res: http.ServerResponse): void {
+  const state = getConnectionState();
   const headlessStates = getAllHeadlessStates();
 
-  const state = {
-    websocket: {
-      connected: stats.connectedClients > 0,
-      clients: stats.projects.map(p => ({
-        projectDir: p.projectDir,
-        connected: p.connected,
-        defaultUser: p.defaultUser,
-      })),
-    },
-    headless: {
-      sessions: headlessStates.map(s => ({
-        pid: s.pid,
-        projectDir: s.state.projectDir,
-        agentName: s.state.agentName,
-        enteredAt: new Date(s.state.timestamp).toISOString(),
-      })),
-    },
-  };
-
   res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(state, null, 2));
+  res.end(JSON.stringify({
+    connection: state,
+    headless: headlessStates.map(s => ({
+      projectDir: s.projectDir,
+      agentName: s.state.agentName,
+      robotName: s.state.robotName,
+    })),
+  }, null, 2));
 }
 
-/**
- * 处理代审批简报通知
- */
-async function handleNotify(
-  req: http.IncomingMessage,
-  res: http.ServerResponse
-): Promise<void> {
+async function handleNotify(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
     const body = await readRequestBody(req);
     const { title, message, projectDir } = JSON.parse(body);
 
-    let client = globalClient;
-    if (projectDir) {
-      const projectClient = getClient(projectDir);
-      if (projectClient) {
-        client = projectClient;
-      }
+    // 使用请求中的 projectDir，或回退到当前目录
+    const dir = projectDir || process.cwd();
+    const client = await getConnectedClient(dir);
+    if (!client) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '未连接机器人' }));
+      return;
     }
 
-    const content = `**${title}**\n\n${message}`;
-    await client.sendText(content);
-
+    await client.sendText(`**${title}**\n\n${message}`);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true }));
   } catch (err) {
-    console.error('[http] 发送通知失败:', err);
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: (err as Error).message }));
   }
 }
 
-/**
- * 处理设置智能代批开关
- */
-async function handleSetAutoApprove(
-  req: http.IncomingMessage,
-  res: http.ServerResponse
-): Promise<void> {
+async function handleSetAutoApprove(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
     const body = await readRequestBody(req);
     const { enabled } = JSON.parse(body);
-
     const { setAutoApprove } = await import('./headless-state.js');
     const state = setAutoApprove(enabled);
 
@@ -633,44 +387,121 @@ async function handleSetAutoApprove(
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      success: true,
-      autoApprove: state.autoApprove,
-    }));
+    res.end(JSON.stringify({ success: true, autoApprove: state.autoApprove }));
   } catch (err) {
-    console.error('[http] 设置 autoApprove 失败:', err);
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: (err as Error).message }));
   }
 }
 
-/**
- * 读取请求体
- */
+async function handleTriggerKeepalive(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  try {
+    const body = await readRequestBody(req);
+    const { projectDir } = JSON.parse(body);
+
+    const dir = projectDir || process.cwd();
+    const state = loadHeadlessState(dir);
+    if (!state) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '未在 headless 模式' }));
+      return;
+    }
+
+    const client = await getConnectedClient(dir);
+    if (!client) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '未连接机器人' }));
+      return;
+    }
+
+    // 获取待处理审批
+    const pendingApprovals = client.getPendingApprovalsRecords();
+
+    if (pendingApprovals.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, message: '无待处理审批' }));
+      return;
+    }
+
+    // 发送保活消息
+    const now = Date.now();
+    let sent = 0;
+    for (const approval of pendingApprovals) {
+      const waitTime = now - approval.timestamp;
+      const minutes = Math.floor(waitTime / 60000);
+
+      const message = `【审批提醒】您有 ${minutes} 分钟前的审批请求待处理（${approval.toolName || '未知操作'}），请尽快在企业微信中审批。`;
+      const result = await client.sendText(message);
+      if (result) sent++;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, sent, total: pendingApprovals.length }));
+  } catch (err) {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: (err as Error).message }));
+  }
+}
+
+async function handleTriggerAutoApprove(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  try {
+    const body = await readRequestBody(req);
+    const { projectDir } = JSON.parse(body);
+
+    const dir = projectDir || process.cwd();
+    const state = loadHeadlessState(dir);
+    if (!state) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '未在 headless 模式' }));
+      return;
+    }
+
+    // 获取该项目的待处理审批
+    const entry = pendingApprovals.get(dir);
+    if (entry && entry.status === 'pending') {
+      const client = await getConnectedClient(dir);
+      if (client) {
+        const result = client.getApprovalResult(entry.taskId);
+        if (result === 'pending') {
+          const decision = smartAutoApprove(entry.tool_name, entry.tool_input, dir);
+          entry.status = decision;
+
+          // 清除计时器
+          if (entry.timer) {
+            clearTimeout(entry.timer);
+          }
+
+          console.log(`[http] 手动触发智能代批: ${entry.taskId} -> ${decision} (项目: ${dir})`);
+
+          const decisionText = decision === 'allow-once' ? '✅ 已自动允许' : '❌ 已自动拒绝';
+          await client.sendText(`【自动审批】${decisionText}\n${entry.description}`);
+
+          pendingApprovals.delete(dir);
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, taskId: entry.taskId, decision }));
+          return;
+        }
+      }
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: false, message: '无待处理审批' }));
+  } catch (err) {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: (err as Error).message }));
+  }
+}
+
 function readRequestBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', (chunk) => {
-      body += chunk;
-    });
-    req.on('end', () => {
-      resolve(body);
-    });
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => resolve(body));
     req.on('error', reject);
   });
 }
 
-/**
- * 清理端口文件（已废弃）
- */
 export function cleanupPortFile(): void {
   console.log('[http] 使用固定端口:', HTTP_PORT);
-}
-
-/**
- * 获取 client by projectDir
- */
-function getClient(projectDir: string): WecomClient | undefined {
-  const { getClient } = require('./client-pool.js');
-  return getClient(projectDir);
 }
