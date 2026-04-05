@@ -211,6 +211,7 @@ npx @vrs-soft/wecom-aibot-mcp
 {
   "mcpServers": {
     "wecom-aibot": {
+      "type": "http",
       "url": "http://127.0.0.1:18963/mcp"
     }
   }

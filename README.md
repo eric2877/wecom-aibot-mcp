@@ -220,6 +220,7 @@ npx @vrs-soft/wecom-aibot-mcp --config
 {
   "mcpServers": {
     "wecom-aibot": {
+      "type": "http",
       "url": "http://127.0.0.1:18963/mcp"
     }
   }
@@ -406,9 +407,11 @@ npx @vrs-soft/wecom-aibot-mcp --add
 {
   "mcpServers": {
     "wecom-aibot-zhangsan": {
+      "type": "http",
       "url": "http://127.0.0.1:18963/mcp"
     },
     "wecom-aibot-lisi": {
+      "type": "http",
       "url": "http://127.0.0.1:18963/mcp"
     }
   }

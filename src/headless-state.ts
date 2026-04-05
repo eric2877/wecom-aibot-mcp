@@ -240,6 +240,51 @@ function clearProjectHook(projectDir: string): void {
 }
 
 /**
+ * 清理所有孤儿状态文件及其 Hook 配置
+ *
+ * 用于 MCP Server 启动时清理残留状态
+ */
+export function clearAllProjectHooks(): void {
+  if (!fs.existsSync(CONFIG_DIR)) {
+    return;
+  }
+
+  try {
+    const files = fs.readdirSync(CONFIG_DIR);
+    const headlessFiles = files.filter(f => f.startsWith('headless-'));
+
+    for (const file of headlessFiles) {
+      const pid = parseInt(file.replace('headless-', ''), 10);
+
+      // 检查进程是否存在
+      try {
+        process.kill(pid, 0);
+        // 进程存在，不清理
+      } catch {
+        // 进程不存在，读取状态并清理 Hook
+        const filePath = path.join(CONFIG_DIR, file);
+        try {
+          const content = fs.readFileSync(filePath, 'utf-8');
+          const state = JSON.parse(content);
+          if (state.projectDir) {
+            clearProjectHook(state.projectDir);
+            console.log(`[headless] 已清理残留 Hook: ${state.projectDir}`);
+          }
+        } catch (e) {
+          // 解析失败，忽略
+        }
+
+        // 清理状态文件
+        fs.unlinkSync(filePath);
+        console.log(`[headless] 清理孤儿状态文件: ${file} (PID ${pid} 已不存在)`);
+      }
+    }
+  } catch (err) {
+    console.error('[headless] 清理孤儿文件失败:', err);
+  }
+}
+
+/**
  * 清理孤儿状态文件
  *
  * 检查进程是否存在，清理已终止进程的状态文件

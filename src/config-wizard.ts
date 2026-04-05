@@ -448,6 +448,7 @@ function writeMcpServerConfig(config: WecomConfig, instanceName?: string) {
 
     // HTTP Transport 配置格式
     claudeConfig.mcpServers[name] = {
+      type: 'http',
       url: 'http://127.0.0.1:18963/mcp',
     };
 
@@ -469,6 +470,7 @@ function writeMcpServerConfig(config: WecomConfig, instanceName?: string) {
     console.log(JSON.stringify({
       mcpServers: {
         'wecom-aibot': {
+          type: 'http',
           url: 'http://127.0.0.1:18963/mcp',
         },
       },
@@ -477,28 +479,20 @@ function writeMcpServerConfig(config: WecomConfig, instanceName?: string) {
   }
 }
 
-// 添加新的 MCP 配置（用于多 bot 场景）
+// 添加新的机器人配置（多机器人场景）
 export async function addMcpConfig() {
   const rl = createRL();
 
   try {
     console.log('\n添加新的企业微信机器人配置\n');
+    console.log('提示：多个机器人共享同一个 MCP 配置，只需添加机器人凭证即可\n');
 
-    // 获取实例名称
-    const instanceName = await question(rl, 'MCP 实例名称（如 wecom-aibot-zhangsan）: ');
-    if (!instanceName) {
-      console.log('[config] 实例名称不能为空');
+    // 获取机器人名称（用于识别）
+    const robotName = await question(rl, '机器人名称（如"张三的机器人"）: ');
+    if (!robotName) {
+      console.log('[config] 机器人名称不能为空');
+      rl.close();
       return;
-    }
-
-    // 检查名称是否已存在
-    if (fs.existsSync(CLAUDE_CONFIG_FILE)) {
-      const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
-      const claudeConfig = JSON.parse(content);
-      if (claudeConfig.mcpServers?.[instanceName]) {
-        console.log(`[config] 实例名称 "${instanceName}" 已存在，请使用其他名称`);
-        return;
-      }
     }
 
     // 获取 Bot ID
@@ -552,18 +546,84 @@ export async function addMcpConfig() {
       return;
     }
 
-    const config: WecomConfig = { botId, secret, targetUserId };
+    // 保存机器人配置
+    const robotConfig = {
+      botId,
+      secret,
+      targetUserId,
+      nameTag: robotName,
+    };
 
-    // 写入配置
-    writeMcpServerConfig(config, instanceName);
-    console.log(`\n[config] ✅ 已添加新机器人配置: ${instanceName}`);
+    // 确保配置目录存在
+    ensureConfigDir();
+
+    // 如果是第一个机器人，保存为默认配置
+    const defaultConfigPath = BOT_CONFIG_FILE;
+    const robotConfigPath = path.join(CONFIG_DIR, `robot-${Date.now()}.json`);
+
+    if (!fs.existsSync(defaultConfigPath)) {
+      // 第一个机器人作为默认
+      fs.writeFileSync(defaultConfigPath, JSON.stringify(robotConfig, null, 2));
+      console.log(`\n[config] ✅ 已设为默认机器人: ${robotName}`);
+    } else {
+      // 后续机器人保存为独立文件
+      fs.writeFileSync(robotConfigPath, JSON.stringify(robotConfig, null, 2));
+      console.log(`\n[config] ✅ 已添加新机器人: ${robotName}`);
+    }
+
     console.log(`[config] 用户 ID: ${targetUserId}`);
-    console.log('[config] 请重启 Claude Code 以加载新的 MCP 服务\n');
+
+    // 列出所有机器人
+    const robots = listAllRobots();
+    console.log(`\n[config] 当前共 ${robots.length} 个机器人配置`);
+    robots.forEach((r, i) => {
+      console.log(`  ${i + 1}. ${r.name} (${r.targetUserId})`);
+    });
+
+    console.log('\n[config] MCP 配置无需修改，多个机器人共享同一个 HTTP 服务');
 
   } catch (err) {
     console.error('[config] 添加配置失败:', err);
     rl.close();
   }
+}
+
+// 列出所有机器人配置
+function listAllRobots(): Array<{ name: string; botId: string; targetUserId: string; isDefault: boolean }> {
+  const robots: Array<{ name: string; botId: string; targetUserId: string; isDefault: boolean }> = [];
+
+  // 默认配置
+  if (fs.existsSync(BOT_CONFIG_FILE)) {
+    try {
+      const config = JSON.parse(fs.readFileSync(BOT_CONFIG_FILE, 'utf-8'));
+      robots.push({
+        name: config.nameTag || '默认机器人',
+        botId: config.botId,
+        targetUserId: config.targetUserId,
+        isDefault: true,
+      });
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // 其他机器人配置
+  const files = fs.readdirSync(CONFIG_DIR).filter(f => f.startsWith('robot-') && f.endsWith('.json'));
+  for (const file of files) {
+    try {
+      const config = JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, file), 'utf-8'));
+      robots.push({
+        name: config.nameTag || file,
+        botId: config.botId,
+        targetUserId: config.targetUserId,
+        isDefault: false,
+      });
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  return robots;
 }
 
 // 安装 skill 文件到 ~/.claude/skills/

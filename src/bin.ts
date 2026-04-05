@@ -26,6 +26,7 @@ import { initClient, WecomClient } from './client.js';
 import { registerTools } from './tools/index.js';
 import { startHttpServer, HTTP_PORT } from './http-server.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { clearAllProjectHooks } from './headless-state.js';
 
 const VERSION = '1.0.6';
 
@@ -71,6 +72,7 @@ MCP 配置（HTTP Transport）:
   {
     "mcpServers": {
       "wecom-aibot": {
+        "type": "http",
         "url": "http://127.0.0.1:${HTTP_PORT}/mcp"
       }
     }
@@ -186,6 +188,9 @@ async function main() {
 
   // 确保 hook 已安装（幂等，每次启动检查）
   ensureHookInstalled();
+
+  // 清理残留的 headless 状态和 Hook 配置
+  clearAllProjectHooks();
 
   // 初始化 WebSocket 客户端
   console.log(`[mcp] 初始化企业微信客户端...`);
