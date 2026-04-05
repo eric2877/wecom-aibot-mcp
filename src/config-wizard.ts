@@ -191,14 +191,17 @@ export function uninstall() {
   console.log('[config] 如需重新安装，请运行: npx @vrs-soft/wecom-aibot-mcp --config\n');
 }
 
-// 生成并写入 hook 脚本（多实例 + headless 模式支持）
+// 生成并写入 hook 脚本（HTTP Transport 版本）
 function writeHookScript() {
   const script = `#!/bin/bash
 # wecom-aibot-mcp PermissionRequest hook
-# 多实例 + headless 模式支持
+# HTTP Transport 版本
 #
-# 多实例：按 PID 查找端口文件 ~/.wecom-aibot-mcp/port-{PID}
-# Headless：只有存在 headless-{PID} 文件时才发微信审批
+# 固定端口: 18963
+# 从 headless-{PID} 读取 projectDir
+
+MCP_PORT=18963
+CONFIG_DIR="$HOME/.wecom-aibot-mcp"
 
 INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
@@ -211,37 +214,32 @@ fi
 
 # 只读工具不需要拦截
 case "$TOOL_NAME" in
-  Read|Glob|Grep|LS|TaskList|TaskGet|TaskOutput|CronList|AskUserQuestion|Skill|ListMcpResourcesTool|EnterPlanMode|ExitPlanMode|WebSearch|ToolSearch)
+  Read|Glob|Grep|LS|TaskList|TaskGet|TaskOutput|TaskStop|CronList|CronCreate|CronDelete|AskUserQuestion|Skill|ListMcpResourcesTool|EnterPlanMode|ExitPlanMode|WebSearch|WebFetch|NotebookEdit)
     printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
     exit 0
     ;;
 esac
 
-# 查找当前进程对应的 MCP 端口
-CONFIG_DIR="$HOME/.wecom-aibot-mcp"
-PARENT_PID=$PPID
-PORT_FILE=""
+# 查找 headless 状态文件
 HEADLESS_FILE=""
+PARENT_PID=$PPID
 
-# 最多查找 5 层进程树
 for i in {1..5}; do
   if [[ -z "$PARENT_PID" ]] || [[ "$PARENT_PID" -eq 1 ]]; then
     break
   fi
 
-  CANDIDATE_PORT="$CONFIG_DIR/port-$PARENT_PID"
-  if [[ -f "$CANDIDATE_PORT" ]]; then
-    PORT_FILE="$CANDIDATE_PORT"
-    HEADLESS_FILE="$CONFIG_DIR/headless-$PARENT_PID"
+  CANDIDATE="$CONFIG_DIR/headless-$PARENT_PID"
+  if [[ -f "$CANDIDATE" ]]; then
+    HEADLESS_FILE="$CANDIDATE"
     break
   fi
 
   CHILD_PIDS=$(pgrep -P "$PARENT_PID" 2>/dev/null)
   for CHILD_PID in $CHILD_PIDS; do
-    CANDIDATE_PORT="$CONFIG_DIR/port-$CHILD_PID"
-    if [[ -f "$CANDIDATE_PORT" ]]; then
-      PORT_FILE="$CANDIDATE_PORT"
-      HEADLESS_FILE="$CONFIG_DIR/headless-$CHILD_PID"
+    CANDIDATE="$CONFIG_DIR/headless-$CHILD_PID"
+    if [[ -f "$CANDIDATE" ]]; then
+      HEADLESS_FILE="$CANDIDATE"
       break 2
     fi
   done
@@ -249,36 +247,34 @@ for i in {1..5}; do
   PARENT_PID=$(ps -o ppid= -p "$PARENT_PID" 2>/dev/null | tr -d ' ')
 done
 
-# Fallback: 查找最新的端口文件
-if [[ -z "$PORT_FILE" ]]; then
-  PORT_FILE=$(ls -t "$CONFIG_DIR"/port-* 2>/dev/null | head -1)
-  if [[ -n "$PORT_FILE" ]]; then
-    HEADLESS_FILE=$(echo "$PORT_FILE" | sed 's/port-/headless-/')
-  fi
+# Fallback: 使用最新的 headless 文件
+if [[ -z "$HEADLESS_FILE" ]]; then
+  HEADLESS_FILE=$(ls -t "$CONFIG_DIR"/headless-* 2>/dev/null | head -1)
 fi
 
-# 没有找到端口文件，回退默认 UI
-if [[ -z "$PORT_FILE" ]] || [[ ! -f "$PORT_FILE" ]]; then
+# 不在 headless 模式
+if [[ -z "$HEADLESS_FILE" ]] || [[ ! -f "$HEADLESS_FILE" ]]; then
   exit 0
 fi
 
-PORT=$(cat "$PORT_FILE")
-
-# 检查 headless 模式（只有 headless 才发微信审批）
-if [[ ! -f "$HEADLESS_FILE" ]]; then
+# 从 headless 文件读取 projectDir
+PROJECT_DIR=$(cat "$HEADLESS_FILE" 2>/dev/null | jq -r '.projectDir // empty')
+if [[ -z "$PROJECT_DIR" ]]; then
   exit 0
 fi
 
-# 检查审批服务是否在线
-HEALTH=$(curl -s -m 2 "http://127.0.0.1:$PORT/health" 2>/dev/null)
-if ! echo "$HEALTH" | jq -e '.connected == true' > /dev/null 2>&1; then
+# 检查 MCP Server 是否在线
+HEALTH=$(curl -s -m 2 "http://127.0.0.1:$MCP_PORT/health" 2>/dev/null)
+if ! echo "$HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
   exit 0
 fi
 
 # 发送审批请求
 TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}')
-BODY=$(jq -n --arg tool_name "$TOOL_NAME" --argjson tool_input "$TOOL_INPUT" '{"tool_name":$tool_name,"tool_input":$tool_input}')
-RESPONSE=$(curl -s -X POST "http://127.0.0.1:$PORT/approve" \\
+BODY=$(jq -n --arg tool_name "$TOOL_NAME" --argjson tool_input "$TOOL_INPUT" --arg project_dir "$PROJECT_DIR" \\
+  '{"tool_name":$tool_name,"tool_input":$tool_input,"projectDir":$project_dir}')
+
+RESPONSE=$(curl -s -m 10 -X POST "http://127.0.0.1:$MCP_PORT/approve" \\
   -H "Content-Type: application/json" \\
   -d "$BODY")
 
@@ -287,10 +283,15 @@ if [[ -z "$TASK_ID" ]]; then
   exit 0
 fi
 
-# 轮询审批结果（无限等待，适合 headless 模式）
-while true; do
+# 轮询审批结果（带超时：10 分钟）
+POLL_COUNT=0
+MAX_POLL=300  # 300 * 2秒 = 600秒 = 10分钟
+
+while [[ $POLL_COUNT -lt $MAX_POLL ]]; do
   sleep 2
-  STATUS=$(curl -s -m 5 "http://127.0.0.1:$PORT/approval_status/$TASK_ID" 2>/dev/null)
+  POLL_COUNT=$((POLL_COUNT + 1))
+
+  STATUS=$(curl -s -m 3 "http://127.0.0.1:$MCP_PORT/approval_status/$TASK_ID" 2>/dev/null)
   RESULT=$(echo "$STATUS" | jq -r '.result // empty')
 
   if [[ "$RESULT" == "allow-once" || "$RESULT" == "allow-always" ]]; then
@@ -301,6 +302,9 @@ while true; do
     exit 0
   fi
 done
+
+# 超时处理：拒绝操作
+printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"审批超时（10分钟）"}}}'
 `;
 
   ensureConfigDir();

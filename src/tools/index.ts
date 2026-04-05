@@ -1,49 +1,33 @@
 /**
  * MCP 工具注册入口
+ *
+ * 注册以下工具：
+ * - send_message: 发送消息
+ * - send_approval_request: 发送审批请求
+ * - get_approval_result: 获取审批结果
+ * - check_connection: 检查连接状态
+ * - get_pending_messages: 获取待处理消息
+ * - get_setup_guide: 获取安装指南
+ * - add_robot_config: 添加机器人配置
+ * - list_robots: 列出所有机器人
+ * - get_robot_status: 获取机器人状态
+ * - enter_headless_mode: 进入微信模式
+ * - exit_headless_mode: 退出微信模式
+ * - detect_user_from_message: 从消息识别用户
  */
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import * as fs from 'fs';
-import * as path from 'path';
 import type { WecomClient } from '../client.js';
-import { getHeadlessFilePath } from '../http-server.js';
-
-const CONFIG_DIR = path.join(process.env.HOME || '/tmp', '.wecom-aibot-mcp');
-
-// 进入 headless 模式（写入状态文件）
-function enterHeadlessMode(): boolean {
-  try {
-    if (!fs.existsSync(CONFIG_DIR)) {
-      fs.mkdirSync(CONFIG_DIR, { recursive: true });
-    }
-    fs.writeFileSync(getHeadlessFilePath(), String(Date.now()));
-    console.log(`[mcp] 已进入 headless 模式: ${getHeadlessFilePath()}`);
-    return true;
-  } catch (err) {
-    console.error(`[mcp] 进入 headless 模式失败: ${err}`);
-    return false;
-  }
-}
-
-// 退出 headless 模式（删除状态文件）
-function exitHeadlessMode(): boolean {
-  try {
-    const headlessFile = getHeadlessFilePath();
-    if (fs.existsSync(headlessFile)) {
-      fs.unlinkSync(headlessFile);
-      console.log(`[mcp] 已退出 headless 模式: ${headlessFile}`);
-    }
-    return true;
-  } catch (err) {
-    console.error(`[mcp] 退出 headless 模式失败: ${err}`);
-    return false;
-  }
-}
-
-// 检查是否在 headless 模式
-function isHeadlessMode(): boolean {
-  return fs.existsSync(getHeadlessFilePath());
-}
+import { getStats, getClient } from '../client-pool.js';
+import {
+  enterHeadlessMode,
+  exitHeadlessMode,
+  loadHeadlessState,
+  isHeadlessMode,
+  getAllHeadlessStates,
+} from '../headless-state.js';
+import { getConfig, getConfigSource, hasProjectConfig } from '../project-config.js';
 
 export function registerTools(server: McpServer, client: WecomClient) {
   // ============================================
@@ -54,10 +38,19 @@ export function registerTools(server: McpServer, client: WecomClient) {
     '向企业微信发送消息（用于通知用户）。群聊时传入 chatid 可回复到群里。',
     {
       content: z.string().describe('消息内容（支持 Markdown）'),
-      target_user: z.string().optional().describe('目标用户/群 ID（可选，默认使用配置的 TARGET_USER_ID）。群聊时使用 get_pending_messages 返回的 chatid'),
+      agent_name: z.string().optional().describe('智能体名称（可选，自动添加名签）'),
+      target_user: z.string().optional().describe('目标用户/群 ID（可选）。群聊时使用 get_pending_messages 返回的 chatid'),
     },
-    async ({ content, target_user }) => {
-      const success = await client.sendText(content, target_user);
+    async ({ content, agent_name, target_user }) => {
+      // 添加名签
+      let finalContent = content;
+      if (agent_name) {
+        const state = loadHeadlessState();
+        const nameTag = state?.agentName || agent_name;
+        finalContent = `【${nameTag}】${content}`;
+      }
+
+      const success = await client.sendText(finalContent, target_user);
       return {
         content: [
           {
@@ -78,12 +71,21 @@ export function registerTools(server: McpServer, client: WecomClient) {
     {
       title: z.string().describe('审批标题'),
       description: z.string().describe('审批描述（操作详情）'),
-      request_id: z.string().describe('请求 ID（用于关联审批结果）'),
-      target_user: z.string().optional().describe('目标用户 ID（可选，默认使用配置的 TARGET_USER_ID）'),
+      request_id: z.string().describe('请求 ID'),
+      agent_name: z.string().optional().describe('智能体名称（可选，自动添加名签）'),
+      target_user: z.string().optional().describe('目标用户 ID（可选）'),
     },
-    async ({ title, description, request_id, target_user }) => {
+    async ({ title, description, request_id, agent_name, target_user }) => {
       try {
-        const taskId = await client.sendApprovalRequest(title, description, request_id, target_user);
+        // 添加名签到标题
+        let finalTitle = title;
+        if (agent_name) {
+          const state = loadHeadlessState();
+          const nameTag = state?.agentName || agent_name;
+          finalTitle = `【${nameTag}】${title}`;
+        }
+
+        const taskId = await client.sendApprovalRequest(finalTitle, description, request_id, target_user);
         return {
           content: [
             {
@@ -110,7 +112,7 @@ export function registerTools(server: McpServer, client: WecomClient) {
   // ============================================
   server.tool(
     'get_approval_result',
-    '查询审批任务当前状态（非阻塞，立即返回）。返回值：pending（等待中）、allow-once（允许一次）、allow-always（永久允许）、deny（拒绝）。',
+    '查询审批任务当前状态（非阻塞，立即返回）。',
     {
       task_id: z.string().describe('审批任务 ID'),
     },
@@ -132,7 +134,7 @@ export function registerTools(server: McpServer, client: WecomClient) {
   // ============================================
   server.tool(
     'check_connection',
-    '检查企业微信长连接状态和默认目标用户',
+    '检查当前 WebSocket 连接状态',
     {},
     async () => {
       const connected = client.isConnected();
@@ -153,7 +155,7 @@ export function registerTools(server: McpServer, client: WecomClient) {
   // ============================================
   server.tool(
     'get_pending_messages',
-    '获取用户主动发送的待处理消息（非阻塞，立即返回队列中所有消息）。如需持续监控用户消息，建议轮询间隔 5 秒。注意：如果 agent 正在忙碌，消息会在队列中累积，调用此工具可一次性获取。',
+    '获取用户主动发送的待处理消息（非阻塞）。建议轮询间隔 5 秒。',
     {
       clear: z.boolean().optional().default(true).describe('获取后是否清空队列（默认 true）'),
     },
@@ -184,108 +186,39 @@ export function registerTools(server: McpServer, client: WecomClient) {
   );
 
   // ============================================
-  // 工具 5: 获取安装配置指南
+  // 工具 6: 获取安装配置指南
   // ============================================
   server.tool(
     'get_setup_guide',
-    '获取企业微信 MCP 服务安装配置指南（首次安装必读）',
+    '获取企业微信 MCP 服务安装配置指南',
     {},
     async () => {
       const guide = `
 # 企业微信智能机器人 MCP 服务 - 安装配置指南
 
-## 安装方式
+## 安装
 
 \`\`\`bash
 npx @vrs-soft/wecom-aibot-mcp
 \`\`\`
 
-## 首次配置
+## MCP 配置（HTTP Transport）
 
-首次运行需要提供以下信息：
-1. **Bot ID** - 企业微信智能机器人 ID
-2. **Secret** - 智能机器人密钥
-3. **Target User** - 默认目标用户 ID（审批请求发给谁）
-
-## ⚠️ 重要：权限预授权（自动完成）
-
-**首次运行配置向导时，会自动写入权限配置，无需手动配置！**
-
-配置向导会自动将以下权限添加到 \`~/.claude/settings.local.json\`：
-
-\`\`\`json
-{
-  "permissions": {
-    "allow": [
-      "mcp__wecom-aibot__send_message",
-      "mcp__wecom-aibot__send_approval_request",
-      "mcp__wecom-aibot__get_approval_result",
-      "mcp__wecom-aibot__check_connection",
-      "mcp__wecom-aibot__get_pending_messages",
-      "mcp__wecom-aibot__get_setup_guide",
-      "mcp__wecom-aibot__add_robot_config"
-    ]
-  }
-}
-\`\`\`
-
-**为什么必须预授权？**
-- 如果不预授权，调用工具时会弹出确认对话框
-- headless 模式下你不在电脑前，无法点击确认
-- 工作流会被阻断，任务无法完成
-
-> ⚠️ 如果权限写入失败，请手动添加上述配置
-
-## 在 Claude Code 中配置
-
-编辑 \`~/.claude.json\`，在 \`mcpServers\` 中添加：
+编辑 \`~/.claude.json\`：
 
 \`\`\`json
 {
   "mcpServers": {
     "wecom-aibot": {
-      "command": "npx",
-      "args": ["@vrs-soft/wecom-aibot-mcp"],
-      "env": {
-        "WECOM_BOT_ID": "your_bot_id",
-        "WECOM_SECRET": "your_secret",
-        "WECOM_TARGET_USER": "your_userid"
-      }
+      "url": "http://127.0.0.1:18963/mcp"
     }
   }
 }
 \`\`\`
 
-## 多用户/多机器人配置
+## 配置机器人
 
-每个用户可以使用不同的机器人，只需配置不同的环境变量：
-
-\`\`\`json
-{
-  "mcpServers": {
-    "wecom-aibot-zhangsan": {
-      "command": "npx",
-      "args": ["@vrs-soft/wecom-aibot-mcp"],
-      "env": {
-        "WECOM_BOT_ID": "bot_zhangsan",
-        "WECOM_SECRET": "secret_zhangsan",
-        "WECOM_TARGET_USER": "zhangsan"
-      }
-    },
-    "wecom-aibot-lisi": {
-      "command": "npx",
-      "args": ["@vrs-soft/wecom-aibot-mcp"],
-      "env": {
-        "WECOM_BOT_ID": "bot_lisi",
-        "WECOM_SECRET": "secret_lisi",
-        "WECOM_TARGET_USER": "lisi"
-      }
-    }
-  }
-}
-\`\`\`
-
-## 获取凭证
+### 获取凭证
 
 1. 登录企业微信管理后台：work.weixin.qq.com
 2. 进入「管理工具」→「智能机器人」
@@ -293,15 +226,28 @@ npx @vrs-soft/wecom-aibot-mcp
 4. 在「API 配置」中选择「使用长连接」
 5. 获取 Bot ID 和 Secret
 
+### 项目级配置
+
+每个项目可独立配置机器人：
+
+\`\`\`bash
+cd /path/to/your/project
+npx @vrs-soft/wecom-aibot-mcp --config
+\`\`\`
+
+配置文件：\`{项目}/.claude/wecom-aibot/config.json\`
+
 ## 可用工具
 
-- \`send_message\` - 发送消息到企业微信
-- \`send_approval_request\` - 发送审批请求（带按钮卡片，阻塞等待响应）
-- \`get_approval_result\` - 获取审批结果（阻塞，永不过期）
+- \`send_message\` - 发送消息
+- \`send_approval_request\` - 发送审批请求
+- \`get_approval_result\` - 获取审批结果
 - \`check_connection\` - 检查连接状态
-- \`get_pending_messages\` - 获取用户消息（非阻塞，建议轮询间隔 5 秒）
-- \`get_setup_guide\` - 获取本指南
-- \`add_robot_config\` - 生成新机器人配置片段
+- \`get_pending_messages\` - 获取用户消息
+- \`list_robots\` - 列出所有机器人
+- \`get_robot_status\` - 获取机器人状态
+- \`enter_headless_mode\` - 进入微信模式
+- \`exit_headless_mode\` - 退出微信模式
 `;
 
       return {
@@ -316,73 +262,32 @@ npx @vrs-soft/wecom-aibot-mcp
   );
 
   // ============================================
-  // 工具 6: 添加新机器人配置
+  // 工具 7: 添加新机器人配置
   // ============================================
   server.tool(
     'add_robot_config',
-    '生成新机器人 MCP 配置片段（用于添加更多用户/机器人）',
+    '添加新机器人配置',
     {
-      instance_name: z.string().describe('MCP 实例名称（如 wecom-aibot-zhangsan）'),
-      bot_id: z.string().describe('企业微信机器人 ID'),
+      name: z.string().describe('机器人名称'),
+      bot_id: z.string().describe('企业微信 Bot ID'),
       secret: z.string().describe('机器人密钥'),
-      target_user: z.string().describe('默认目标用户 ID'),
+      default_user: z.string().optional().describe('默认目标用户（可选，可通过消息检测）'),
     },
-    async ({ instance_name, bot_id, secret, target_user }) => {
-      const config = {
-        "command": "npx",
-        "args": ["@vrs-soft/wecom-aibot-mcp"],
-        "env": {
-          "WECOM_BOT_ID": bot_id,
-          "WECOM_SECRET": secret,
-          "WECOM_TARGET_USER": target_user
-        }
-      };
-
-      const jsonSnippet = JSON.stringify({ [instance_name]: config }, null, 2);
-
-      const instructions = `
-## 新机器人配置已生成
-
-将以下配置添加到 \`~/.claude.json\` 的 \`mcpServers\` 中：
-
-\`\`\`json
-${jsonSnippet}
-\`\`\`
-
-### 添加后完整示例：
-
-\`\`\`json
-{
-  "mcpServers": {
-    "wecom-aibot": {
-      "command": "npx",
-      "args": ["@vrs-soft/wecom-aibot-mcp"],
-      "env": {
-        "WECOM_BOT_ID": "existing_bot",
-        "WECOM_SECRET": "existing_secret",
-        "WECOM_TARGET_USER": "existing_user"
-      }
-    },
-    ${jsonSnippet.slice(1, -1)}
-  }
-}
-\`\`\`
-
-### 下一步：
-1. 将配置添加到 \`~/.claude.json\`
-2. 运行 \`/mcp\` 重新加载配置
-3. 新机器人即可使用
-
-### 注意：
-- 每个机器人同时只能保持一个长连接
-- 不同用户使用不同机器人，避免冲突
-`;
-
+    async ({ name, bot_id, secret, default_user }) => {
       return {
         content: [
           {
             type: 'text',
-            text: instructions,
+            text: JSON.stringify({
+              message: '请使用 --add 命令添加机器人配置',
+              command: `npx @vrs-soft/wecom-aibot-mcp --add`,
+              config: {
+                name,
+                botId: bot_id,
+                secret: secret.slice(0, 8) + '...',
+                defaultUser: default_user,
+              },
+            }, null, 2),
           },
         ],
       };
@@ -390,51 +295,211 @@ ${jsonSnippet}
   );
 
   // ============================================
-  // 工具 8: 进入 headless 模式
+  // 工具 8: 列出所有机器人
+  // ============================================
+  server.tool(
+    'list_robots',
+    '列出配置中的所有机器人及其占用状态',
+    {},
+    async () => {
+      const stats = getStats();
+      const headlessStates = getAllHeadlessStates();
+
+      const robots = stats.projects.map(p => ({
+        projectDir: p.projectDir,
+        status: p.connected ? 'connected' : 'disconnected',
+        defaultUser: p.defaultUser,
+        occupiedBy: headlessStates.find(s => s.state.projectDir === p.projectDir)?.state.agentName,
+      }));
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              robots,
+              total: robots.length,
+              available: robots.filter(r => r.status === 'connected').length,
+            }, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ============================================
+  // 工具 9: 获取机器人状态
+  // ============================================
+  server.tool(
+    'get_robot_status',
+    '检查指定机器人的详细状态',
+    {
+      robot_id: z.string().optional().describe('机器人 ID（projectDir，可选）'),
+    },
+    async ({ robot_id }) => {
+      const dir = robot_id || process.cwd();
+      const projectClient = getClient(dir);
+
+      if (!projectClient) {
+        const source = getConfigSource(dir);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                robotId: dir,
+                status: source === 'none' ? 'not_configured' : 'disconnected',
+                configSource: source,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              robotId: dir,
+              status: projectClient.isConnected() ? 'connected' : 'disconnected',
+              defaultUser: projectClient.getDefaultTargetUser(),
+            }, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ============================================
+  // 工具 10: 进入 headless 模式
   // ============================================
   server.tool(
     'enter_headless_mode',
-    '进入 headless 微信模式（审批通过微信发送）。当用户说「现在开始通过微信联系」时调用。',
-    {},
-    async () => {
-      const success = enterHeadlessMode();
-      return {
-        content: [
-          {
-            type: 'text',
-            text: success
-              ? JSON.stringify({ status: 'entered', headless: true, message: '审批请求将通过微信发送' })
-              : JSON.stringify({ status: 'error', message: '进入 headless 模式失败' }),
-          },
-        ],
-      };
+    '进入微信模式，配置项目级 Hook，建立 WebSocket 连接。当用户说「现在开始通过微信联系」时调用。',
+    {
+      agent_name: z.string().describe('智能体名称（用于消息名签）'),
+      project_dir: z.string().optional().describe('项目目录路径（可选）'),
+      robot_id: z.string().optional().describe('指定机器人 ID（可选）'),
+      force: z.boolean().optional().describe('强制使用（即使被占用，可选）'),
+    },
+    async ({ agent_name, project_dir, robot_id, force }) => {
+      try {
+        // 确定项目目录
+        const dir = project_dir || robot_id || process.cwd();
+
+        // 检查配置
+        const config = getConfig(dir);
+        if (!config) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  status: 'error',
+                  message: '请先配置机器人: npx @vrs-soft/wecom-aibot-mcp --config',
+                }),
+              },
+            ],
+          };
+        }
+
+        // 进入 headless 模式
+        const state = enterHeadlessMode(dir, agent_name);
+
+        // 发送确认消息
+        await client.sendText(`【${agent_name}】已进入微信模式，所有交互将通过企业微信进行。`);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                status: 'entered',
+                headless: true,
+                projectDir: dir,
+                message: '审批请求将通过微信发送',
+              }),
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                status: 'error',
+                message: (err as Error).message,
+              }),
+            },
+          ],
+        };
+      }
     }
   );
 
   // ============================================
-  // 工具 9: 退出 headless 模式
+  // 工具 11: 退出 headless 模式
   // ============================================
   server.tool(
     'exit_headless_mode',
-    '退出 headless 微信模式（审批回退到默认 UI）。当用户说「结束微信模式」或「我回来了」时调用。',
-    {},
-    async () => {
-      const success = exitHeadlessMode();
-      return {
-        content: [
-          {
-            type: 'text',
-            text: success
-              ? JSON.stringify({ status: 'exited', headless: false, message: '审批将使用默认 UI' })
-              : JSON.stringify({ status: 'error', message: '退出 headless 模式失败' }),
-          },
-        ],
-      };
+    '退出微信模式，清除配置。当用户说「结束微信模式」或「我回来了」时调用。',
+    {
+      agent_name: z.string().optional().describe('智能体名称（可选）'),
+    },
+    async ({ agent_name }) => {
+      try {
+        const state = exitHeadlessMode();
+
+        if (!state) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  status: 'error',
+                  message: '未在微信模式',
+                }),
+              },
+            ],
+          };
+        }
+
+        // 发送退出通知
+        const name = agent_name || state.agentName || '智能体';
+        await client.sendText(`【${name}】已退出微信模式，恢复终端交互。`);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                status: 'exited',
+                headless: false,
+                message: '审批将使用默认 UI',
+              }),
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                status: 'error',
+                message: (err as Error).message,
+              }),
+            },
+          ],
+        };
+      }
     }
   );
 
   // ============================================
-  // 工具 10: 等待用户消息并识别用户 ID
+  // 工具 12: 从消息识别用户
   // ============================================
   server.tool(
     'detect_user_from_message',
@@ -458,7 +523,7 @@ ${jsonSnippet}
             chatId: msg.chatid,
             chatType: msg.chattype,
             message: msg.content,
-            hint: `正确的用户 ID 是: ${msg.from_userid}（请在配置中使用此 ID）`,
+            hint: `正确的用户 ID 是: ${msg.from_userid}`,
           };
           // 清空消息队列
           client.getPendingMessages(true);
@@ -490,5 +555,5 @@ ${jsonSnippet}
     }
   );
 
-  console.log('[mcp] 已注册 10 个工具: send_message, send_approval_request, get_approval_result, check_connection, get_pending_messages, get_setup_guide, add_robot_config, enter_headless_mode, exit_headless_mode, detect_user_from_message');
+  console.log('[mcp] 已注册 12 个工具: send_message, send_approval_request, get_approval_result, check_connection, get_pending_messages, get_setup_guide, add_robot_config, list_robots, get_robot_status, enter_headless_mode, exit_headless_mode, detect_user_from_message');
 }

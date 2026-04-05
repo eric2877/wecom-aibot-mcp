@@ -3,14 +3,28 @@
  * wecom-aibot-mcp - 企业微信智能机器人 MCP 服务
  *
  * npx 运行入口
+ *
+ * 支持 HTTP Transport 模式：
+ * - 固定端口 18963
+ * - 支持多 Claude Code 同时连接
  */
+
 import * as readline from 'readline';
-import { getOrInitConfig, runConfigWizard, loadConfig, saveConfig, deleteConfig, uninstall, addMcpConfig, detectUserIdFromMessage, ensureHookInstalled, WecomConfig } from './config-wizard.js';
+import {
+  runConfigWizard,
+  loadConfig,
+  saveConfig,
+  deleteConfig,
+  uninstall,
+  addMcpConfig,
+  detectUserIdFromMessage,
+  ensureHookInstalled,
+  WecomConfig,
+} from './config-wizard.js';
 import { initClient, WecomClient } from './client.js';
 import { registerTools } from './tools/index.js';
-import { startHttpServer } from './http-server.js';
+import { startHttpServer, HTTP_PORT } from './http-server.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
 const VERSION = '1.0.6';
 
@@ -48,56 +62,27 @@ function showHelp() {
   --status        显示当前配置状态
   --uninstall     卸载并删除所有配置（包括 MCP 配置、hook、skill）
 
-配置方式（按优先级）:
-  1. 环境变量（推荐多实例场景）:
-     WECOM_BOT_ID      机器人 ID
-     WECOM_SECRET      机器人密钥
-     WECOM_TARGET_USER 默认目标用户 ID
+MCP 配置（HTTP Transport）:
 
-  2. 首次运行时自动启动配置向导
-
-Claude Code 配置示例:
-  在 ~/.claude.json 中添加：
+  编辑 ~/.claude.json：
 
   {
     "mcpServers": {
       "wecom-aibot": {
-        "command": "npx",
-        "args": ["@vrs-soft/wecom-aibot-mcp"],
-        "env": {
-          "WECOM_BOT_ID": "your_bot_id",
-          "WECOM_SECRET": "your_secret",
-          "WECOM_TARGET_USER": "your_userid"
-        }
+        "url": "http://127.0.0.1:${HTTP_PORT}/mcp"
       }
     }
   }
 
-多用户/多机器人配置:
-  不同用户使用不同机器人，配置多个实例：
+  注意：使用 HTTP URL 连接，不再是 stdio transport。
 
-  {
-    "mcpServers": {
-      "wecom-aibot-user1": {
-        "command": "npx",
-        "args": ["@vrs-soft/wecom-aibot-mcp"],
-        "env": {
-          "WECOM_BOT_ID": "bot_user1",
-          "WECOM_SECRET": "secret_user1",
-          "WECOM_TARGET_USER": "user1"
-        }
-      },
-      "wecom-aibot-user2": {
-        "command": "npx",
-        "args": ["@vrs-soft/wecom-aibot-mcp"],
-        "env": {
-          "WECOM_BOT_ID": "bot_user2",
-          "WECOM_SECRET": "secret_user2",
-          "WECOM_TARGET_USER": "user2"
-        }
-      }
-    }
-  }
+项目级配置:
+  每个项目可独立配置机器人：
+
+  cd /path/to/your/project
+  npx @vrs-soft/wecom-aibot-mcp --config
+
+  配置文件：{项目}/.claude/wecom-aibot/config.json
 
 更多信息: https://github.com/eric2877/wecom-aibot-mcp
 `);
@@ -115,7 +100,7 @@ function showStatus() {
     console.log(`  Secret:     ${config.secret.slice(0, 8)}...${config.secret.slice(-4)}`);
     console.log(`  目标用户:   ${config.targetUserId}`);
   } else {
-    console.log('尚未配置，请运行 npx wecom-aibot-mcp 启动配置向导');
+    console.log('尚未配置，请运行 npx @vrs-soft/wecom-aibot-mcp 启动配置向导');
   }
 }
 
@@ -149,7 +134,7 @@ async function main() {
   }
 
   const reconfig = args.includes('--config');
-  const isInteractive = process.stdin.isTTY;  // 是否为用户交互模式
+  const isInteractive = process.stdin.isTTY; // 是否为用户交互模式
 
   console.log('');
   console.log('  ╔════════════════════════════════════════════════════════╗');
@@ -160,7 +145,7 @@ async function main() {
 
   // 获取或初始化配置
   let config: WecomConfig;
-  let ranWizard = false;  // 是否运行了配置向导
+  let ranWizard = false; // 是否运行了配置向导
   let instanceName = 'wecom-aibot';
 
   if (reconfig) {
@@ -182,7 +167,7 @@ async function main() {
       instanceName = result.instanceName;
       ranWizard = true;
     } else {
-      // 非 TTY 模式（MCP stdio），必须有配置
+      // 非 TTY 模式（MCP HTTP），必须有配置
       console.error('[config] 未找到配置，且当前为非交互模式。');
       console.error('[config] 请在终端运行: npx @vrs-soft/wecom-aibot-mcp --config');
       process.exit(1);
@@ -244,10 +229,6 @@ async function main() {
     process.exit(0);
   }
 
-  // 非 TTY 模式（MCP stdio），启动 MCP Server
-  // 启动本地 HTTP 服务（用于 hooks 审批）
-  await startHttpServer(wecomClient);
-
   // 创建 MCP Server
   const server = new McpServer({
     name: 'wecom-aibot-mcp',
@@ -257,17 +238,18 @@ async function main() {
   // 注册工具
   registerTools(server, wecomClient);
 
-  // 启动 MCP 服务（stdio 模式）
-  console.log('[mcp] 启动 MCP Server (stdio)...');
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  // 启动 HTTP 服务（包含 MCP endpoint）
+  console.log(`[mcp] 启动 MCP HTTP Server (端口: ${HTTP_PORT})...`);
+  await startHttpServer(wecomClient, server);
 
   // 定期清理过期消息
   const cleanupInterval = setInterval(() => {
     wecomClient.cleanupMessages();
   }, 60000);
 
-  console.log('[mcp] MCP Server 已就绪');
+  console.log(`[mcp] MCP Server 已就绪`);
+  console.log(`[mcp] HTTP endpoint: http://127.0.0.1:${HTTP_PORT}/mcp`);
+  console.log(`[mcp] 健康检查: http://127.0.0.1:${HTTP_PORT}/health`);
 
   // 退出处理：清理资源
   const gracefulShutdown = () => {

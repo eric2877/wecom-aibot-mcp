@@ -27,13 +27,25 @@ interface MessageRecord {
   chattype: 'single' | 'group';  // 会话类型
 }
 
+// 待发送消息队列（断线期间缓存）
+interface PendingMessage {
+  type: 'text' | 'approval';
+  content: any;
+  targetUser?: string;
+  timestamp: number;
+}
+
 class WecomClient {
   private wsClient: AiBot.WSClient;
   private approvals: Map<string, ApprovalRecord> = new Map();
   private messages: MessageRecord[] = [];
+  private pendingMessages: PendingMessage[] = [];  // 待发送消息队列
   private connected = false;
   private targetUserId: string;
   private botId: string;  // 保存 botId 用于生成授权 URL
+  private wasReconnecting = false;  // 跟踪是否处于重连状态
+  private reconnectAttempt = 0;  // 重连尝试次数
+  private lastDisconnectTime = 0;  // 最后断线时间
 
   constructor(botId: string, secret: string, targetUserId: string) {
     this.botId = botId;
@@ -46,6 +58,11 @@ class WecomClient {
     });
 
     this.setupEventHandlers();
+
+    // 定期清理过期的消息和审批记录（每分钟清理一次，超过 5 分钟的记录会被删除）
+    setInterval(() => {
+      this.cleanupMessages();
+    }, 60000);
   }
 
   // 生成授权页面 URL
@@ -59,16 +76,36 @@ class WecomClient {
     });
 
     this.wsClient.on('authenticated', () => {
+      const wasReconnecting = this.wasReconnecting;
       this.connected = true;
+      this.wasReconnecting = false;
+      this.reconnectAttempt = 0;
       console.log('[wecom] 认证成功，长连接已就绪');
+
+      // 重连成功后发送通知
+      if (wasReconnecting) {
+        this.sendText('【系统】连接已恢复').catch(err => {
+          console.error('[wecom] 发送恢复通知失败:', err);
+        });
+        // 刷新待发送消息队列
+        this.flushPendingMessages();
+      }
     });
 
     this.wsClient.on('disconnected', (reason: string) => {
       this.connected = false;
+      this.wasReconnecting = true;
+      this.lastDisconnectTime = Date.now();
       console.log(`[wecom] 连接断开: ${reason}`);
+
+      // 发送断线通知
+      this.sendText('【系统】连接中断，正在重连...').catch(err => {
+        console.error('[wecom] 发送断线通知失败:', err);
+      });
     });
 
     this.wsClient.on('reconnecting', (attempt: number) => {
+      this.reconnectAttempt = attempt;
       console.log(`[wecom] 正在重连 (第 ${attempt} 次)`);
     });
 
@@ -233,8 +270,16 @@ class WecomClient {
   // 发送文本消息（主动推送）
   async sendText(content: string, targetUser?: string): Promise<boolean> {
     const userId = targetUser || this.targetUserId;
+
+    // 断线时将消息加入队列，等待重连后发送
     if (!this.connected) {
-      console.error('[wecom] 未连接，无法发送消息');
+      console.log('[wecom] 未连接，消息已加入队列');
+      this.pendingMessages.push({
+        type: 'text',
+        content,
+        targetUser: userId,
+        timestamp: Date.now(),
+      });
       return false;
     }
 
@@ -247,6 +292,13 @@ class WecomClient {
       return true;
     } catch (err) {
       console.error(`[wecom] 发送失败: ${err}`);
+      // 发送失败也加入队列
+      this.pendingMessages.push({
+        type: 'text',
+        content,
+        targetUser: userId,
+        timestamp: Date.now(),
+      });
       return false;
     }
   }
@@ -261,8 +313,17 @@ class WecomClient {
     const userId = targetUser || this.targetUserId;
     const taskId = `approval_${requestId}_${Date.now()}`;
 
+    // 断线时将审批请求加入队列，并返回 taskId
     if (!this.connected) {
-      throw new Error('WebSocket 未连接');
+      console.log('[wecom] 未连接，审批请求已加入队列');
+      this.pendingMessages.push({
+        type: 'approval',
+        content: { title, description, requestId, targetUser: userId },
+        targetUser: userId,
+        timestamp: Date.now(),
+      });
+      // 仍然返回 taskId，但审批会等待重连后发送
+      return taskId;
     }
 
     // 从 title 中提取工具名称（格式: 【待审批】Bash）
@@ -336,6 +397,52 @@ class WecomClient {
     this.approvals.forEach((a, k) => {
       if (a.timestamp < cutoff) this.approvals.delete(k);
     });
+    // 清理过期的待发送消息
+    this.pendingMessages = this.pendingMessages.filter(m => m.timestamp > cutoff);
+  }
+
+  // 刷新待发送消息队列（重连成功后调用）
+  private async flushPendingMessages(): Promise<void> {
+    if (this.pendingMessages.length === 0) {
+      return;
+    }
+
+    console.log(`[wecom] 刷新待发送消息队列: ${this.pendingMessages.length} 条`);
+
+    while (this.pendingMessages.length > 0 && this.connected) {
+      const msg = this.pendingMessages.shift();
+      if (!msg) break;
+
+      try {
+        if (msg.type === 'text') {
+          await this.wsClient.sendMessage(msg.targetUser || this.targetUserId, {
+            msgtype: 'markdown',
+            markdown: { content: msg.content },
+          });
+        } else if (msg.type === 'approval') {
+          // 审批消息需要重新发送
+          const { title, description, requestId, targetUser } = msg.content;
+          await this.sendApprovalRequest(title, description, requestId, targetUser);
+        }
+        console.log(`[wecom] 重发消息成功: ${msg.type}`);
+      } catch (err) {
+        console.error(`[wecom] 重发消息失败: ${err}`);
+      }
+    }
+  }
+
+  // 获取待发送消息数量
+  getPendingMessageCount(): number {
+    return this.pendingMessages.length;
+  }
+
+  // 获取重连状态
+  getReconnectStatus(): { wasReconnecting: boolean; attempt: number; lastDisconnectTime: number } {
+    return {
+      wasReconnecting: this.wasReconnecting,
+      attempt: this.reconnectAttempt,
+      lastDisconnectTime: this.lastDisconnectTime,
+    };
   }
 }
 

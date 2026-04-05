@@ -2,50 +2,61 @@
  * MCP Server 模块入口
  *
  * 可作为库导入使用
+ *
+ * 使用 HTTP Transport，支持多客户端连接
  */
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { initClient, WecomClient } from './client.js';
-import { registerTools } from './tools/index.js';
 
-export interface WecomMcpOptions {
-  botId: string;
-  secret: string;
-  targetUserId: string;
-}
+// Client 模块
+export { WecomClient, initClient } from './client.js';
 
-export { WecomClient, initClient, registerTools };
+// ClientPool 模块
+export {
+  getOrCreateClient,
+  getClient,
+  getAllClients,
+  getAllProjectDirs,
+  setConfig,
+  getConfig,
+  removeClient,
+  clearAll,
+  getStats,
+} from './client-pool.js';
+export type { WecomConfig } from './client-pool.js';
 
-/**
- * 创建并启动 MCP Server
- */
-export async function createMcpServer(options: WecomMcpOptions): Promise<{
-  server: McpServer;
-  client: WecomClient;
-}> {
-  const { botId, secret, targetUserId } = options;
+// 项目配置模块
+export {
+  loadProjectConfig,
+  saveProjectConfig,
+  deleteProjectConfig,
+  loadGlobalConfig,
+  getConfig as getProjectConfig,
+  hasProjectConfig,
+  getConfigSource,
+  listConfiguredProjects,
+  validateConfig,
+} from './project-config.js';
+export type { ProjectConfig } from './project-config.js';
 
-  console.log(`[mcp] 初始化企业微信客户端...`);
-  console.log(`[mcp] 默认目标用户: ${targetUserId}`);
+// Headless 状态模块
+export {
+  enterHeadlessMode,
+  exitHeadlessMode,
+  loadHeadlessState,
+  isHeadlessMode,
+  cleanupOrphanFiles,
+  getAllHeadlessStates,
+  getHeadlessFilePath,
+} from './headless-state.js';
+export type { HeadlessState } from './headless-state.js';
 
-  const wecomClient = initClient(botId, secret, targetUserId);
+// HTTP 服务模块
+export {
+  startHttpServer,
+  stopHttpServer,
+  HTTP_PORT,
+  HOOK_SCRIPT_PATH,
+} from './http-server.js';
+export type { ApprovalRequest } from './http-server.js';
 
-  const server = new McpServer({
-    name: 'wecom-aibot-mcp',
-    version: '1.0.0',
-  });
-
-  registerTools(server, wecomClient);
-
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-
-  // 定期清理过期消息
-  setInterval(() => {
-    wecomClient.cleanupMessages();
-  }, 60000);
-
-  console.log('[mcp] MCP Server 已就绪');
-
-  return { server, client: wecomClient };
-}
+// 工具注册
+export { registerTools } from './tools/index.js';

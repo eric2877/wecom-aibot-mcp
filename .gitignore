@@ -5,7 +5,7 @@ dist/
 *.log
 .DS_Store
 *.tgz
+design/
 
 # Claude Code 项目配置（包含用户特定路径）
 .claude/
-design/企业微信Claude机器人接入指南.md
