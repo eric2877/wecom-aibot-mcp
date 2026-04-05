@@ -225,21 +225,42 @@ export function uninstall() {
   deleteHook();
   deleteSkills();
 
-  // 删除运行时文件目录
+  // 删除全局 headless 状态索引文件（可能在同一目录）
+  const headlessIndexFile = path.join(CONFIG_DIR, 'headless-index.json');
+  if (fs.existsSync(headlessIndexFile)) {
+    try {
+      fs.unlinkSync(headlessIndexFile);
+      console.log('[config] 已删除 headless 状态索引');
+    } catch (err) {
+      console.error('[config] 删除 headless 状态索引失败:', err);
+    }
+  }
+
+  // 删除整个配置目录（包括 config.json、robot-*.json、hook 脚本、日志等）
+  // 使用 recursive: true 和 force: true 确保完全删除
   if (fs.existsSync(CONFIG_DIR)) {
     try {
-      // 删除所有 port-* 和 headless-* 文件
+      // 先删除所有文件，再删除目录（防止文件被重建）
       const files = fs.readdirSync(CONFIG_DIR);
       for (const file of files) {
-        if (file.startsWith('port-') || file.startsWith('headless-')) {
-          fs.unlinkSync(path.join(CONFIG_DIR, file));
+        const filePath = path.join(CONFIG_DIR, file);
+        try {
+          if (fs.statSync(filePath).isDirectory()) {
+            fs.rmSync(filePath, { recursive: true, force: true });
+          } else {
+            fs.unlinkSync(filePath);
+          }
+        } catch {
+          // 忽略单个文件删除失败
         }
       }
-      // 如果目录为空，删除目录
-      const remainingFiles = fs.readdirSync(CONFIG_DIR);
-      if (remainingFiles.length === 0) {
-        fs.rmSync(CONFIG_DIR);
+      // 最后尝试删除目录本身
+      try {
+        fs.rmSync(CONFIG_DIR, { recursive: true, force: true });
         console.log('[config] 已删除配置目录');
+      } catch {
+        // 目录可能被其他进程占用，下次启动时会清理
+        console.log('[config] 配置目录已清空（部分文件可能被占用）');
       }
     } catch (err) {
       console.error('[config] 删除配置目录失败:', err);
@@ -247,7 +268,7 @@ export function uninstall() {
   }
 
   console.log('\n[config] 卸载完成');
-  console.log('[config] 如需重新安装，请运行: npx @vrs-soft/wecom-aibot-mcp --config\n');
+  console.log('[config] 如需重新安装，请运行: npx @vrs-soft/wecom-aibot-mcp\n');
 }
 
 // 生成并写入 hook 脚本（HTTP Transport 版本）
@@ -571,24 +592,26 @@ export function listAllRobots(): Array<{ name: string; botId: string; targetUser
         targetUserId: config.targetUserId,
         isDefault: true,
       });
-    } catch (e) {
+    } catch {
       // ignore
     }
   }
 
   // 其他机器人配置
-  const files = fs.readdirSync(CONFIG_DIR).filter(f => f.startsWith('robot-') && f.endsWith('.json'));
-  for (const file of files) {
-    try {
-      const config = JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, file), 'utf-8'));
-      robots.push({
-        name: config.nameTag || file,
-        botId: config.botId,
-        targetUserId: config.targetUserId,
-        isDefault: false,
-      });
-    } catch (e) {
-      // ignore
+  if (fs.existsSync(CONFIG_DIR)) {
+    const files = fs.readdirSync(CONFIG_DIR).filter(f => f.startsWith('robot-') && f.endsWith('.json'));
+    for (const file of files) {
+      try {
+        const config = JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, file), 'utf-8'));
+        robots.push({
+          name: config.nameTag || file,
+          botId: config.botId,
+          targetUserId: config.targetUserId,
+          isDefault: false,
+        });
+      } catch {
+        // ignore
+      }
     }
   }
 

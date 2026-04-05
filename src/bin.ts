@@ -14,6 +14,10 @@
  * - exit_headless_mode 时断开连接
  */
 
+import { spawn } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import {
   runConfigWizard,
   loadConfig,
@@ -29,13 +33,14 @@ import {
 } from './config-wizard.js';
 import { initClient, WecomClient } from './client.js';
 import { registerTools } from './tools/index.js';
-import { startHttpServer, HTTP_PORT } from './http-server.js';
+import { startHttpServer, stopHttpServer, HTTP_PORT } from './http-server.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { clearAllProjectHooks, getAllHeadlessStates } from './headless-state.js';
 import { loadStats, cleanupOldLogs } from './connection-log.js';
 import { startKeepaliveMonitor, stopKeepaliveMonitor } from './keepalive-monitor.js';
 
-const VERSION = '1.0.7';
+const VERSION = '1.0.9';
+const PID_FILE = path.join(os.homedir(), '.wecom-aibot-mcp', 'server.pid');
 
 function showHelp() {
   console.log(`
@@ -50,11 +55,26 @@ function showHelp() {
 选项:
   --help, -h      显示帮助信息
   --version, -v   显示版本号
+  --start         启动 MCP Server（后台服务模式）
+  --stop          停止 MCP Server
+  --status        显示服务状态和机器人配置
   --config        重新配置默认机器人（修改 Bot ID / Secret / 目标用户）
   --add           添加新的机器人配置（多机器人场景）
-  --list          列出所有已配置的机器人
+  --list          列出所有已配置的机器人及其占用状态
   --delete [名称] 删除指定的机器人配置（无参数则显示列表选择）
   --uninstall     卸载并删除所有配置（包括 MCP 配置、hook、skill）
+
+使用流程:
+  1. 首次安装: npx @vrs-soft/wecom-aibot-mcp
+     （进入配置向导，完成后自动后台启动服务）
+
+  2. 已有配置: npx @vrs-soft/wecom-aibot-mcp
+     （显示状态，提示使用 --start 启动）
+
+  3. 启动服务: npx @vrs-soft/wecom-aibot-mcp --start
+     （后台启动 MCP HTTP Server）
+
+  4. 停止服务: npx @vrs-soft/wecom-aibot-mcp --stop
 
 MCP 配置（HTTP Transport）:
 
@@ -64,7 +84,7 @@ MCP 配置（HTTP Transport）:
     "mcpServers": {
       "wecom-aibot": {
         "type": "http",
-        "url": "http://127.0.0.1:${HTTP_PORT}/mcp"
+        "url": "http://127.0.0.1:18963/mcp"
       }
     }
   }
@@ -91,8 +111,12 @@ function showStatus() {
   const allRobots = listAllRobots();
   const headlessStates = getAllHeadlessStates();
 
+  // 检查服务是否运行
+  const serverRunning = isServerRunning();
+  console.log(`\n服务状态: ${serverRunning ? '✅ 运行中' : '❌ 未启动'}\n`);
+
   if (allRobots.length === 0) {
-    console.log('尚未配置，请运行 npx @vrs-soft/wecom-aibot-mcp 启动配置向导');
+    console.log('尚未配置机器人，请运行 npx @vrs-soft/wecom-aibot-mcp 启动配置向导');
     return;
   }
 
@@ -124,6 +148,59 @@ function showStatus() {
   }
 }
 
+// 检查服务是否运行
+function isServerRunning(): boolean {
+  if (!fs.existsSync(PID_FILE)) {
+    return false;
+  }
+
+  try {
+    const pid = parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim());
+    // 检查进程是否存在
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    // 进程不存在，清理 PID 文件
+    fs.unlinkSync(PID_FILE);
+    return false;
+  }
+}
+
+// 停止服务
+function stopServer(): boolean {
+  if (!fs.existsSync(PID_FILE)) {
+    console.log('[mcp] 服务未运行');
+    return false;
+  }
+
+  try {
+    const pid = parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim());
+    process.kill(pid, 'SIGTERM');
+
+    // 等待进程退出
+    let attempts = 0;
+    while (attempts < 10) {
+      try {
+        process.kill(pid, 0);
+        // 进程还存在，等待
+        setTimeout(() => {}, 500);
+        attempts++;
+      } catch {
+        // 进程已退出
+        break;
+      }
+    }
+
+    fs.unlinkSync(PID_FILE);
+    console.log('[mcp] 服务已停止');
+    return true;
+  } catch (err) {
+    console.error('[mcp] 停止服务失败:', err);
+    fs.unlinkSync(PID_FILE);
+    return false;
+  }
+}
+
 // 等待连接验证（用于配置向导验证凭证）
 async function waitForConnection(client: WecomClient, timeoutMs = 10000): Promise<boolean> {
   return new Promise((resolve) => {
@@ -138,6 +215,100 @@ async function waitForConnection(client: WecomClient, timeoutMs = 10000): Promis
       }
     }, 500);
   });
+}
+
+// 启动 MCP Server（前台运行，供 --start 使用）
+async function startMcpServerForeground(): Promise<void> {
+  const savedConfig = loadConfig();
+  if (!savedConfig || !savedConfig.botId || !savedConfig.secret || !savedConfig.targetUserId) {
+    console.error('[mcp] 未找到配置，请先运行: npx @vrs-soft/wecom-aibot-mcp');
+    process.exit(1);
+  }
+
+  // 写入 PID 文件
+  fs.writeFileSync(PID_FILE, String(process.pid));
+
+  // 确保 hook 已安装
+  ensureHookInstalled();
+
+  // 清理残留的 headless 状态
+  clearAllProjectHooks();
+
+  // 加载统计并清理旧日志
+  loadStats();
+  cleanupOldLogs(1 / 24);
+
+  // 创建 MCP Server
+  const server = new McpServer({
+    name: 'wecom-aibot-mcp',
+    version: VERSION,
+  });
+
+  registerTools(server);
+
+  // 启动 HTTP 服务
+  console.log('');
+  console.log('  ╔════════════════════════════════════════════════════════╗');
+  console.log(`  ║   企业微信智能机器人 MCP 服务 v${VERSION}                   ║`);
+  console.log('  ║   Claude Code 审批通道                                 ║');
+  console.log('  ╚════════════════════════════════════════════════════════╝');
+  console.log('');
+
+  console.log(`[mcp] 启动 MCP HTTP Server (端口: ${HTTP_PORT})...`);
+  await startHttpServer(server);
+
+  startKeepaliveMonitor();
+
+  console.log(`[mcp] MCP Server 已就绪`);
+  console.log(`[mcp] HTTP endpoint: http://127.0.0.1:${HTTP_PORT}/mcp`);
+  console.log(`[mcp] 健康检查: http://127.0.0.1:${HTTP_PORT}/health`);
+  console.log(`[mcp] 微信模式：enter_headless_mode 时建立连接`);
+  console.log(`[mcp] PID: ${process.pid}`);
+
+  // 退出处理
+  const gracefulShutdown = () => {
+    console.log('[mcp] 正在关闭...');
+    stopKeepaliveMonitor();
+    stopHttpServer();
+    if (fs.existsSync(PID_FILE)) {
+      fs.unlinkSync(PID_FILE);
+    }
+    process.exit(0);
+  };
+
+  process.on('SIGINT', gracefulShutdown);
+  process.on('SIGTERM', gracefulShutdown);
+}
+
+// 后台启动 MCP Server（使用 spawn）
+function startMcpServerBackground(): void {
+  // 检查配置是否存在
+  const savedConfig = loadConfig();
+  if (!savedConfig || !savedConfig.botId || !savedConfig.secret || !savedConfig.targetUserId) {
+    console.error('[mcp] 未找到配置，请先运行: npx @vrs-soft/wecom-aibot-mcp');
+    process.exit(1);
+  }
+
+  // 检查是否已运行
+  if (isServerRunning()) {
+    console.log('[mcp] 服务已在运行中');
+    return;
+  }
+
+  const nodePath = process.execPath;
+  const scriptPath = process.argv[1];
+
+  const child = spawn(nodePath, [scriptPath, '--start', '--foreground'], {
+    detached: true,
+    stdio: 'ignore',
+  });
+
+  child.unref();
+
+  console.log('[mcp] MCP Server 已在后台启动');
+  console.log(`[mcp] HTTP endpoint: http://127.0.0.1:18963/mcp`);
+  console.log('[mcp] 健康检查: curl http://127.0.0.1:18963/health');
+  console.log('[mcp] 停止服务: npx @vrs-soft/wecom-aibot-mcp --stop');
 }
 
 async function main() {
@@ -159,7 +330,18 @@ async function main() {
     process.exit(0);
   }
 
+  // --stop 命令：停止服务
+  if (args.includes('--stop')) {
+    stopServer();
+    process.exit(0);
+  }
+
+  // --uninstall 命令：先停止服务再卸载
   if (args.includes('--uninstall')) {
+    if (isServerRunning()) {
+      console.log('[mcp] 正在停止服务...');
+      stopServer();
+    }
     uninstall();
     process.exit(0);
   }
@@ -177,6 +359,18 @@ async function main() {
     process.exit(0);
   }
 
+  // --start --foreground：前台启动（内部调用）
+  if (args.includes('--start') && args.includes('--foreground')) {
+    await startMcpServerForeground();
+    return; // 保持运行，不 exit
+  }
+
+  // --start：后台启动
+  if (args.includes('--start')) {
+    startMcpServerBackground();
+    process.exit(0);
+  }
+
   const reconfig = args.includes('--config');
   const isInteractive = process.stdin.isTTY; // 是否为用户交互模式
 
@@ -189,7 +383,7 @@ async function main() {
 
   // 加载统计并清理旧日志（保留 1 小时）
   loadStats();
-  cleanupOldLogs(1 / 24);  // 保留 1 小时
+  cleanupOldLogs(1 / 24);
 
   // 获取或初始化配置
   let config: WecomConfig;
@@ -274,44 +468,21 @@ async function main() {
 
     console.log('\n[mcp] ✅ 配置完成！');
     console.log(`[mcp] 用户 ID: ${userId}`);
-    console.log('[mcp] 请重启 Claude Code 以加载 MCP 服务\n');
 
     // 配置完成后断开连接
     tempClient.disconnect();
+
+    // 首次安装后自动后台启动服务
+    console.log('\n[mcp] 正在后台启动 MCP Server...');
+    startMcpServerBackground();
+    console.log('[mcp] 请重启 Claude Code 以加载 MCP 服务\n');
     process.exit(0);
   }
 
-  // 创建 MCP Server（不建立 WebSocket 连接）
-  const server = new McpServer({
-    name: 'wecom-aibot-mcp',
-    version: VERSION,
-  });
-
-  // 注册工具（不传入 client，由 ConnectionManager 管理）
-  registerTools(server);
-
-  // 启动 HTTP 服务
-  console.log(`[mcp] 启动 MCP HTTP Server (端口: ${HTTP_PORT})...`);
-  await startHttpServer(server);
-
-  // 启动保活监控
-  startKeepaliveMonitor();
-
-  console.log(`[mcp] MCP Server 已就绪`);
-  console.log(`[mcp] HTTP endpoint: http://127.0.0.1:${HTTP_PORT}/mcp`);
-  console.log(`[mcp] 健康检查: http://127.0.0.1:${HTTP_PORT}/health`);
-  console.log(`[mcp] 微信模式：enter_headless_mode 时建立连接`);
-
-  // 退出处理
-  const gracefulShutdown = () => {
-    console.log('[mcp] 正在关闭...');
-    stopKeepaliveMonitor();
-    process.exit(0);
-  };
-
-  // 监听进程信号
-  process.on('SIGINT', gracefulShutdown);
-  process.on('SIGTERM', gracefulShutdown);
+  // 已有配置，显示状态并提示启动命令
+  showStatus();
+  console.log('\n[mcp] 使用 --start 启动服务，--stop 停止服务');
+  console.log('[mcp] 命令: npx @vrs-soft/wecom-aibot-mcp --start\n');
 }
 
 main().catch((err) => {

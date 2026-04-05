@@ -50,7 +50,7 @@ interface ApprovalEntry {
 const pendingApprovals: Map<string, ApprovalEntry> = new Map();
 const APPROVAL_TIMEOUT_MS = parseInt(process.env.APPROVAL_TIMEOUT_MS || '600000', 10);  // 默认 10 分钟，可通过环境变量配置
 
-const VERSION = '1.0.7';
+const VERSION = '1.0.9';
 
 function createMcpServer(): McpServer {
   const server = new McpServer({
