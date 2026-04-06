@@ -3,11 +3,12 @@
  *
  * 定期检查待处理审批，发送审批提醒（同时也是 WebSocket 保活消息）
  *
- * 使用 ConnectionManager 获取客户端，支持自动重连
+ * v2.0 架构变更：
+ * - 使用 Session 获取 robotName
+ * - 不再使用 projectDir
  */
 
-import { loadHeadlessState } from './headless-state.js';
-import { getClient, isConnected } from './connection-manager.js';
+import { getClient, getConnectionState } from './connection-manager.js';
 
 const KEEPALIVE_INTERVAL_MINUTES = 5;  // 每 5 分钟
 const CHECK_INTERVAL_MS = 60000;       // 每分钟检查一次
@@ -37,24 +38,14 @@ export function stopKeepaliveMonitor(): void {
  * 检查并发送保活消息
  */
 async function checkAndSendKeepalive(): Promise<void> {
-  // 检查是否在 headless 模式
-  const state = loadHeadlessState();
-  if (!state) {
-    // 不在 headless 模式，不需要保活
-    return;
-  }
-
-  // 保活消息始终发送，不受 autoApprove 影响
-  // autoApprove 只影响超时后的智能代批，不影响保活提醒
-
   // 检查是否有连接
-  const headlessState = loadHeadlessState();
-  if (!headlessState || !isConnected(headlessState.projectDir)) {
+  const state = getConnectionState();
+  if (!state.connected || !state.robotName) {
     return;
   }
 
   // 获取客户端（会自动重连）
-  const client = await getClient(headlessState.projectDir);
+  const client = await getClient(state.robotName);
   if (!client) {
     return;
   }
@@ -77,7 +68,7 @@ async function checkAndSendKeepalive(): Promise<void> {
         minutes % KEEPALIVE_INTERVAL_MINUTES === 0 &&
         approval.lastKeepaliveMinute !== minutes) {
 
-      await sendKeepaliveMessage(approval, minutes);
+      await sendKeepaliveMessage(approval, minutes, state.robotName);
       approval.lastKeepaliveMinute = minutes;
       approval.keepaliveCount = (approval.keepaliveCount || 0) + 1;
     }
@@ -87,15 +78,13 @@ async function checkAndSendKeepalive(): Promise<void> {
 /**
  * 发送保活消息（同时也是审批提醒）
  */
-async function sendKeepaliveMessage(approval: any, minutes: number): Promise<void> {
+async function sendKeepaliveMessage(approval: any, minutes: number, robotName: string): Promise<void> {
   const toolName = approval.toolName || '未知操作';
 
   const message = `【审批提醒】您有 ${minutes} 分钟前的审批请求待处理（${toolName}），请尽快在企业微信中审批。`;
 
   try {
-    const headlessState = loadHeadlessState();
-    if (!headlessState) return;
-    const client = await getClient(headlessState.projectDir);
+    const client = await getClient(robotName);
     if (client) {
       const sent = await client.sendText(message);
       if (sent) {

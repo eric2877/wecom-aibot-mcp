@@ -6,6 +6,7 @@
  */
 import AiBot from '@wecom/aibot-node-sdk';
 import type { WsFrame } from '@wecom/aibot-node-sdk';
+import { EventEmitter } from 'events';
 import {
   logConnected,
   logAuthenticated,
@@ -13,6 +14,7 @@ import {
   logReconnecting,
   logError,
 } from './connection-log.js';
+import { publishWecomMessage } from './message-bus.js';
 
 // 审批结果存储
 interface ApprovalRecord {
@@ -45,7 +47,7 @@ interface PendingMessage {
   timestamp: number;
 }
 
-class WecomClient {
+class WecomClient extends EventEmitter {
   private wsClient: AiBot.WSClient;
   private approvals: Map<string, ApprovalRecord> = new Map();
   private messages: MessageRecord[] = [];
@@ -53,13 +55,16 @@ class WecomClient {
   private connected = false;
   private targetUserId: string;
   private botId: string;  // 保存 botId 用于生成授权 URL
+  private robotName: string;  // 机器人名称（用于消息总线路由）
   private wasReconnecting = false;  // 跟踪是否处于重连状态
   private reconnectAttempt = 0;  // 重连尝试次数
   private lastDisconnectTime = 0;  // 最后断线时间
 
-  constructor(botId: string, secret: string, targetUserId: string) {
+  constructor(botId: string, secret: string, targetUserId: string, robotName: string) {
+    super();
     this.botId = botId;
     this.targetUserId = targetUserId;
+    this.robotName = robotName;
     this.wsClient = new AiBot.WSClient({
       botId,
       secret,
@@ -75,6 +80,7 @@ class WecomClient {
     }, 60000);
   }
 
+  
   // 生成授权页面 URL
   getAuthUrl(): string {
     return `https://work.weixin.qq.com/ai/aiHelper/authorizationPage?str_aibotid=${this.botId}&type=6&from=chat&forceInnerBrowser=1`;
@@ -162,6 +168,9 @@ class WecomClient {
     const body = frame.body;
     if (!body) return;
 
+    // 打印完整消息结构（调试用）
+    console.log('[wecom] 收到消息帧:', JSON.stringify(body, null, 2).substring(0, 500));
+
     const msgid = body.msgid;
     const from_userid = body.from?.userid || '';
     const msgtype = body.msgtype;
@@ -179,17 +188,40 @@ class WecomClient {
         .join('');
     }
 
+    // 提取引用内容（企业微信格式：body.quote.text.content）
+    let quoteContent: string | undefined;
+    if (body.quote?.text?.content) {
+      quoteContent = body.quote.text.content;
+    }
+
+    if (quoteContent) {
+      console.log('[wecom] 检测到引用内容:', quoteContent.substring(0, 100));
+    }
+
     if (content) {
-      this.messages.push({
+      const msgRecord: MessageRecord = {
         msgid,
         content,
         timestamp: Date.now(),
         from_userid,
         chatid,
         chattype,
-      });
+      };
+      this.messages.push(msgRecord);
       const source = chattype === 'group' ? `群聊(${chatid})` : '单聊';
       console.log(`[wecom] 收到${source}消息: ${from_userid} -> ${content.slice(0, 100)}`);
+
+      // 发布到消息总线（用于 SSE 推送）
+      publishWecomMessage({
+        robotName: this.robotName,
+        msgid,
+        content,
+        from_userid,
+        chatid,
+        chattype,
+        timestamp: Date.now(),
+        quoteContent,
+      });
     }
   }
 
@@ -211,6 +243,7 @@ class WecomClient {
       approval.resolved = true;
       approval.result = eventKey as 'allow-once' | 'allow-always' | 'deny';
       approval.timestamp = Date.now();
+      this.emit('approval_resolved', { taskId, result: approval.result });
 
       // 发送确认消息给用户
       const resultText = eventKey === 'allow-once' ? '✅ 已允许（本次）'
@@ -324,29 +357,29 @@ class WecomClient {
     const userId = targetUser || this.targetUserId;
     const taskId = `approval_${requestId}_${Date.now()}`;
 
-    // 断线时将审批请求加入队列，并返回 taskId
-    if (!this.connected) {
-      console.log('[wecom] 未连接，审批请求已加入队列');
-      this.pendingMessages.push({
-        type: 'approval',
-        content: { title, description, requestId, targetUser: userId },
-        targetUser: userId,
-        timestamp: Date.now(),
-      });
-      // 仍然返回 taskId，但审批会等待重连后发送
-      return taskId;
-    }
-
     // 从 title 中提取工具名称（格式: 【待审批】Bash）
     const toolName = title.replace('【待审批】', '');
 
-    // 存储审批记录
+    // 始终存储审批记录（断线时也需要，让 Hook 能轮询到）
     this.approvals.set(taskId, {
       taskId,
       resolved: false,
       timestamp: Date.now(),
       toolName,
     });
+
+    // 断线时将审批请求加入队列，等待重连后发送
+    if (!this.connected) {
+      console.log('[wecom] 未连接，审批请求已加入队列');
+      this.pendingMessages.push({
+        type: 'approval',
+        content: { title, description, requestId, targetUser: userId, taskId },
+        targetUser: userId,
+        timestamp: Date.now(),
+      });
+      // 返回 taskId，审批记录已创建，等待重连后发送
+      return taskId;
+    }
 
     // 发送模板卡片
     await this.wsClient.sendMessage(userId, {
@@ -366,6 +399,46 @@ class WecomClient {
 
     console.log(`[wecom] 已发送审批请求到 ${userId}: ${taskId}`);
     return taskId;
+  }
+
+  // 发送排队的审批请求（使用已存在的 taskId）
+  async sendQueuedApproval(
+    taskId: string,
+    title: string,
+    description: string,
+    targetUser?: string
+  ): Promise<boolean> {
+    // 检查审批是否已解决
+    const approval = this.approvals.get(taskId);
+    if (!approval) {
+      console.log(`[wecom] 审批记录不存在: ${taskId}`);
+      return false;
+    }
+    if (approval.resolved) {
+      console.log(`[wecom] 审批已解决，跳过发送: ${taskId}`);
+      return false;
+    }
+
+    const userId = targetUser || this.targetUserId;
+
+    // 发送模板卡片
+    await this.wsClient.sendMessage(userId, {
+      msgtype: 'template_card',
+      template_card: {
+        card_type: 'button_interaction',
+        main_title: { title },
+        sub_title_text: description,
+        button_list: [
+          { text: '允许', key: 'allow-once', style: 1 },
+          { text: '默认', key: 'allow-always', style: 1 },
+          { text: '拒绝', key: 'deny', style: 2 },
+        ],
+        task_id: taskId,
+      },
+    });
+
+    console.log(`[wecom] 已发送排队审批请求到 ${userId}: ${taskId}`);
+    return true;
   }
 
   // 获取审批结果（非阻塞，立即返回当前状态）
@@ -442,9 +515,26 @@ class WecomClient {
             markdown: { content: msg.content },
           });
         } else if (msg.type === 'approval') {
-          // 审批消息需要重新发送
-          const { title, description, requestId, targetUser } = msg.content;
-          await this.sendApprovalRequest(title, description, requestId, targetUser);
+          // 审批消息：使用原始 taskId 重新发送
+          const { title, description, targetUser, taskId } = msg.content;
+          const userId = targetUser || this.targetUserId;
+
+          // 发送模板卡片（使用原始 taskId）
+          await this.wsClient.sendMessage(userId, {
+            msgtype: 'template_card',
+            template_card: {
+              card_type: 'button_interaction',
+              main_title: { title },
+              sub_title_text: description,
+              button_list: [
+                { text: '允许', key: 'allow-once', style: 1 },
+                { text: '默认', key: 'allow-always', style: 1 },
+                { text: '拒绝', key: 'deny', style: 2 },
+              ],
+              task_id: taskId,
+            },
+          });
+          console.log(`[wecom] 重发审批请求: ${taskId}`);
         }
         console.log(`[wecom] 重发消息成功: ${msg.type}`);
       } catch (err) {
@@ -471,11 +561,11 @@ class WecomClient {
 // 单例实例
 let instance: WecomClient | null = null;
 
-export function initClient(botId: string, secret: string, targetUserId: string): WecomClient {
+export function initClient(botId: string, secret: string, targetUserId: string, robotName: string): WecomClient {
   if (instance) {
     instance.disconnect();
   }
-  instance = new WecomClient(botId, secret, targetUserId);
+  instance = new WecomClient(botId, secret, targetUserId, robotName);
   instance.connect();
   return instance;
 }

@@ -11,6 +11,7 @@ import * as readline from 'readline';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { fileURLToPath } from 'url';
 
 export interface WecomConfig {
   botId: string;
@@ -26,8 +27,10 @@ const CLAUDE_CONFIG_FILE = path.join(os.homedir(), '.claude.json');
 const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.local.json');
 const HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.sh');
 
-// Skill 模板路径（包内）
-const SKILL_TEMPLATE_DIR = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'skills', 'headless-mode');
+// Skill 模板路径（包内）- 使用 fileURLToPath 确保跨平台兼容
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const SKILL_TEMPLATE_DIR = path.join(__dirname, '..', 'skills', 'headless-mode');
 const SKILL_TEMPLATE_FILE = path.join(SKILL_TEMPLATE_DIR, 'SKILL.md');
 
 // MCP 工具权限列表（需要预授权以避免 headless 模式阻断）
@@ -508,7 +511,7 @@ export async function addMcpConfig() {
     // 先连接验证凭证
     console.log('\n[config] 正在连接企业微信...');
     const { initClient } = await import('./client.js');
-    const client = initClient(botId, secret, 'placeholder');
+    const client = initClient(botId, secret, 'placeholder', 'config-validation');
 
     // 等待连接（最多10秒）
     const connected = await new Promise<boolean>((resolve) => {
@@ -583,20 +586,18 @@ export async function addMcpConfig() {
 }
 
 // 列出所有机器人配置
-export function listAllRobots(): Array<{ name: string; botId: string; targetUserId: string; isDefault: boolean }> {
-  const robots: Array<{ name: string; botId: string; targetUserId: string; isDefault: boolean }> = [];
+export function listAllRobots(): Array<{ name: string; botId: string; targetUserId: string }> {
+  const robots: Array<{ name: string; botId: string; targetUserId: string }> = [];
 
   // 主配置文件（config.json）
   if (fs.existsSync(BOT_CONFIG_FILE)) {
     try {
       const config = JSON.parse(fs.readFileSync(BOT_CONFIG_FILE, 'utf-8'));
-      // 使用 nameTag，如果没有则用 botId 前缀
       const name = config.nameTag || `机器人-${config.botId?.slice(0, 8) || 'unknown'}`;
       robots.push({
         name,
         botId: config.botId,
         targetUserId: config.targetUserId,
-        isDefault: true,
       });
     } catch {
       // ignore
@@ -614,7 +615,6 @@ export function listAllRobots(): Array<{ name: string; botId: string; targetUser
           name,
           botId: config.botId,
           targetUserId: config.targetUserId,
-          isDefault: false,
         });
       } catch {
         // ignore
@@ -631,34 +631,35 @@ function installSkills() {
     const claudeSkillsDir = path.join(os.homedir(), '.claude', 'skills', 'headless-mode');
     const skillFile = path.join(claudeSkillsDir, 'SKILL.md');
 
-    // 检查是否已存在
-    if (fs.existsSync(skillFile)) {
-      console.log('[config] skill 文件已存在，跳过安装');
-      return;
-    }
-
     // 确保目录存在
     if (!fs.existsSync(claudeSkillsDir)) {
       fs.mkdirSync(claudeSkillsDir, { recursive: true });
     }
 
-    // 从包内复制 skill 文件
-    // ES modules: 使用 import.meta.url 获取当前模块路径
-    const currentDir = path.dirname(new URL(import.meta.url).pathname);
-    const sourceSkillFile = path.join(currentDir, '..', 'skills', 'headless-mode', 'SKILL.md');
+    // 尝试多个可能的源路径（支持 npm 安装和开发模式）
+    const possibleSources = [
+      // 1. 包内路径（npm 安装后的位置）
+      SKILL_TEMPLATE_FILE,
+      // 2. 开发模式路径
+      path.join(process.cwd(), 'skills', 'headless-mode', 'SKILL.md'),
+      // 3. 相对于 dist 目录的路径
+      path.join(__dirname, '..', 'skills', 'headless-mode', 'SKILL.md'),
+    ];
 
-    if (fs.existsSync(sourceSkillFile)) {
-      fs.copyFileSync(sourceSkillFile, skillFile);
+    let sourceFile: string | null = null;
+    for (const src of possibleSources) {
+      if (fs.existsSync(src)) {
+        sourceFile = src;
+        break;
+      }
+    }
+
+    if (sourceFile) {
+      fs.copyFileSync(sourceFile, skillFile);
       console.log(`[config] skill 文件已安装: ${skillFile}`);
     } else {
-      // 开发模式：从源码目录复制
-      const devSkillFile = path.join(process.cwd(), 'skills', 'headless-mode', 'SKILL.md');
-      if (fs.existsSync(devSkillFile)) {
-        fs.copyFileSync(devSkillFile, skillFile);
-        console.log(`[config] skill 文件已安装: ${skillFile}`);
-      } else {
-        console.log('[config] ⚠️  skill 文件未找到，请手动创建 ~/.claude/skills/headless-mode/SKILL.md');
-      }
+      console.log('[config] ⚠️  skill 文件未找到，请手动创建 ~/.claude/skills/headless-mode/SKILL.md');
+      console.log('[config]    查找路径:', possibleSources.join(', '));
     }
   } catch (err) {
     console.error('[config] 安装 skill 文件失败:', err);
@@ -723,7 +724,10 @@ export function saveConfig(config: WecomConfig, instanceName?: string) {
   // 写入 MCP 工具权限和 Hook 到 ~/.claude/settings.local.json
   writeMcpPermissions();
 
-  // 安装 skill 到项目目录
+  // 安装 skill 到全局 ~/.claude/skills/（用户级别）
+  installSkills();
+
+  // 安装 skill 到项目目录（项目级别）
   installSkill(process.cwd());
 }
 

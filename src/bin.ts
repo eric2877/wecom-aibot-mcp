@@ -4,14 +4,10 @@
  *
  * npx 运行入口
  *
- * 支持 HTTP Transport 模式：
- * - 固定端口 18963
- * - 支持多 Claude Code 同时连接
- *
- * 连接管理：
- * - 启动时不建立 WebSocket 连接
- * - enter_headless_mode 时按需建立连接
- * - exit_headless_mode 时断开连接
+ * v2.0 架构变更：
+ * - 使用 Session 管理
+ * - robotName 作为连接索引
+ * - 不再使用 projectDir
  */
 
 import { spawn } from 'child_process';
@@ -35,11 +31,11 @@ import { initClient, WecomClient } from './client.js';
 import { registerTools } from './tools/index.js';
 import { startHttpServer, stopHttpServer, HTTP_PORT } from './http-server.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { clearAllProjectHooks, getAllHeadlessStates } from './headless-state.js';
+import { getAllConnectionStates } from './connection-manager.js';
 import { loadStats, cleanupOldLogs } from './connection-log.js';
 import { startKeepaliveMonitor, stopKeepaliveMonitor } from './keepalive-monitor.js';
 
-const VERSION = '1.0.9';
+const VERSION = '1.2.0';
 const PID_FILE = path.join(os.homedir(), '.wecom-aibot-mcp', 'server.pid');
 
 function showHelp() {
@@ -89,16 +85,6 @@ MCP 配置（HTTP Transport）:
     }
   }
 
-  注意：使用 HTTP URL 连接，不再是 stdio transport。
-
-项目级配置:
-  每个项目可独立配置机器人：
-
-  cd /path/to/your/project
-  npx @vrs-soft/wecom-aibot-mcp --config
-
-  配置文件：{项目}/.claude/wecom-aibot/config.json
-
 更多信息: https://github.com/eric2877/wecom-aibot-mcp
 `);
 }
@@ -109,7 +95,7 @@ function showVersion() {
 
 function showStatus() {
   const allRobots = listAllRobots();
-  const headlessStates = getAllHeadlessStates();
+  const connections = getAllConnectionStates();
 
   // 检查服务是否运行
   const serverRunning = isServerRunning();
@@ -121,28 +107,24 @@ function showStatus() {
   }
 
   // 构建机器人占用信息
-  const robotUsage = new Map<string, { agentName: string; projectDir: string }>();
-  for (const { state } of headlessStates) {
-    if (state.robotName) {
-      robotUsage.set(state.robotName, {
-        agentName: state.agentName || '未知',
-        projectDir: state.projectDir,
-      });
+  const robotUsage = new Map<string, { agentName: string }>();
+  for (const conn of connections) {
+    if (conn.agentName) {
+      robotUsage.set(conn.robotName, { agentName: conn.agentName });
     }
   }
 
   console.log(`已配置 ${allRobots.length} 个机器人:\n`);
 
   for (const robot of allRobots) {
-    const defaultTag = robot.isDefault ? ' (默认)' : '';
     const usage = robotUsage.get(robot.name);
     const statusTag = usage ? ` [使用中]` : '';
 
-    console.log(`  ${robot.name}${defaultTag}${statusTag}`);
+    console.log(`  ${robot.name}${statusTag}`);
     console.log(`    Bot ID:     ${robot.botId}`);
     console.log(`    目标用户:   ${robot.targetUserId}`);
     if (usage) {
-      console.log(`    使用者:     ${usage.agentName} (${usage.projectDir})`);
+      console.log(`    使用者:     ${usage.agentName}`);
     }
     console.log('');
   }
@@ -230,9 +212,6 @@ async function startMcpServerForeground(): Promise<void> {
 
   // 确保 hook 已安装
   ensureHookInstalled();
-
-  // 清理残留的 headless 状态
-  clearAllProjectHooks();
 
   // 加载统计并清理旧日志
   loadStats();
@@ -419,15 +398,12 @@ async function main() {
   // 确保 hook 已安装（幂等，每次启动检查）
   ensureHookInstalled();
 
-  // 清理残留的 headless 状态和 Hook 配置
-  clearAllProjectHooks();
-
   // 配置向导模式：验证连接并识别用户 ID
   if (isInteractive && (ranWizard || reconfig)) {
     console.log('[mcp] 验证机器人连接...');
 
     // 临时建立连接验证凭证
-    const tempClient = initClient(config.botId, config.secret, config.targetUserId || 'placeholder');
+    const tempClient = initClient(config.botId, config.secret, config.targetUserId || 'placeholder', 'temp-validation');
     const connected = await waitForConnection(tempClient, 10000);
 
     if (!connected) {

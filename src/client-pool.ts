@@ -47,7 +47,7 @@ export function getOrCreateClient(projectDir: string, config?: WecomConfig): Wec
     }
 
     // 创建新 client
-    client = new WecomClient(config.botId, config.secret, config.defaultUser);
+    client = new WecomClient(config.botId, config.secret, config.defaultUser, projectDir);
     client.connect();
 
     // 存入 pool

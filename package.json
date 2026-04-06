@@ -1,6 +1,6 @@
 {
   "name": "@vrs-soft/wecom-aibot-mcp",
-  "version": "1.0.9",
+  "version": "1.2.0",
   "description": "企业微信智能机器人 MCP 服务 - Claude Code 审批通道",
   "type": "module",
   "main": "dist/index.js",
@@ -16,7 +16,11 @@
     "build": "tsc",
     "start": "node dist/bin.js",
     "dev": "tsc --watch",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "vitest run tests/e2e"
   },
   "keywords": [
     "wecom",
@@ -33,13 +37,16 @@
     "url": "git+https://github.com/eric2877/wecom-aibot-mcp.git"
   },
   "dependencies": {
-    "@wecom/aibot-node-sdk": "^1.0.4",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "dotenv": "^16.4.5"
+    "@wecom/aibot-node-sdk": "^1.0.4",
+    "dotenv": "^16.4.5",
+    "rxjs": "^7.8.2"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "typescript": "^5.3.0"
+    "@vitest/coverage-v8": "^1.6.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.6.0"
   },
   "engines": {
     "node": ">=18"
