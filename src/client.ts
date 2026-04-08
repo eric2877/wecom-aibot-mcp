@@ -3,6 +3,11 @@
  *
  * 使用 @wecom/aibot-node-sdk 维护长连接，
  * 管理消息队列和审批状态。
+ *
+ * v3.0 新增：
+ * - 审批去重机制（相同操作复用已有审批）
+ * - 消息序号机制（保证消息顺序）
+ * - 审批过期时间
  */
 import AiBot from '@wecom/aibot-node-sdk';
 import type { WsFrame } from '@wecom/aibot-node-sdk';
@@ -15,6 +20,13 @@ import {
   logError,
 } from './connection-log.js';
 import { publishWecomMessage } from './message-bus.js';
+import { hashOperation } from './utils/hash.js';
+
+// 最大待处理消息数量
+const MAX_PENDING_MESSAGES = 100;
+
+// 全局消息序号计数器
+let globalMessageSeq = 0;
 
 // 审批结果存储
 interface ApprovalRecord {
@@ -27,16 +39,22 @@ interface ApprovalRecord {
   projectDir?: string;  // 项目目录（用于智能代批）
   lastKeepaliveMinute?: number;  // 最后发送保活的分钟数
   keepaliveCount?: number;       // 已发送保活次数
+  // 审批去重字段
+  operationHash?: string;  // 操作哈希（用于去重）
+  consumed?: boolean;      // 是否已消费（allow-once 只能消费一次）
 }
 
 // 消息队列（用于等待用户回复）
 interface MessageRecord {
+  seq: number;           // 消息序号（服务端生成）
   msgid: string;
   content: string;
   timestamp: number;
+  serverTime: number;    // 服务端接收时间
   from_userid: string;
   chatid: string;      // 单聊=userid，群聊=群ID
   chattype: 'single' | 'group';  // 会话类型
+  quoteContent?: string;  // 引用内容（用于多 CC 路由）
 }
 
 // 待发送消息队列（断线期间缓存）
@@ -88,7 +106,7 @@ class WecomClient extends EventEmitter {
 
   private setupEventHandlers() {
     this.wsClient.on('connected', () => {
-      logConnected();
+      logConnected(this.robotName);
     });
 
     this.wsClient.on('authenticated', () => {
@@ -96,7 +114,7 @@ class WecomClient extends EventEmitter {
       this.connected = true;
       this.wasReconnecting = false;
       this.reconnectAttempt = 0;
-      logAuthenticated();
+      logAuthenticated(this.robotName);
 
       // 重连成功后发送通知
       if (wasReconnecting) {
@@ -112,7 +130,7 @@ class WecomClient extends EventEmitter {
       this.connected = false;
       this.wasReconnecting = true;
       this.lastDisconnectTime = Date.now();
-      logDisconnected(reason);
+      logDisconnected(this.robotName, reason);
 
       // 发送断线通知
       this.sendText('【系统】连接中断，正在重连...').catch(err => {
@@ -122,11 +140,11 @@ class WecomClient extends EventEmitter {
 
     this.wsClient.on('reconnecting', (attempt: number) => {
       this.reconnectAttempt = attempt;
-      logReconnecting(attempt);
+      logReconnecting(this.robotName, attempt);
     });
 
     this.wsClient.on('error', (err: Error) => {
-      logError(err.message);
+      logError(this.robotName, err.message);
 
       // 检测授权相关错误（40058: invalid Request Parameter）
       if (err.message.includes('40058') || err.message.includes('invalid Request Parameter')) {
@@ -199,14 +217,25 @@ class WecomClient extends EventEmitter {
     }
 
     if (content) {
+      // v3.0: 添加消息序号和队列上限检查
       const msgRecord: MessageRecord = {
+        seq: globalMessageSeq++,
         msgid,
         content,
         timestamp: Date.now(),
+        serverTime: Date.now(),
         from_userid,
         chatid,
         chattype,
+        quoteContent,
       };
+
+      // v3.0: 检查队列上限
+      if (this.messages.length >= MAX_PENDING_MESSAGES) {
+        const dropped = this.messages.shift();
+        console.warn(`[wecom] 消息队列已满，丢弃旧消息: ${dropped?.msgid}`);
+      }
+
       this.messages.push(msgRecord);
       const source = chattype === 'group' ? `群聊(${chatid})` : '单聊';
       console.log(`[wecom] 收到${source}消息: ${from_userid} -> ${content.slice(0, 100)}`);
@@ -229,12 +258,11 @@ class WecomClient extends EventEmitter {
     const event = frame.body?.event;
     if (!event) return;
 
-    // template_card_event 结构在 event.template_card_event 中
-    const cardEvent = event.template_card_event;
-    if (!cardEvent) return;
+    // task_id 和 event_key 在 event 层级，不在 template_card_event 内部
+    const taskId = event.task_id;
+    const eventKey = event.event_key; // 用户点击的按钮 key
 
-    const taskId = cardEvent.task_id;
-    const eventKey = cardEvent.event_key; // 用户点击的按钮 key
+    if (!taskId) return;
 
     console.log(`[wecom] 收到审批响应: taskId=${taskId}, key=${eventKey}`);
 
@@ -352,13 +380,28 @@ class WecomClient extends EventEmitter {
     title: string,
     description: string,
     requestId: string,
-    targetUser?: string
+    targetUser?: string,
+    toolInput?: Record<string, unknown>,  // v3.0: 用于去重
+    ccId?: string                         // v3.0: 参与哈希，防止跨 CC 复用审批
   ): Promise<string> {
     const userId = targetUser || this.targetUserId;
-    const taskId = `approval_${requestId}_${Date.now()}`;
 
     // 从 title 中提取工具名称（格式: 【待审批】Bash）
     const toolName = title.replace('【待审批】', '');
+
+    // v3.0: 检查是否有相同操作的待处理审批（去重）
+    if (toolInput && toolName) {
+      const operationHash = hashOperation(ccId ?? '', toolName, toolInput);
+      const existing = this.findApprovalByHash(operationHash);
+
+      if (existing) {
+        console.log(`[wecom] 复用已有审批: ${existing.taskId} (hash: ${operationHash.slice(0, 8)}...)`);
+        return existing.taskId;
+      }
+    }
+
+    const taskId = `approval_${requestId}_${Date.now()}`;
+    const operationHash = toolInput && toolName ? hashOperation(ccId ?? '', toolName, toolInput) : undefined;
 
     // 始终存储审批记录（断线时也需要，让 Hook 能轮询到）
     this.approvals.set(taskId, {
@@ -366,6 +409,8 @@ class WecomClient extends EventEmitter {
       resolved: false,
       timestamp: Date.now(),
       toolName,
+      toolInput,
+      operationHash,
     });
 
     // 断线时将审批请求加入队列，等待重连后发送
@@ -482,7 +527,76 @@ class WecomClient extends EventEmitter {
     if (clear) {
       this.messages = [];
     }
-    return result;
+    // 按序号排序后返回
+    return result.sort((a, b) => a.seq - b.seq);
+  }
+
+  // ============================================
+  // v3.0 新增方法：审批去重
+  // ============================================
+
+  /**
+   * 根据操作哈希查找已有审批
+   */
+  findApprovalByHash(operationHash: string): ApprovalRecord | null {
+    for (const approval of this.approvals.values()) {
+      if (approval.operationHash === operationHash && !approval.resolved) {
+        return approval;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 检查审批是否可以消费
+   * allow-once 只能消费一次
+   */
+  canConsumeApproval(taskId: string): boolean {
+    const approval = this.approvals.get(taskId);
+    if (!approval) return false;
+    if (!approval.resolved) return false;
+    if (approval.result === 'allow-once' && approval.consumed) return false;
+    return true;
+  }
+
+  /**
+   * 消费审批结果
+   * allow-once 消费后标记为已消费
+   */
+  consumeApproval(taskId: string): 'allow-once' | 'allow-always' | 'deny' | null {
+    const approval = this.approvals.get(taskId);
+    if (!approval || !approval.resolved || !approval.result) return null;
+
+    // 检查是否可消费
+    if (approval.result === 'allow-once' && approval.consumed) {
+      return null;  // 已消费
+    }
+
+    // 标记消费
+    if (approval.result === 'allow-once') {
+      approval.consumed = true;
+    }
+
+    return approval.result;
+  }
+
+  /**
+   * 注入审批记录（MCP 重启恢复用）
+   * 如果 taskId 已存在则跳过，避免覆盖用户已点击的结果
+   */
+  injectApprovalRecord(
+    taskId: string,
+    partial: { toolName?: string; toolInput?: Record<string, unknown> }
+  ): void {
+    if (this.approvals.has(taskId)) return;
+    this.approvals.set(taskId, {
+      taskId,
+      resolved: false,
+      timestamp: Date.now(),
+      toolName: partial.toolName,
+      toolInput: partial.toolInput,
+    });
+    console.log(`[wecom] 注入恢复审批记录: ${taskId}`);
   }
 
   // 清理过期消息
@@ -577,4 +691,4 @@ export function getClient(): WecomClient {
   return instance;
 }
 
-export { WecomClient, ApprovalRecord, MessageRecord };
+export { WecomClient, ApprovalRecord, MessageRecord, MAX_PENDING_MESSAGES };

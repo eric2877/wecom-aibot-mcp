@@ -97,6 +97,8 @@ mcp__wecom-aibot__enter_headless_mode(ccId="<项目名称>", projectDir="<项目
 
 保留文件中已有的其他配置，只合并 `hooks.PermissionRequest` 字段。
 
+**注意**：不要添加 `timeout` 字段，VSCode 扩展不支持该配置。超时控制由 hook 脚本内部的 `curl -m` 参数处理。
+
 ### 4. 发确认消息
 
 ```
