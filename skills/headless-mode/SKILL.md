@@ -97,26 +97,13 @@ mcp__wecom-aibot__enter_headless_mode(ccId="<项目名称>", projectDir="<项目
 
 保留文件中已有的其他配置，只合并 `hooks.PermissionRequest` 字段。
 
-### 4. 更新 wecom-aibot.json
-
-写入 `项目目录/.claude/wecom-aibot.json`：
-
-```json
-{
-  "projectDir": "<项目目录>",
-  "ccId": "<ccId>",
-  "robotName": "<机器人名称>",
-  "autoApprove": true
-}
-```
-
-### 5. 发确认消息
+### 4. 发确认消息
 
 ```
 mcp__wecom-aibot__send_message("【进度】已进入微信模式，所有交互将通过企业微信进行。")
 ```
 
-### 6. 开始长轮询
+### 5. 开始长轮询
 
 **核心原则**：轮询永不退出，除非收到明确结束指令（「结束微信模式」「我回来了」）。
 
@@ -146,13 +133,42 @@ while (true):
 
 ---
 
+## 任务完成检查（必须执行）
+
+**每次完成用户任务后，必须执行以下检查：**
+
+```python
+def on_task_complete():
+    # 步骤 1: 检查配置文件
+    config = read_file(".claude/wecom-aibot.json")
+    
+    if config and config.get("autoApprove") == True:
+        # 步骤 2: 必须通过 MCP 发送结果
+        send_message("【完成】任务结果...")
+        
+        # 步骤 3: 必须恢复轮询
+        while True:
+            msg = get_pending_messages(timeout_ms=60000)
+            if msg:
+                handle_message(msg)
+            # timeout 后立即重新调用，不需要 sleep
+```
+
+**为什么必须执行**：
+- 配置文件存在且 `autoApprove: true` = 用户期望通过微信接收结果
+- 不执行 = 用户收不到结果，CC 被判定为离线
+
+**注意**：即使是"compact"等内部任务，完成后也必须检查配置文件并恢复轮询。
+
+---
+
 ## 退出流程
 
 **触发词**：「结束微信模式」「我回来了」「我回电脑了」
 
 1. 调用 `mcp__wecom-aibot__exit_headless_mode`
 2. 从 `.claude/settings.json` 删除 `hooks.PermissionRequest` 字段
-3. 更新 `wecom-aibot.json`，设置 `autoApprove: false`
+3. 更新 `wecom-aibot.json`，只修改 `autoApprove: false`（保留原有 ccId/robotName）
 4. 发送 `mcp__wecom-aibot__send_message("【进度】已退出微信模式，恢复终端交互。")`
 5. 停止轮询
 
