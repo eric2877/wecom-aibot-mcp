@@ -115,15 +115,12 @@ describe('Config Wizard', () => {
         expect(robot).toHaveProperty('name');
         expect(robot).toHaveProperty('botId');
         expect(robot).toHaveProperty('targetUserId');
-        expect(robot).toHaveProperty('isDefault');
       }
     });
 
-    it('第一个机器人应该是默认机器人', () => {
+    it('至少返回一个机器人', () => {
       const robots = listAllRobots();
-      if (robots.length > 0) {
-        expect(robots[0].isDefault).toBe(true);
-      }
+      expect(robots.length).toBeGreaterThan(0);
     });
   });
 
@@ -189,19 +186,19 @@ describe('Config Wizard', () => {
         name: 'test-robot',
         botId: 'test-bot-id',
         targetUserId: 'test-user',
-        isDefault: true
       };
 
       expect(robot.name).toBe('test-robot');
       expect(robot.botId).toBe('test-bot-id');
       expect(robot.targetUserId).toBe('test-user');
-      expect(robot.isDefault).toBe(true);
     });
 
-    it('isDefault 应该是布尔值', () => {
+    it('返回的机器人配置至少包含基本字段', () => {
       const robots = listAllRobots();
       for (const robot of robots) {
-        expect(typeof robot.isDefault).toBe('boolean');
+        expect(typeof robot.name).toBe('string');
+        expect(typeof robot.botId).toBe('string');
+        expect(typeof robot.targetUserId).toBe('string');
       }
     });
   });

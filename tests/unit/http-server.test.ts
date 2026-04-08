@@ -2,7 +2,7 @@
  * HTTP Server 单元测试
  *
  * 测试覆盖：
- * - HS-001: Session 管理
+ * - HS-001: ccId 管理
  * - HS-002: ccId 生成
  * - HS-003: 消息路由
  * - HS-004: 多 CC 场景
@@ -37,16 +37,22 @@ vi.mock('./tools/index.js', () => ({
   registerTools: vi.fn()
 }));
 
+// 模拟 cc-registry（getFirstActiveCcId 需要 getCcIdBinding）
+vi.mock('../../src/cc-registry.js', () => ({
+  getCcIdBinding: vi.fn((ccId: string) => ccId.includes('cc-') ? { robotName: 'test-robot' } : null),
+  isCcIdRegistered: vi.fn(() => true),
+  registerCcId: vi.fn(() => 'registered'),
+  unregisterCcId: vi.fn(),
+  touchCcId: vi.fn(),
+}));
+
 // 导入实际函数
 import {
   generateCcId,
-  setSessionData,
-  getSessionData,
-  getSessionDataById,
-  deleteSession,
+  registerActiveCcId,
+  unregisterActiveCcId,
   hasActiveHeadlessSession,
-  getFirstActiveSession,
-  findSessionByRobotName,
+  getFirstActiveCcId,
   HTTP_PORT,
   HOOK_SCRIPT_PATH,
 } from '../../src/http-server';
@@ -54,114 +60,42 @@ import {
 describe('HTTP Server', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // 清理 session store
-    const sessions = ['session-1', 'session-2', 'session-3', 'session-4'];
-    sessions.forEach(id => deleteSession(id));
+    // 清理所有可能的活跃 ccId
+    unregisterActiveCcId('cc-1');
+    unregisterActiveCcId('cc-2');
+    unregisterActiveCcId('cc-3');
+    unregisterActiveCcId('test-cc-1');
+    unregisterActiveCcId('test-cc-2');
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  describe('HS-001: Session 管理', () => {
-    it('应该能设置和获取 Session', () => {
-      setSessionData('session-1', {
-        robotName: 'test-robot',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
-      });
-
-      const data = getSessionData('session-1');
-
-      expect(data).not.toBeNull();
-      expect(data?.robotName).toBe('test-robot');
-      expect(data?.ccId).toBe('cc-1');
-    });
-
-    it('应该能删除 Session', () => {
-      setSessionData('session-1', {
-        robotName: 'test-robot',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
-      });
-
-      expect(getSessionData('session-1')).not.toBeNull();
-
-      deleteSession('session-1');
-
-      expect(getSessionData('session-1')).toBeNull();
-    });
-
-    it('getSessionDataById 应该处理 undefined 参数', () => {
-      const result = getSessionDataById(undefined);
-      expect(result).toBeNull();
-    });
-
-    it('getSessionDataById 应该能获取 Session', () => {
-      setSessionData('session-1', {
-        robotName: 'test-robot',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
-      });
-
-      const result = getSessionDataById('session-1');
-      expect(result?.robotName).toBe('test-robot');
-    });
-
-    it('hasActiveHeadlessSession 应该正确反映状态', () => {
+  describe('HS-001: ccId 管理', () => {
+    it('注册后 hasActiveHeadlessSession 应该返回 true', () => {
       expect(hasActiveHeadlessSession()).toBe(false);
 
-      setSessionData('session-1', {
-        robotName: 'test-robot',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
-      });
-
+      registerActiveCcId('cc-1');
       expect(hasActiveHeadlessSession()).toBe(true);
 
-      deleteSession('session-1');
-
+      unregisterActiveCcId('cc-1');
       expect(hasActiveHeadlessSession()).toBe(false);
     });
 
-    it('getFirstActiveSession 应该返回第一个 Session', () => {
-      setSessionData('session-1', {
-        robotName: 'robot1',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
-      });
+    it('应该能注册和注销 ccId', () => {
+      registerActiveCcId('test-cc-1');
+      const first = getFirstActiveCcId();
+      expect(first).not.toBeNull();
+      expect(first?.ccId).toBe('test-cc-1');
 
-      const session = getFirstActiveSession();
-
-      expect(session).not.toBeNull();
-      expect(session?.sessionId).toBe('session-1');
-      expect(session?.data.robotName).toBe('robot1');
+      unregisterActiveCcId('test-cc-1');
+      expect(hasActiveHeadlessSession()).toBe(false);
     });
 
-    it('无 Session 时 getFirstActiveSession 应该返回 null', () => {
-      const session = getFirstActiveSession();
-      expect(session).toBeNull();
-    });
-
-    it('findSessionByRobotName 应该能查找 Session', () => {
-      setSessionData('session-1', {
-        robotName: 'robot1',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
-      });
-      setSessionData('session-2', {
-        robotName: 'robot2',
-        ccId: 'cc-2',
-        createdAt: Date.now(),
-      });
-
-      const result1 = findSessionByRobotName('robot1');
-      const result2 = findSessionByRobotName('robot2');
-      const result3 = findSessionByRobotName('robot3');
-
-      expect(result1).toBe('session-1');
-      expect(result2).toBe('session-2');
-      expect(result3).toBeNull();
+    it('无活跃 ccId 时 getFirstActiveCcId 应该返回 null', () => {
+      const result = getFirstActiveCcId();
+      expect(result).toBeNull();
     });
   });
 
@@ -176,16 +110,13 @@ describe('HTTP Server', () => {
       expect(ccId3).toBe('cc-3');
     });
 
-    it('生成的 ccId 应该能用于 Session', () => {
+    it('生成的 ccId 应该能用于注册', () => {
       const ccId = generateCcId();
-      setSessionData('session-1', {
-        robotName: 'test-robot',
-        ccId,
-        createdAt: Date.now(),
-      });
+      registerActiveCcId(ccId);
+      expect(hasActiveHeadlessSession()).toBe(true);
 
-      const data = getSessionData('session-1');
-      expect(data?.ccId).toBe(ccId);
+      unregisterActiveCcId(ccId);
+      expect(hasActiveHeadlessSession()).toBe(false);
     });
 
     it('ccId 格式应该正确', () => {
@@ -205,75 +136,27 @@ describe('HTTP Server', () => {
     });
   });
 
-  describe('HS-003: 多 Session 场景', () => {
-    it('应该能同时管理多个 Session', () => {
-      setSessionData('session-1', {
-        robotName: 'robot1',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
-      });
-      setSessionData('session-2', {
-        robotName: 'robot2',
-        ccId: 'cc-2',
-        createdAt: Date.now(),
-      });
+  describe('HS-003: 多 ccId 场景', () => {
+    it('应该能同时管理多个 ccId', () => {
+      registerActiveCcId('cc-1');
+      registerActiveCcId('cc-2');
 
       expect(hasActiveHeadlessSession()).toBe(true);
-      expect(getSessionData('session-1')?.robotName).toBe('robot1');
-      expect(getSessionData('session-2')?.robotName).toBe('robot2');
+      const first = getFirstActiveCcId();
+      expect(first).not.toBeNull();
+      expect(first?.ccId).toBe('cc-1');
     });
 
-    it('删除特定 Session 应该不影响其他 Session', () => {
-      setSessionData('session-1', {
-        robotName: 'robot1',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
-      });
-      setSessionData('session-2', {
-        robotName: 'robot2',
-        ccId: 'cc-2',
-        createdAt: Date.now(),
-      });
+    it('注销特定 ccId 应该不影响其他 ccId', () => {
+      registerActiveCcId('cc-1');
+      registerActiveCcId('cc-2');
 
-      deleteSession('session-1');
+      unregisterActiveCcId('cc-1');
 
-      expect(getSessionData('session-1')).toBeNull();
-      expect(getSessionData('session-2')).not.toBeNull();
       expect(hasActiveHeadlessSession()).toBe(true);
-    });
-  });
-
-  describe('Session 数据结构', () => {
-    it('Session 数据应该包含所有字段', () => {
-      const sessionData = {
-        robotName: 'test-robot',
-        agentName: 'test-agent',
-        ccId: 'cc-1',
-        createdAt: 1234567890,
-      };
-
-      setSessionData('session-1', sessionData);
-
-      const result = getSessionData('session-1');
-
-      expect(result?.robotName).toBe('test-robot');
-      expect(result?.agentName).toBe('test-agent');
-      expect(result?.ccId).toBe('cc-1');
-      expect(result?.createdAt).toBe(1234567890);
-    });
-
-    it('agentName 应该是可选的', () => {
-      const sessionData = {
-        robotName: 'test-robot',
-        ccId: 'cc-1',
-        createdAt: 1234567890,
-      };
-
-      setSessionData('session-1', sessionData);
-
-      const result = getSessionData('session-1');
-
-      expect(result?.agentName).toBeUndefined();
+      const first = getFirstActiveCcId();
+      expect(first).not.toBeNull();
+      expect(first?.ccId).toBe('cc-2');
     });
   });
 
@@ -305,35 +188,27 @@ describe('HTTP Server', () => {
   });
 
   describe('单 CC 直接推送逻辑', () => {
-    it('只有一个 Session 时应该触发直接推送', () => {
-      setSessionData('session-1', {
-        robotName: 'robot1',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
-      });
+    it('只有一个 ccId 时应该触发直接推送', () => {
+      registerActiveCcId('cc-1');
 
-      // 单 CC 模式：sessionStore.size === 1
       const size = hasActiveHeadlessSession() ? 1 : 0;
       expect(size).toBe(1);
+
+      unregisterActiveCcId('cc-1');
     });
   });
 
   describe('多 CC 无引用提示逻辑', () => {
-    it('多个 Session 时应该触发提示', () => {
-      setSessionData('session-1', {
-        robotName: 'robot1',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
-      });
-      setSessionData('session-2', {
-        robotName: 'robot2',
-        ccId: 'cc-2',
-        createdAt: Date.now(),
-      });
+    it('多个 ccId 时应该提示引用', () => {
+      registerActiveCcId('cc-1');
+      registerActiveCcId('cc-2');
 
-      // 多 CC 模式：sessionStore.size > 1
-      // 这里我们无法直接获取 size，但可以通过 getFirstActiveSession 间接验证
-      expect(getFirstActiveSession()).not.toBeNull();
+      expect(hasActiveHeadlessSession()).toBe(true);
+      const first = getFirstActiveCcId();
+      expect(first).not.toBeNull();
+
+      unregisterActiveCcId('cc-1');
+      unregisterActiveCcId('cc-2');
     });
   });
 });

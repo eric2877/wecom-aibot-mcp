@@ -318,10 +318,17 @@ if ! echo "$HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
   exit 0
 fi
 
-# 发送审批请求（使用 pwd 作为 projectDir）
+# 从 headless.json 提取 ccId（优先 agentName，回退 ccId）
+CC_ID=$(jq -r '.agentName // .ccId // empty' "$HEADLESS_FILE" 2>/dev/null)
+
+# 发送审批请求（包含 ccId 用于路由）
 TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}')
-BODY=$(jq -n --arg tool_name "$TOOL_NAME" --argjson tool_input "$TOOL_INPUT" --arg project_dir "$PROJECT_DIR" \\
-  '{"tool_name":$tool_name,"tool_input":$tool_input,"projectDir":$project_dir}')
+BODY=$(jq -n \\
+  --arg tool_name "$TOOL_NAME" \\
+  --argjson tool_input "$TOOL_INPUT" \\
+  --arg project_dir "$PROJECT_DIR" \\
+  --arg cc_id "$CC_ID" \\
+  '{"tool_name":$tool_name,"tool_input":$tool_input,"projectDir":$project_dir,"ccId":$cc_id}')
 
 RESPONSE=$(curl -s -m 10 -X POST "http://127.0.0.1:$MCP_PORT/approve" \\
   -H "Content-Type: application/json" \\

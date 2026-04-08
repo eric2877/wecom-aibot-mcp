@@ -12,7 +12,7 @@ const LOG_FILE = path.join(CONFIG_DIR, 'connection.log');
 
 // 连接状态记录
 interface ConnectionRecord {
-  event: 'connected' | 'authenticated' | 'disconnected' | 'reconnecting' | 'error';
+  event: 'connected' | 'authenticated' | 'disconnected' | 'reconnecting' | 'error' | 'warn';
   timestamp: string;
   isoTime: string;
   reason?: string;
@@ -199,6 +199,17 @@ export function logError(errorMessage: string): void {
   };
   writeLog(record);
   updateStats(record);
+}
+
+export function logWarn(message: string): void {
+  const now = new Date();
+  const record: ConnectionRecord = {
+    event: 'warn',
+    timestamp: now.toISOString().replace('T', ' ').slice(0, 19),
+    isoTime: now.toISOString(),
+    errorMessage: message,
+  };
+  writeLog(record);
 }
 
 // 获取当前统计

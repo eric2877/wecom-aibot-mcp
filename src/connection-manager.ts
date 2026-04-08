@@ -32,11 +32,16 @@ interface ConnectionState {
   robotName: string;       // 机器人名称
   client: WecomClient;     // WebSocket 客户端
   connectedAt: number;     // 连接时间
+  lastActive: number;      // 最后活跃时间戳（用于超时清理）
   agentName?: string;      // 智能体名称
+  ccId?: string;           // 当前绑定的 ccId
 }
 
 // 连接池：robotName → ConnectionState
 const connectionPool: Map<string, ConnectionState> = new Map();
+
+// 空闲超时：30 分钟无活跃自动断开
+const INACTIVE_TIMEOUT = 30 * 60 * 1000;
 
 const CONFIG_DIR = path.join(os.homedir(), '.wecom-aibot-mcp');
 
@@ -163,6 +168,7 @@ export async function connectRobot(
     robotName: robot.name,
     client,
     connectedAt: Date.now(),
+    lastActive: Date.now(),
     agentName,
   };
 
@@ -198,8 +204,9 @@ export async function getClient(robotName: string): Promise<WecomClient | null> 
     return null;
   }
 
-  // 如果已连接，直接返回
+  // 如果已连接，更新 lastActive 并返回
   if (state.client.isConnected()) {
+    state.lastActive = Date.now();
     return state.client;
   }
 
@@ -316,3 +323,21 @@ export async function connectAllRobots(): Promise<void> {
     }
   }
 }
+
+/**
+ * 清理空闲连接（30 分钟无活跃自动断开）
+ * 每 5 分钟调用一次
+ */
+function cleanupIdleConnections(): void {
+  const now = Date.now();
+  for (const [robotName, state] of connectionPool) {
+    if (now - state.lastActive > INACTIVE_TIMEOUT) {
+      console.log(`[connection] 断开空闲机器人: ${robotName}（${Math.floor((now - state.lastActive) / 60000)} 分钟无活跃）`);
+      state.client.disconnect();
+      connectionPool.delete(robotName);
+    }
+  }
+}
+
+// 启动空闲连接清理定时器（5 分钟）
+setInterval(cleanupIdleConnections, 5 * 60 * 1000).unref();

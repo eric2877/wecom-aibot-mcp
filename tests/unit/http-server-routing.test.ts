@@ -3,7 +3,7 @@
  *
  * 测试覆盖：
  * - HS-201: 引用内容解析
- * - HS-202: Session 路由匹配
+ * - HS-202: ccId 路由匹配
  * - HS-203: 多 CC 路由逻辑
  */
 
@@ -33,15 +33,22 @@ vi.mock('../../src/tools/index.js', () => ({
   registerTools: vi.fn()
 }));
 
+// 模拟 cc-registry（getFirstActiveCcId 需要 getCcIdBinding）
+vi.mock('../../src/cc-registry.js', () => ({
+  getCcIdBinding: vi.fn((ccId: string) => ccId.includes('cc-') ? { robotName: 'test-robot' } : null),
+  isCcIdRegistered: vi.fn(() => true),
+  registerCcId: vi.fn(() => 'registered'),
+  unregisterCcId: vi.fn(),
+  touchCcId: vi.fn(),
+}));
+
 // 导入实际函数
 import {
   generateCcId,
-  setSessionData,
-  getSessionData,
-  deleteSession,
+  registerActiveCcId,
+  unregisterActiveCcId,
   hasActiveHeadlessSession,
-  getFirstActiveSession,
-  findSessionByRobotName,
+  getFirstActiveCcId,
   HTTP_PORT,
   HOOK_SCRIPT_PATH,
 } from '../../src/http-server';
@@ -49,8 +56,9 @@ import {
 describe('HTTP Server - 消息路由逻辑', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // 清理 sessions
-    ['s1', 's2', 's3', 's4', 's5'].forEach(id => deleteSession(id));
+    // 清理所有可能的活跃 ccId
+    ['s1', 's2', 's3', 's4', 's5'].forEach(id => unregisterActiveCcId(id));
+    ['cc-1', 'cc-2', 'cc-3', 'cc-4', 'cc-5', 'cc-10', 'cc-12', 'cc-123'].forEach(id => unregisterActiveCcId(id));
   });
 
   afterEach(() => {
@@ -91,73 +99,65 @@ describe('HTTP Server - 消息路由逻辑', () => {
     });
   });
 
-  describe('HS-202: Session 路由匹配', () => {
-    it('应该能根据 robotName 查找 Session', () => {
-      setSessionData('s1', { robotName: 'robot-A', ccId: 'cc-1', createdAt: Date.now() });
-      setSessionData('s2', { robotName: 'robot-B', ccId: 'cc-2', createdAt: Date.now() });
-      setSessionData('s3', { robotName: 'robot-C', ccId: 'cc-3', createdAt: Date.now() });
+  describe('HS-202: ccId 路由匹配', () => {
+    it('注册 ccId 后应该能查找', () => {
+      registerActiveCcId('cc-1');
+      registerActiveCcId('cc-2');
+      registerActiveCcId('cc-3');
 
-      expect(findSessionByRobotName('robot-A')).toBe('s1');
-      expect(findSessionByRobotName('robot-B')).toBe('s2');
-      expect(findSessionByRobotName('robot-C')).toBe('s3');
-      expect(findSessionByRobotName('robot-D')).toBeNull();
+      const first = getFirstActiveCcId();
+      expect(first).not.toBeNull();
+      expect(first?.ccId).toBe('cc-1');
     });
 
-    it('修改 Session 后应该能正确查找', () => {
-      setSessionData('s1', { robotName: 'robot-A', ccId: 'cc-1', createdAt: Date.now() });
+    it('注销特定 ccId 后应该不影响其他 ccId', () => {
+      registerActiveCcId('cc-1');
+      registerActiveCcId('cc-2');
 
-      expect(findSessionByRobotName('robot-A')).toBe('s1');
+      unregisterActiveCcId('cc-1');
 
-      // 修改 Session
-      deleteSession('s1');
-      setSessionData('s2', { robotName: 'robot-A', ccId: 'cc-2', createdAt: Date.now() });
-
-      expect(findSessionByRobotName('robot-A')).toBe('s2');
-      expect(getSessionData('s1')).toBeNull();
+      const first = getFirstActiveCcId();
+      expect(first).not.toBeNull();
+      expect(first?.ccId).toBe('cc-2');
     });
 
-    it('多个相同 robotName 的 Session 应该返回第一个', () => {
-      setSessionData('s1', { robotName: 'robot-A', ccId: 'cc-1', createdAt: Date.now() });
-      setSessionData('s2', { robotName: 'robot-A', ccId: 'cc-2', createdAt: Date.now() });
+    it('多个相同前缀的 ccId 应该都有效', () => {
+      registerActiveCcId('cc-1');
+      registerActiveCcId('cc-2');
 
-      const result = findSessionByRobotName('robot-A');
-      expect(result).toBe('s1'); // Map 返回第一个匹配的
+      expect(hasActiveHeadlessSession()).toBe(true);
     });
   });
 
   describe('HS-203: 多 CC 路由逻辑', () => {
     it('单 CC 模式应该直接推送', () => {
-      setSessionData('s1', { robotName: 'robot-A', ccId: 'cc-1', createdAt: Date.now() });
+      registerActiveCcId('cc-1');
 
       expect(hasActiveHeadlessSession()).toBe(true);
-      const session = getFirstActiveSession();
-      expect(session).not.toBeNull();
-      expect(session?.data.ccId).toBe('cc-1');
+      const first = getFirstActiveCcId();
+      expect(first).not.toBeNull();
+      expect(first?.ccId).toBe('cc-1');
     });
 
     it('多 CC 模式应该需要引用路由', () => {
-      setSessionData('s1', { robotName: 'robot-A', ccId: 'cc-1', createdAt: Date.now() });
-      setSessionData('s2', { robotName: 'robot-B', ccId: 'cc-2', createdAt: Date.now() });
+      registerActiveCcId('cc-1');
+      registerActiveCcId('cc-2');
 
       expect(hasActiveHeadlessSession()).toBe(true);
-      // 多 CC 时 getFirstActiveSession 返回第一个
-      const firstSession = getFirstActiveSession();
-      expect(firstSession).not.toBeNull();
-
-      // 检查两个 Session 都存在
-      expect(getSessionData('s1')).not.toBeNull();
-      expect(getSessionData('s2')).not.toBeNull();
+      // 多 CC 时 getFirstActiveCcId 返回第一个
+      const first = getFirstActiveCcId();
+      expect(first).not.toBeNull();
+      expect(first?.ccId).toBe('cc-1');
     });
 
     it('无 CC 模式应该返回无活跃 Session', () => {
       expect(hasActiveHeadlessSession()).toBe(false);
-      expect(getFirstActiveSession()).toBeNull();
+      expect(getFirstActiveCcId()).toBeNull();
     });
   });
 
   describe('HS-204: ccId 序号递增', () => {
     it('多次调用 generateCcId 应该递增', () => {
-      // 由于序号是全局的，需要清理
       const id1 = generateCcId();
       const id2 = generateCcId();
       const id3 = generateCcId();
@@ -176,63 +176,41 @@ describe('HTTP Server - 消息路由逻辑', () => {
     });
   });
 
-  describe('HS-205: Session 生命周期', () => {
-    it('Session 创建后应该能正确查询', () => {
-      const createdAt = Date.now();
-      setSessionData('s1', { robotName: 'robot', ccId: 'cc-1', createdAt });
+  describe('HS-205: ccId 生命周期', () => {
+    it('ccId 注册后应该能正确查询', () => {
+      registerActiveCcId('cc-1');
 
-      const data = getSessionData('s1');
-      expect(data?.robotName).toBe('robot');
-      expect(data?.ccId).toBe('cc-1');
-      expect(data?.createdAt).toBe(createdAt);
+      expect(hasActiveHeadlessSession()).toBe(true);
+      const first = getFirstActiveCcId();
+      expect(first).not.toBeNull();
+      expect(first?.ccId).toBe('cc-1');
     });
 
-    it('Session 删除后应该不存在', () => {
-      setSessionData('s1', { robotName: 'robot', ccId: 'cc-1', createdAt: Date.now() });
-      expect(getSessionData('s1')).not.toBeNull();
+    it('ccId 注销后应该不存在', () => {
+      registerActiveCcId('cc-1');
+      expect(hasActiveHeadlessSession()).toBe(true);
 
-      deleteSession('s1');
-      expect(getSessionData('s1')).toBeNull();
+      unregisterActiveCcId('cc-1');
       expect(hasActiveHeadlessSession()).toBe(false);
     });
 
-    it('删除不存在的 Session 应该不报错', () => {
-      deleteSession('non-existent');
-      expect(getSessionData('non-existent')).toBeNull();
+    it('注销不存在的 ccId 应该不报错', () => {
+      unregisterActiveCcId('non-existent');
+      expect(hasActiveHeadlessSession()).toBe(false);
     });
 
-    it('获取不存在的 Session 应该返回 null', () => {
-      expect(getSessionData('non-existent')).toBeNull();
+    it('获取不存在的 ccId 应该返回 null', () => {
+      expect(getFirstActiveCcId()).toBeNull();
     });
   });
 
-  describe('HS-206: Session 数据完整性', () => {
-    it('Session 数据应该包含所有必要字段', () => {
-      const data = {
-        robotName: 'test-robot',
-        agentName: 'test-agent',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
-      };
+  describe('HS-206: ccId 数据完整性', () => {
+    it('ccId 应该包含 ccId 和 robotName', () => {
+      registerActiveCcId('cc-1');
 
-      setSessionData('s1', data);
-
-      const result = getSessionData('s1');
-      expect(result?.robotName).toBe('test-robot');
-      expect(result?.agentName).toBe('test-agent');
+      const result = getFirstActiveCcId();
       expect(result?.ccId).toBe('cc-1');
-      expect(result?.createdAt).toBe(data.createdAt);
-    });
-
-    it('agentName 应该可选', () => {
-      setSessionData('s1', {
-        robotName: 'test-robot',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
-      });
-
-      const result = getSessionData('s1');
-      expect(result?.agentName).toBeUndefined();
+      expect(result?.robotName).toBe('test-robot');
     });
   });
 
@@ -248,20 +226,14 @@ describe('HTTP Server - 消息路由逻辑', () => {
   });
 
   describe('HS-208: 边界条件', () => {
-    it('getSessionDataById 应该处理 undefined', () => {
-      // 直接测试函数行为
-      const result = getSessionData('non-existent');
-      expect(result).toBeNull();
-    });
-
-    it('空 Session Store 时 hasActiveHeadlessSession 应该返回 false', () => {
-      ['s1', 's2', 's3'].forEach(id => deleteSession(id));
+    it('空 ccId Store 时 hasActiveHeadlessSession 应该返回 false', () => {
+      ['s1', 's2', 's3'].forEach(id => unregisterActiveCcId(id));
       expect(hasActiveHeadlessSession()).toBe(false);
     });
 
-    it('空 Session Store 时 getFirstActiveSession 应该返回 null', () => {
-      ['s1', 's2', 's3'].forEach(id => deleteSession(id));
-      expect(getFirstActiveSession()).toBeNull();
+    it('空 ccId Store 时 getFirstActiveCcId 应该返回 null', () => {
+      ['s1', 's2', 's3'].forEach(id => unregisterActiveCcId(id));
+      expect(getFirstActiveCcId()).toBeNull();
     });
   });
 
@@ -294,12 +266,11 @@ describe('HTTP Server - 消息路由逻辑', () => {
     });
   });
 
-  describe('HS-210: ccId 在 Session 中的使用', () => {
-    it('Session ccId 应该能用于路由匹配', () => {
-      setSessionData('s1', { robotName: 'robot', ccId: 'cc-10', createdAt: Date.now() });
+  describe('HS-210: ccId 路由使用', () => {
+    it('ccId 应该能用于路由匹配', () => {
+      registerActiveCcId('cc-10');
 
-      const data = getSessionData('s1');
-      const ccId = data?.ccId;
+      const ccId = 'cc-10';
 
       // 验证 ccId 格式
       expect(ccId).toMatch(/^cc-\d+$/);

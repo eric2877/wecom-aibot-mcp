@@ -106,7 +106,7 @@ class WecomClient extends EventEmitter {
 
   private setupEventHandlers() {
     this.wsClient.on('connected', () => {
-      logConnected(this.robotName);
+      logConnected();
     });
 
     this.wsClient.on('authenticated', () => {
@@ -114,7 +114,7 @@ class WecomClient extends EventEmitter {
       this.connected = true;
       this.wasReconnecting = false;
       this.reconnectAttempt = 0;
-      logAuthenticated(this.robotName);
+      logAuthenticated();
 
       // 重连成功后发送通知
       if (wasReconnecting) {
@@ -130,7 +130,7 @@ class WecomClient extends EventEmitter {
       this.connected = false;
       this.wasReconnecting = true;
       this.lastDisconnectTime = Date.now();
-      logDisconnected(this.robotName, reason);
+      logDisconnected(reason);
 
       // 发送断线通知
       this.sendText('【系统】连接中断，正在重连...').catch(err => {
@@ -140,11 +140,11 @@ class WecomClient extends EventEmitter {
 
     this.wsClient.on('reconnecting', (attempt: number) => {
       this.reconnectAttempt = attempt;
-      logReconnecting(this.robotName, attempt);
+      logReconnecting(attempt);
     });
 
     this.wsClient.on('error', (err: Error) => {
-      logError(this.robotName, err.message);
+      logError(err.message);
 
       // 检测授权相关错误（40058: invalid Request Parameter）
       if (err.message.includes('40058') || err.message.includes('invalid Request Parameter')) {

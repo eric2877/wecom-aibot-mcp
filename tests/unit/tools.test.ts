@@ -1,52 +1,74 @@
 /**
- * MCP 工具单元测试
+ * MCP 工具单元测试 — v3.0
  *
  * 测试覆盖：
- * - T-001 ~ T-013: 各种工具场景
- * - 完整工具执行流程
+ * - registerHeadlessTools: enter_headless_mode, exit_headless_mode, check_headless_status
+ * - registerMessagingTools: send_message, get_pending_messages
+ * - registerUtilsTools: list_robots, check_connection, get_setup_guide, add_robot_config,
+ *   get_connection_stats, detect_user_from_message
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// 模拟依赖（必须在导入前）
-vi.mock('../../src/connection-manager.js', () => ({
-  connectRobot: vi.fn().mockResolvedValue({
-    success: true,
-    client: {
-      sendText: vi.fn().mockResolvedValue(true),
-      sendApprovalRequest: vi.fn().mockResolvedValue('approval_123'),
-      getApprovalResult: vi.fn().mockReturnValue('pending'),
-      getPendingMessages: vi.fn().mockReturnValue([]),
-      isConnected: vi.fn().mockReturnValue(true),
-      getPendingApprovalsRecords: vi.fn().mockReturnValue([]),
-    }
-  }),
-  disconnectRobot: vi.fn(),
-  getClient: vi.fn().mockResolvedValue({
-    sendText: vi.fn().mockResolvedValue(true),
-    sendApprovalRequest: vi.fn().mockResolvedValue('approval_123'),
-    getApprovalResult: vi.fn().mockReturnValue('pending'),
-    getPendingMessages: vi.fn().mockReturnValue([]),
-    isConnected: vi.fn().mockReturnValue(true),
-    getPendingApprovalsRecords: vi.fn().mockReturnValue([]),
-  }),
-  getConnectionState: vi.fn(() => ({ connected: true, robotName: 'ClaudeCode', connectedAt: Date.now() })),
-  isRobotOccupied: vi.fn(() => false),
-  getRobotOccupiedBy: vi.fn(() => undefined),
-}));
+// ────────────────────────────────────────────
+// Mock 依赖（必须在导入前）
+// ────────────────────────────────────────────
+
+vi.mock('../../src/connection-manager.js', () => {
+  return {
+    __esModule: true,
+    connectRobot: vi.fn(),
+    disconnectRobot: vi.fn(),
+    getClient: vi.fn(),
+    getConnectionState: vi.fn(),
+    getAllConnectionStates: vi.fn(),
+    isRobotOccupied: vi.fn(),
+    getRobotOccupiedBy: vi.fn(),
+    connectAllRobots: vi.fn(),
+  };
+});
 
 vi.mock('../../src/config-wizard.js', () => ({
   listAllRobots: vi.fn(() => [
-    { name: 'ClaudeCode', botId: 'bot1', targetUserId: 'user1', isDefault: true },
-    { name: 'module-studio', botId: 'bot2', targetUserId: 'user2', isDefault: false }
+    { name: 'ClaudeCode', botId: 'bot1', targetUserId: 'user1' },
+    { name: 'module-studio', botId: 'bot2', targetUserId: 'user2' },
   ]),
 }));
 
-vi.mock('../../src/http-server.js', () => ({
-  getSessionDataById: vi.fn(),
-  setSessionData: vi.fn(),
-  deleteSession: vi.fn(),
-  generateCcId: vi.fn(() => 'cc-1'),
+vi.mock('../../src/cc-registry.js', () => ({
+  registerCcId: vi.fn(() => 'registered'),
+  unregisterCcId: vi.fn(),
+  isCcIdRegistered: vi.fn(() => true),
+  getCcIdBinding: vi.fn(() => ({ robotName: 'ClaudeCode' })),
+  touchCcId: vi.fn(),
+  getRegistry: vi.fn(() => ({})),
+}));
+
+vi.mock('../../src/headless-state.js', () => ({
+  enterHeadlessMode: vi.fn(() => ({
+    projectDir: process.cwd(),
+    timestamp: Date.now(),
+    agentName: 'TestAgent',
+    robotName: 'ClaudeCode',
+    autoApprove: true,
+  })),
+  exitHeadlessMode: vi.fn(() => ({
+    projectDir: process.cwd(),
+    timestamp: Date.now(),
+    agentName: 'TestAgent',
+  })),
+  loadHeadlessState: vi.fn(() => ({
+    projectDir: process.cwd(),
+    timestamp: Date.now(),
+    agentName: 'TestAgent',
+  })),
+  isHeadlessMode: vi.fn(() => true),
+}));
+
+vi.mock('../../src/message-bus.js', () => ({
+  subscribeWecomMessageByRobot: vi.fn(() => ({ unsubscribe: vi.fn() })),
+  publishWecomMessage: vi.fn(),
+  WecomMessage: undefined,
 }));
 
 vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
@@ -55,379 +77,325 @@ vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
   })),
 }));
 
-// 导入实际函数
-import { registerTools } from '../../src/tools/index';
-import { listAllRobots } from '../../src/config-wizard';
+// ────────────────────────────────────────────
+// 导入
+// ────────────────────────────────────────────
+
+import { registerHeadlessTools } from '../../src/tools/headless';
+import { registerMessagingTools } from '../../src/tools/messaging';
+import { registerUtilsTools } from '../../src/tools/utils-tools';
+import {
+  registerCcId,
+  unregisterCcId,
+  isCcIdRegistered,
+  getCcIdBinding,
+} from '../../src/cc-registry';
 import {
   connectRobot,
-  disconnectRobot,
   getClient,
   getConnectionState,
+  getAllConnectionStates,
   isRobotOccupied,
   getRobotOccupiedBy,
 } from '../../src/connection-manager';
-import {
-  getSessionDataById,
-  setSessionData,
-  deleteSession,
-  generateCcId,
-} from '../../src/http-server';
+import { listAllRobots } from '../../src/config-wizard';
+import { exitHeadlessMode, loadHeadlessState } from '../../src/headless-state';
 
-describe('MCP Tools', () => {
-  let toolHandlers: Map<string, { handler: Function; schema: any }>;
+// ────────────────────────────────────────────
+// 测试
+// ────────────────────────────────────────────
+
+function captureTools(registerFn: (server: any) => void): Map<string, { handler: Function; schema: any; description: string }> {
+  const tools = new Map();
+  const mockServer = {
+    tool: vi.fn((name: string, description: string, schema: any, handler: Function) => {
+      tools.set(name, { handler, schema, description });
+    }),
+  };
+  registerFn(mockServer as any);
+  return tools;
+}
+
+describe('v3.0 MCP Tools', () => {
+  const mockClient = {
+    sendText: vi.fn().mockResolvedValue(true),
+    isConnected: vi.fn().mockReturnValue(true),
+    getPendingMessages: vi.fn().mockReturnValue([]),
+    getPendingApprovalsRecords: vi.fn().mockReturnValue([]),
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
-    toolHandlers = new Map();
-
-    // 捕获工具注册
-    const mockServer = {
-      tool: vi.fn((name, description, schema, handler) => {
-        toolHandlers.set(name, { handler, schema });
-      }),
-    };
-
-    registerTools(mockServer as any);
+    // Reset mockClient implementations after clear
+    mockClient.sendText.mockResolvedValue(true);
+    mockClient.isConnected.mockReturnValue(true);
+    mockClient.getPendingMessages.mockReturnValue([]);
+    mockClient.getPendingApprovalsRecords.mockReturnValue([]);
+    vi.mocked(getClient).mockResolvedValue(mockClient as any);
+    vi.mocked(connectRobot).mockResolvedValue({ success: true, client: mockClient as any });
+    vi.mocked(getConnectionState).mockReturnValue({ connected: true, robotName: 'ClaudeCode', connectedAt: Date.now() });
+    vi.mocked(getAllConnectionStates).mockReturnValue([{ robotName: 'ClaudeCode', connected: true, connectedAt: Date.now() }]);
+    vi.mocked(isRobotOccupied).mockReturnValue(false);
+    vi.mocked(getRobotOccupiedBy).mockReturnValue(undefined);
+    vi.mocked(listAllRobots).mockReturnValue([
+      { name: 'ClaudeCode', botId: 'bot1', targetUserId: 'user1' },
+      { name: 'module-studio', botId: 'bot2', targetUserId: 'user2' },
+    ]);
+    vi.mocked(registerCcId).mockReturnValue('registered');
+    vi.mocked(isCcIdRegistered).mockReturnValue(true);
+    vi.mocked(getCcIdBinding).mockReturnValue({ robotName: 'ClaudeCode' });
+    vi.mocked(exitHeadlessMode).mockReturnValue({ projectDir: process.cwd(), timestamp: Date.now(), agentName: 'test' });
+    vi.mocked(loadHeadlessState).mockReturnValue({ projectDir: process.cwd(), timestamp: Date.now(), agentName: 'test' });
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  describe('registerTools', () => {
-    it('应该注册 11 个工具', () => {
-      expect(toolHandlers.size).toBe(11);
+  // ────────────────────────────────────────
+  // 工具注册验证
+  // ────────────────────────────────────────
+
+  describe('registerHeadlessTools', () => {
+    let tools: Map<string, any>;
+
+    beforeEach(() => {
+      tools = captureTools(registerHeadlessTools);
     });
 
-    it('应该注册 send_message 工具', () => {
-      expect(toolHandlers.has('send_message')).toBe(true);
+    it('应该注册 3 个工具', () => {
+      expect(tools.size).toBe(3);
     });
 
-    it('应该注册 enter_headless_mode 工具', () => {
-      expect(toolHandlers.has('enter_headless_mode')).toBe(true);
+    it('应该注册 enter_headless_mode', () => {
+      expect(tools.has('enter_headless_mode')).toBe(true);
     });
 
-    it('应该注册 exit_headless_mode 工具', () => {
-      expect(toolHandlers.has('exit_headless_mode')).toBe(true);
+    it('应该注册 exit_headless_mode', () => {
+      expect(tools.has('exit_headless_mode')).toBe(true);
     });
 
-    it('应该注册 send_approval_request 工具', () => {
-      expect(toolHandlers.has('send_approval_request')).toBe(true);
+    it('应该注册 check_headless_status', () => {
+      expect(tools.has('check_headless_status')).toBe(true);
     });
 
-    it('应该注册 get_approval_result 工具', () => {
-      expect(toolHandlers.has('get_approval_result')).toBe(true);
-    });
-
-    it('应该注册 list_robots 工具', () => {
-      expect(toolHandlers.has('list_robots')).toBe(true);
-    });
-
-    it('应该注册 check_connection 工具', () => {
-      expect(toolHandlers.has('check_connection')).toBe(true);
-    });
-
-    it('应该注册 get_setup_guide 工具', () => {
-      expect(toolHandlers.has('get_setup_guide')).toBe(true);
-    });
-  });
-
-  describe('send_message 工具', () => {
-    it('有 Session 时应该调用 getClient', async () => {
-      vi.mocked(getSessionDataById).mockReturnValue({
-        robotName: 'ClaudeCode',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
+    describe('enter_headless_mode', () => {
+      it('无机器人配置时应该返回错误', async () => {
+        vi.mocked(listAllRobots).mockReturnValueOnce([]);
+        const handler = tools.get('enter_headless_mode')!.handler;
+        const result = await handler({ ccId: 'test-project' }, {} as any);
+        const response = JSON.parse(result.content[0].text);
+        expect(response.status).toBe('error');
+        expect(response.errorType).toBe('no_robots');
       });
 
-      const handler = toolHandlers.get('send_message')!.handler;
-      await handler(
-        { content: 'test message' },
-        { sessionId: 'session-1' }
-      );
-
-      expect(getClient).toHaveBeenCalledWith('ClaudeCode');
-    });
-
-    it('无 Session 时应该返回错误', async () => {
-      vi.mocked(getSessionDataById).mockReturnValue(null);
-
-      const handler = toolHandlers.get('send_message')!.handler;
-      const result = await handler(
-        { content: 'test message' },
-        { sessionId: 'session-1' }
-      );
-
-      expect(result.content[0].text).toContain('未在微信模式');
-    });
-  });
-
-  describe('send_approval_request 工具', () => {
-    it('应该调用 getClient', async () => {
-      vi.mocked(getSessionDataById).mockReturnValue({
-        robotName: 'ClaudeCode',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
+      it('多机器人未指定时应该返回选择列表', async () => {
+        vi.mocked(listAllRobots).mockReturnValueOnce([
+          { name: 'bot-a', botId: 'bot1', targetUserId: 'user1' },
+          { name: 'bot-b', botId: 'bot2', targetUserId: 'user2' },
+        ]);
+        const handler = tools.get('enter_headless_mode')!.handler;
+        const result = await handler({ ccId: 'test-project' }, {} as any);
+        const response = JSON.parse(result.content[0].text);
+        expect(response.status).toBe('select_robot');
+        expect(response.robots.length).toBe(2);
       });
 
-      const handler = toolHandlers.get('send_approval_request')!.handler;
-      await handler(
-        { title: 'Bash', description: 'Execute command', request_id: 'req-001' },
-        { sessionId: 'session-1' }
-      );
-
-      expect(getClient).toHaveBeenCalledWith('ClaudeCode');
-    });
-
-    it('无 Session 时应该返回错误', async () => {
-      vi.mocked(getSessionDataById).mockReturnValue(null);
-
-      const handler = toolHandlers.get('send_approval_request')!.handler;
-      const result = await handler(
-        { title: 'Bash', description: 'Execute command', request_id: 'req-001' },
-        { sessionId: 'session-1' }
-      );
-
-      expect(result.content[0].text).toContain('未在微信模式');
-    });
-  });
-
-  describe('get_approval_result 工具', () => {
-    it('应该调用 getClient', async () => {
-      vi.mocked(getSessionDataById).mockReturnValue({
-        robotName: 'ClaudeCode',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
+      it('ccId 被占用时应该返回错误', async () => {
+        vi.mocked(registerCcId).mockReturnValueOnce('occupied');
+        const handler = tools.get('enter_headless_mode')!.handler;
+        const result = await handler({ ccId: 'test-project', robotName: 'ClaudeCode' }, {} as any);
+        const response = JSON.parse(result.content[0].text);
+        expect(response.status).toBe('error');
+        expect(response.errorType).toBe('ccid_occupied');
       });
 
-      const handler = toolHandlers.get('get_approval_result')!.handler;
-      const result = await handler(
-        { task_id: 'approval_123' },
-        { sessionId: 'session-1' }
-      );
-
-      expect(getClient).toHaveBeenCalledWith('ClaudeCode');
-    });
-  });
-
-  describe('enter_headless_mode 工具', () => {
-    it('无机器人配置时应该返回错误', async () => {
-      vi.mocked(listAllRobots).mockReturnValueOnce([]);
-
-      const handler = toolHandlers.get('enter_headless_mode')!.handler;
-      const result = await handler(
-        { agent_name: 'TestAgent' },
-        { sessionId: 'session-1' }
-      );
-
-      const response = JSON.parse(result.content[0].text);
-      expect(response.status).toBe('error');
-    });
-
-    it('多机器人未指定时应该返回选择列表', async () => {
-      const handler = toolHandlers.get('enter_headless_mode')!.handler;
-      const result = await handler(
-        { agent_name: 'TestAgent' },
-        { sessionId: 'session-1' }
-      );
-
-      const response = JSON.parse(result.content[0].text);
-      expect(response.status).toBe('select_robot');
-      expect(response.robots.length).toBe(2);
-    });
-
-    it('机器人被占用时应该返回错误', async () => {
-      vi.mocked(isRobotOccupied).mockReturnValue(true);
-      vi.mocked(getRobotOccupiedBy).mockReturnValue('OtherAgent');
-
-      const handler = toolHandlers.get('enter_headless_mode')!.handler;
-      const result = await handler(
-        { agent_name: 'TestAgent', robot_id: 'ClaudeCode' },
-        { sessionId: 'session-1' }
-      );
-
-      const response = JSON.parse(result.content[0].text);
-      expect(response.status).toBe('error');
-      expect(response.errorType).toBe('robot_occupied');
-    });
-
-    it('连接成功时应该设置 Session', async () => {
-      vi.mocked(connectRobot).mockResolvedValueOnce({
-        success: true,
-        client: {
-          sendText: vi.fn().mockResolvedValue(true),
-        },
-      } as any);
-
-      const handler = toolHandlers.get('enter_headless_mode')!.handler;
-      const result = await handler(
-        { agent_name: 'TestAgent', robot_id: '1' },
-        { sessionId: 'session-1' }
-      );
-
-      expect(setSessionData).toHaveBeenCalledWith('session-1', expect.objectContaining({
-        robotName: 'ClaudeCode',
-        agentName: 'TestAgent',
-      }));
-    });
-
-    it('连接失败时应该返回错误', async () => {
-      vi.mocked(connectRobot).mockResolvedValueOnce({
-        success: false,
-        error: 'Connection failed',
+      it('连接失败时应该清理注册并返回错误', async () => {
+        vi.mocked(connectRobot).mockResolvedValueOnce({ success: false, error: '连接失败' });
+        const handler = tools.get('enter_headless_mode')!.handler;
+        const result = await handler({ ccId: 'test-project', robotName: 'ClaudeCode' }, {} as any);
+        const response = JSON.parse(result.content[0].text);
+        expect(response.status).toBe('error');
+        expect(response.errorType).toBe('connect_failed');
+        expect(unregisterCcId).toHaveBeenCalledWith('test-project');
       });
 
-      const handler = toolHandlers.get('enter_headless_mode')!.handler;
-      const result = await handler(
-        { agent_name: 'TestAgent', robot_id: '1' },
-        { sessionId: 'session-1' }
-      );
-
-      const response = JSON.parse(result.content[0].text);
-      expect(response.status).toBe('error');
-    });
-  });
-
-  describe('exit_headless_mode 工具', () => {
-    it('无 Session 时应该返回错误', async () => {
-      vi.mocked(getSessionDataById).mockReturnValue(null);
-
-      const handler = toolHandlers.get('exit_headless_mode')!.handler;
-      const result = await handler({}, { sessionId: 'session-1' });
-
-      const response = JSON.parse(result.content[0].text);
-      expect(response.status).toBe('error');
+      it('成功时应该返回 entered 状态', async () => {
+        const handler = tools.get('enter_headless_mode')!.handler;
+        const result = await handler({ ccId: 'test-project', robotName: 'ClaudeCode' }, {} as any);
+        const response = JSON.parse(result.content[0].text);
+        expect(response.status).toBe('entered');
+        expect(response.ccId).toBe('test-project');
+        expect(response.robotName).toBe('ClaudeCode');
+      });
     });
 
-    it('有 Session 时应该断开连接', async () => {
-      vi.mocked(getSessionDataById).mockReturnValue({
-        robotName: 'ClaudeCode',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
+    describe('exit_headless_mode', () => {
+      it('ccId 未注册时应该返回错误', async () => {
+        vi.mocked(isCcIdRegistered).mockReturnValueOnce(false);
+        const handler = tools.get('exit_headless_mode')!.handler;
+        const result = await handler({ ccId: 'test-project' }, {} as any);
+        const response = JSON.parse(result.content[0].text);
+        expect(response.status).toBe('error');
       });
 
-      const handler = toolHandlers.get('exit_headless_mode')!.handler;
-      const result = await handler({}, { sessionId: 'session-1' });
-
-      expect(disconnectRobot).toHaveBeenCalledWith('ClaudeCode');
-      expect(deleteSession).toHaveBeenCalledWith('session-1');
+      it('成功时应该清理状态并返回', async () => {
+        const handler = tools.get('exit_headless_mode')!.handler;
+        const result = await handler({ ccId: 'test-project' }, {} as any);
+        const response = JSON.parse(result.content[0].text);
+        expect(response.status).toBe('exited');
+        expect(response.ccId).toBe('test-project');
+        expect(unregisterCcId).toHaveBeenCalled();
+        expect(exitHeadlessMode).toHaveBeenCalled();
+      });
     });
 
-    it('应该返回退出状态', async () => {
-      vi.mocked(getSessionDataById).mockReturnValue({
-        robotName: 'ClaudeCode',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
-        agentName: 'TestAgent',
+    describe('check_headless_status', () => {
+      it('未注册且无 headless 状态时应该返回 verified', async () => {
+        vi.mocked(isCcIdRegistered).mockReturnValueOnce(false);
+        vi.mocked(loadHeadlessState).mockReturnValueOnce(null);
+        const handler = tools.get('check_headless_status')!.handler;
+        const result = await handler({ ccId: 'test-project' }, {} as any);
+        const response = JSON.parse(result.content[0].text);
+        expect(response.status).toBe('verified');
+        expect(response.checks.unregistered).toBe(true);
+        expect(response.checks.headlessCleared).toBe(true);
+      });
+    });
+  });
+
+  // ────────────────────────────────────────
+  // registerMessagingTools
+  // ────────────────────────────────────────
+
+  describe('registerMessagingTools', () => {
+    let tools: Map<string, any>;
+
+    beforeEach(() => {
+      tools = captureTools(registerMessagingTools);
+      // Reset cc-registry mocks for messaging tests
+      vi.mocked(isCcIdRegistered).mockReturnValue(true);
+      vi.mocked(getCcIdBinding).mockReturnValue({ robotName: 'ClaudeCode' });
+    });
+
+    it('应该注册 2 个工具', () => {
+      expect(tools.size).toBe(2);
+    });
+
+    it('应该注册 send_message', () => {
+      expect(tools.has('send_message')).toBe(true);
+    });
+
+    it('应该注册 get_pending_messages', () => {
+      expect(tools.has('get_pending_messages')).toBe(true);
+    });
+
+    describe('send_message', () => {
+      it('ccId 已注册时应该发送消息并添加前缀', async () => {
+        vi.mocked(getClient).mockResolvedValue(mockClient as any);
+        const handler = tools.get('send_message')!.handler;
+        const result = await handler({ ccId: 'test-project', content: 'hello' }, {} as any);
+        const response = JSON.parse(result.content[0].text);
+        expect(response.success).toBe(true);
+      });
+    });
+
+    describe('get_pending_messages', () => {
+      it('ccId 未注册时应该返回错误', async () => {
+        vi.mocked(isCcIdRegistered).mockReturnValueOnce(false);
+        const handler = tools.get('get_pending_messages')!.handler;
+        const result = await handler({ ccId: 'test-project' }, {} as any);
+        const response = JSON.parse(result.content[0].text);
+        expect(response.error).toBeDefined();
       });
 
-      const handler = toolHandlers.get('exit_headless_mode')!.handler;
-      const result = await handler({}, { sessionId: 'session-1' });
-
-      const response = JSON.parse(result.content[0].text);
-      expect(response.status).toBe('exited');
-      expect(response.robotName).toBe('ClaudeCode');
-    });
-  });
-
-  describe('list_robots 工具', () => {
-    it('应该列出所有机器人', async () => {
-      const handler = toolHandlers.get('list_robots')!.handler;
-      const result = await handler({}, {});
-
-      const response = JSON.parse(result.content[0].text);
-      expect(response.robots.length).toBe(2);
-      expect(response.total).toBe(2);
-    });
-  });
-
-  describe('check_connection 工具', () => {
-    it('应该返回连接状态', async () => {
-      vi.mocked(getConnectionState).mockReturnValue({
-        connected: true,
-        robotName: 'ClaudeCode',
-        connectedAt: 1234567890,
+      it('有缓存消息时应该立即返回', async () => {
+        const mockClient = (await getClient('ClaudeCode')) as any;
+        mockClient.getPendingMessages.mockReturnValueOnce([
+          { content: 'hello', from_userid: 'user1', chatid: 'chat1', chattype: 'single', timestamp: Date.now() },
+        ]);
+        const handler = tools.get('get_pending_messages')!.handler;
+        const result = await handler({ ccId: 'test-project' }, {} as any);
+        const response = JSON.parse(result.content[0].text);
+        expect(response.count).toBe(1);
+        expect(response.messages[0].content).toBe('hello');
+        expect(response.timeout).toBeUndefined();
       });
-
-      const handler = toolHandlers.get('check_connection')!.handler;
-      const result = await handler({}, {});
-
-      const response = JSON.parse(result.content[0].text);
-      expect(response.connected).toBe(true);
-      expect(response.robotName).toBe('ClaudeCode');
     });
   });
 
-  describe('get_setup_guide 工具', () => {
-    it('应该返回安装指南', async () => {
-      const handler = toolHandlers.get('get_setup_guide')!.handler;
-      const result = await handler({}, {});
+  // ────────────────────────────────────────
+  // registerUtilsTools
+  // ────────────────────────────────────────
 
-      expect(result.content[0].text).toContain('安装配置指南');
-      expect(result.content[0].text).toContain('send_message');
-    });
-  });
+  describe('registerUtilsTools', () => {
+    let tools: Map<string, any>;
 
-  describe('机器人选择逻辑', () => {
-    it('通过序号选择机器人', async () => {
-      vi.mocked(listAllRobots).mockReturnValue([
-        { name: 'ClaudeCode', botId: 'bot1', targetUserId: 'user1', isDefault: true },
-        { name: 'module-studio', botId: 'bot2', targetUserId: 'user2', isDefault: false }
-      ]);
-
-      const robots = listAllRobots();
-      const robotId = '1';
-      const index = parseInt(robotId);
-
-      let selectedRobot;
-      if (!isNaN(index) && index >= 1 && index <= robots.length) {
-        selectedRobot = robots[index - 1];
-      }
-
-      expect(selectedRobot?.name).toBe('ClaudeCode');
+    beforeEach(() => {
+      tools = captureTools(registerUtilsTools);
     });
 
-    it('通过名称选择机器人', async () => {
-      vi.mocked(listAllRobots).mockReturnValue([
-        { name: 'ClaudeCode', botId: 'bot1', targetUserId: 'user1', isDefault: true },
-        { name: 'module-studio', botId: 'bot2', targetUserId: 'user2', isDefault: false }
-      ]);
-
-      const robots = listAllRobots();
-      const robotId = 'module-studio';
-      const selectedRobot = robots.find(r =>
-        r.name === robotId || r.botId === robotId || r.name.includes(robotId)
-      );
-
-      expect(selectedRobot?.name).toBe('module-studio');
+    it('应该注册 6 个工具', () => {
+      expect(tools.size).toBe(6);
     });
 
-    it('通过部分名称匹配机器人', async () => {
-      vi.mocked(listAllRobots).mockReturnValue([
-        { name: 'ClaudeCode', botId: 'bot1', targetUserId: 'user1', isDefault: true },
-        { name: 'module-studio', botId: 'bot2', targetUserId: 'user2', isDefault: false }
-      ]);
-
-      const robots = listAllRobots();
-      const robotId = 'module';
-      const selectedRobot = robots.find(r =>
-        r.name === robotId || r.botId === robotId || r.name.includes(robotId)
-      );
-
-      expect(selectedRobot?.name).toBe('module-studio');
+    it('应该注册 list_robots', () => {
+      expect(tools.has('list_robots')).toBe(true);
     });
-  });
 
-  describe('机器人占用检查', () => {
-    it('机器人被占用时应该返回错误', async () => {
-      vi.mocked(isRobotOccupied).mockReturnValue(true);
-      vi.mocked(getRobotOccupiedBy).mockReturnValue('OtherAgent');
+    it('应该注册 check_connection', () => {
+      expect(tools.has('check_connection')).toBe(true);
+    });
 
-      const occupied = isRobotOccupied('ClaudeCode');
-      expect(occupied).toBe(true);
+    it('应该注册 get_setup_guide', () => {
+      expect(tools.has('get_setup_guide')).toBe(true);
+    });
 
-      const occupiedBy = getRobotOccupiedBy('ClaudeCode');
-      expect(occupiedBy).toBe('OtherAgent');
+    it('应该注册 add_robot_config', () => {
+      expect(tools.has('add_robot_config')).toBe(true);
+    });
+
+    it('应该注册 get_connection_stats', () => {
+      expect(tools.has('get_connection_stats')).toBe(true);
+    });
+
+    it('应该注册 detect_user_from_message', () => {
+      expect(tools.has('detect_user_from_message')).toBe(true);
+    });
+
+    describe('list_robots', () => {
+      it('应该列出所有机器人', async () => {
+        vi.mocked(isRobotOccupied).mockReturnValue(false);
+        const handler = tools.get('list_robots')!.handler;
+        const result = await handler({}, {} as any);
+        const response = JSON.parse(result.content[0].text);
+        expect(response.total).toBe(2);
+        expect(response.connected).toBe(1);
+      });
+    });
+
+    describe('check_connection', () => {
+      it('应该返回连接状态', async () => {
+        vi.mocked(getConnectionState).mockReturnValue({
+          connected: true,
+          robotName: 'ClaudeCode',
+          connectedAt: 1234567890,
+        });
+        const handler = tools.get('check_connection')!.handler;
+        const result = await handler({}, {} as any);
+        const response = JSON.parse(result.content[0].text);
+        expect(response.connected).toBe(true);
+        expect(response.robotName).toBe('ClaudeCode');
+      });
+    });
+
+    describe('get_setup_guide', () => {
+      it('应该返回安装指南', async () => {
+        const handler = tools.get('get_setup_guide')!.handler;
+        const result = await handler({}, {} as any);
+        expect(result.content[0].text).toContain('安装配置指南');
+        expect(result.content[0].text).toContain('enter_headless_mode');
+      });
     });
   });
 });

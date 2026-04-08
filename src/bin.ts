@@ -28,9 +28,7 @@ import {
   WecomConfig,
 } from './config-wizard.js';
 import { initClient, WecomClient } from './client.js';
-import { registerTools } from './tools/index.js';
 import { startHttpServer, stopHttpServer, HTTP_PORT } from './http-server.js';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { getAllConnectionStates } from './connection-manager.js';
 import { loadStats, cleanupOldLogs } from './connection-log.js';
 import { startKeepaliveMonitor, stopKeepaliveMonitor } from './keepalive-monitor.js';
@@ -217,14 +215,6 @@ async function startMcpServerForeground(): Promise<void> {
   loadStats();
   cleanupOldLogs(1 / 24);
 
-  // 创建 MCP Server
-  const server = new McpServer({
-    name: 'wecom-aibot-mcp',
-    version: VERSION,
-  });
-
-  registerTools(server);
-
   // 启动 HTTP 服务
   console.log('');
   console.log('  ╔════════════════════════════════════════════════════════╗');
@@ -234,7 +224,7 @@ async function startMcpServerForeground(): Promise<void> {
   console.log('');
 
   console.log(`[mcp] 启动 MCP HTTP Server (端口: ${HTTP_PORT})...`);
-  await startHttpServer(server);
+  await startHttpServer();
 
   startKeepaliveMonitor();
 

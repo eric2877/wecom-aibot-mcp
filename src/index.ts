@@ -33,7 +33,9 @@ export {
 export type { ApprovalRequest } from './http-server.js';
 
 // 工具注册
-export { registerTools } from './tools/index.js';
+export { registerHeadlessTools } from './tools/headless.js';
+export { registerMessagingTools } from './tools/messaging.js';
+export { registerUtilsTools } from './tools/utils-tools.js';
 
 // 配置向导
 export { listAllRobots, runConfigWizard } from './config-wizard.js';
