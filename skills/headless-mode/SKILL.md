@@ -124,10 +124,11 @@ while (true):
 
 ## 处理用户消息
 
-1. 理解意图
-2. 执行操作（Bash/Edit/Write 等）— Hook 自动处理审批，Claude 阻塞等待用户点击
-3. 用 `mcp__wecom-aibot__send_message` 汇报结果
-4. 继续轮询
+1. **收到指令后先应答**：立即发送简短确认（如「收到，开始处理...」），让用户知道指令已被接收
+2. 理解意图
+3. 执行操作（Bash/Edit/Write 等）— Hook 自动处理审批，Claude 阻塞等待用户点击
+4. 用 `mcp__wecom-aibot__send_message` 汇报结果
+5. 继续轮询
 
 **群聊回复**：`mcp__wecom-aibot__send_message(content, target_user=chatid)`
 
