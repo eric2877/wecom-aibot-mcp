@@ -282,7 +282,7 @@ function writeHookScript() {
 # HTTP Transport 版本
 #
 # 固定端口: 18963
-# 检查 $(pwd)/.claude/wecom-aibot.json 的 autoApprove 字段
+# 检查 $(pwd)/.claude/wecom-aibot.json 的 wechatMode 和 autoApprove 字段
 
 MCP_PORT=18963
 
@@ -312,9 +312,9 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   exit 0
 fi
 
-# 检查 autoApprove 是否为 true
-AUTO_APPROVE=$(jq -r '.autoApprove // false' "$CONFIG_FILE" 2>/dev/null)
-if [[ "$AUTO_APPROVE" != "true" ]]; then
+# 检查 wechatMode 是否为 true（微信模式开关）
+WECHAT_MODE=$(jq -r '.wechatMode // false' "$CONFIG_FILE" 2>/dev/null)
+if [[ "$WECHAT_MODE" != "true" ]]; then
   exit 0
 fi
 
@@ -358,7 +358,29 @@ while [[ $POLL_COUNT -lt $MAX_POLL ]]; do
   fi
 done
 
-# 超时处理：智能代批
+# 超时处理：根据 autoApprove 决定行为
+# autoApprove: false → 继续等待（无限轮询）
+# autoApprove: true → 智能代批
+
+AUTO_APPROVE=$(jq -r '.autoApprove // false' "$CONFIG_FILE" 2>/dev/null)
+if [[ "$AUTO_APPROVE" != "true" ]]; then
+  # autoApprove 关闭，继续无限等待用户响应
+  while true; do
+    sleep 2
+    STATUS=$(curl -s -m 3 "http://127.0.0.1:$MCP_PORT/approval_status/$TASK_ID" 2>/dev/null)
+    RESULT=$(echo "$STATUS" | jq -r '.result // empty')
+
+    if [[ "$RESULT" == "allow-once" || "$RESULT" == "allow-always" ]]; then
+      printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
+      exit 0
+    elif [[ "$RESULT" == "deny" ]]; then
+      printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"用户拒绝"}}}'
+      exit 0
+    fi
+  done
+fi
+
+# autoApprove: true，执行智能代批
 # 规则：删除命令→拒绝，项目内操作→允许，项目外操作→拒绝
 
 # 检查是否是删除命令
