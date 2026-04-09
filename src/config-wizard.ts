@@ -303,13 +303,18 @@ case "$TOOL_NAME" in
     ;;
 esac
 
-# 直接检查项目目录的 headless 状态文件
+# 检查项目目录的 wecom-aibot.json 文件
 PROJECT_DIR=$(pwd)
-HEADLESS_FILE="$PROJECT_DIR/.claude/headless.json"
+WECOM_AIBOT_FILE="$PROJECT_DIR/.claude/wecom-aibot.json"
 
-# 不在 headless 模式
-if [[ ! -f "$HEADLESS_FILE" ]]; then
-  exit 0
+# 检查 autoApprove 字段（决定是否进入微信模式）
+if [[ ! -f "$WECOM_AIBOT_FILE" ]]; then
+  exit 0  # 文件不存在，不拦截
+fi
+
+AUTO_APPROVE=$(jq -r '.autoApprove // false' "$WECOM_AIBOT_FILE" 2>/dev/null)
+if [[ "$AUTO_APPROVE" != "true" ]]; then
+  exit 0  # autoApprove 为 false，不拦截
 fi
 
 # 检查 MCP Server 是否在线
@@ -318,8 +323,9 @@ if ! echo "$HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
   exit 0
 fi
 
-# 从 headless.json 提取 ccId（优先 agentName，回退 ccId）
-CC_ID=$(jq -r '.agentName // .ccId // empty' "$HEADLESS_FILE" 2>/dev/null)
+# 从 wecom-aibot.json 提取 ccId 和 robotName
+CC_ID=$(jq -r '.ccId // empty' "$WECOM_AIBOT_FILE" 2>/dev/null)
+ROBOT_NAME=$(jq -r '.robotName // empty' "$WECOM_AIBOT_FILE" 2>/dev/null)
 
 # 发送审批请求（包含 ccId 用于路由）
 TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}')
