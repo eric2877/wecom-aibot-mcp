@@ -23,14 +23,17 @@ MCP 服务器地址：`http://127.0.0.1:18963/mcp`
 
 **检查文件**：`项目目录/.claude/wecom-aibot.json`
 
-如果该文件存在且 `autoApprove: true`，说明上次在微信模式下退出，应自动恢复：
+如果该文件存在且 `autoApprove: true`，说明用户期望通过微信交互：
 
 ```
-1. 读取 wecom-aibot.json 获取 ccId 和 robotName
-2. 自动进入微信模式（无需用户确认）
-3. 发送消息：【进度】已自动恢复微信模式
-4. 开始长轮询
+1. 读取 wecom-aibot.json 获取 robotName（用于选择机器人）
+2. 调用 enter_headless_mode(agent_name, robot_id=robotName)
+3. 服务端返回新的 ccId（如 cc-1）
+4. 发送消息：【进度】已自动恢复微信模式
+5. 开始长轮询
 ```
+
+**注意**：ccId 由服务端生成，每次进入微信模式都会获得新的 ccId。
 
 ---
 
@@ -53,32 +56,31 @@ MCP 服务器地址：`http://127.0.0.1:18963/mcp`
 
 检查项目目录下的 `.claude/wecom-aibot.json`：
 
-- **文件存在** → 读取 `ccId` 和 `robotName`，用于后续调用
-- **文件不存在** → 使用项目名称作为 ccId，进入时让用户选择机器人
+- **文件存在** → 读取 `robotName`，用于选择机器人
+- **文件不存在** → 进入时让用户选择机器人
 
-**重要**：不要依赖记忆中的 ccId/robotName，必须从配置文件获取最新值。
-
-### 1. 确定 ccId（如果配置文件中没有）
-
-使用项目名称作为 ccId（从 package.json 或目录名获取）。
+**重要**：不要依赖记忆中的 robotName，必须从配置文件获取最新值。
 
 ### 2. 调用 enter_headless_mode
 
 ```
-mcp__wecom-aibot__enter_headless_mode(ccId="<项目名称>", projectDir="<项目目录>")
+mcp__wecom-aibot__enter_headless_mode(agent_name="<项目名称>", robot_id="<机器人名称或序号>")
 ```
 
 **参数说明**：
-- `ccId`: CC 身份标识（建议使用项目名称）
-- `projectDir`: 项目目录（用于写入 wecom-aibot.json，确保文件在正确位置）
-- `robotName`: 可选，指定机器人名称或序号
+- `agent_name`: 智能体名称（建议使用项目名称）
+- `robot_id`: 可选，指定机器人名称或序号
 
 **处理返回值**：
-- `select_robot` → 展示机器人列表，等用户回复序号，再调用 `enter_headless_mode(ccId, robotName)`
+- `select_robot` → 展示机器人列表，等用户回复序号，再调用 `enter_headless_mode(agent_name, robot_id)`
 - `error: robot_occupied` → 告知用户该机器人已被占用，提示可用机器人列表
-- `entered` → 继续下一步
+- `entered` → 返回 `ccId`（服务端生成），继续下一步
 
-### 3. 写入项目级 Hook
+**注意**：ccId 由 MCP Server 自动生成（如 `cc-1`），无需手动指定。
+
+### 3. 写入项目级 Hook（可选）
+
+**注意**：VSCode 扩展可能不完全支持 PermissionRequest Hook。如果审批不生效，可跳过此步骤。
 
 读取当前工作目录的 `.claude/settings.json`（不存在则创建），合并写入：
 
@@ -97,7 +99,7 @@ mcp__wecom-aibot__enter_headless_mode(ccId="<项目名称>", projectDir="<项目
 
 保留文件中已有的其他配置，只合并 `hooks.PermissionRequest` 字段。
 
-**注意**：不要添加 `timeout` 字段，VSCode 扩展不支持该配置。超时控制由 hook 脚本内部的 `curl -m` 参数处理。
+**重要**：不要添加 `timeout` 字段，VSCode 扩展不支持该配置。超时控制由 hook 脚本内部的轮询机制处理。
 
 ### 4. 发确认消息
 
@@ -170,10 +172,9 @@ def on_task_complete():
 **触发词**：「结束微信模式」「我回来了」「我回电脑了」
 
 1. 调用 `mcp__wecom-aibot__exit_headless_mode`
-2. 从 `.claude/settings.json` 删除 `hooks.PermissionRequest` 字段
-3. 更新 `wecom-aibot.json`，只修改 `autoApprove: false`（保留原有 ccId/robotName）
-4. 发送 `mcp__wecom-aibot__send_message("【进度】已退出微信模式，恢复终端交互。")`
-5. 停止轮询
+2. 从 `.claude/settings.json` 删除 `hooks.PermissionRequest` 字段（如果之前配置了）
+3. 发送 `mcp__wecom-aibot__send_message("【进度】已退出微信模式，恢复终端交互。")`
+4. 停止轮询
 
 **「我已经回到电脑旁了」** → 先确认：
 ```
@@ -184,15 +185,7 @@ mcp__wecom-aibot__send_message("【需要确认】是否结束微信模式？回
 
 ## 消息格式
 
-**注意**：MCP 工具 `send_message` 会自动添加 `【ccId】` 前缀，无需手动添加。
-
 **正确格式**：`【标签】消息内容`
-
-发送后会自动变成：`【ccId】【标签】消息内容`
-
-示例：
-- 发送：`【进度】收到指令，正在处理...`
-- 用户收到：`【wecom-aibot】【进度】收到指令，正在处理...`
 
 | 标签 | 用途 |
 |------|------|
@@ -200,6 +193,10 @@ mcp__wecom-aibot__send_message("【需要确认】是否结束微信模式？回
 | `【完成】` | 任务完成，继续等待 |
 | `【问题】` | 需用户决策 |
 | `【需要确认】` | 二次确认 |
+
+**ccId 路由**：
+- 消息前缀由 MCP Server 自动添加（格式：`【ccId】`）
+- 多 CC 场景下，用户引用回复时需包含 ccId（如 `【cc-1】`）
 
 ---
 

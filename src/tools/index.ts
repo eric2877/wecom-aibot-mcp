@@ -37,6 +37,8 @@ import {
   deleteSession,
   generateCcId,
   findSessionByRobotName,
+  registerCcId,
+  unregisterCcId,
 } from '../http-server.js';
 import {
   enterHeadlessMode,
@@ -137,7 +139,7 @@ export function registerTools(server: McpServer) {
         };
       }
 
-      const formatMessages = (msgs: ReturnType<typeof client.getPendingMessages>) =>
+      const formatMessages = (msgs: Array<{ content: string; from_userid: string; chatid: string; chattype: 'single' | 'group'; timestamp: number }>) =>
         msgs.map(m => ({
           content: m.content,
           from: m.from_userid,
@@ -411,6 +413,9 @@ npx @vrs-soft/wecom-aibot-mcp
         });
       }
 
+      // MCP 注册 ccId → robotName 映射（不依赖 session 生命周期）
+      registerCcId(ccId, selectedRobot.name);
+
       // 发送确认消息（包含 ccId 标识）
       await result.client.sendText(`【${ccId}】已进入微信模式，使用机器人「${selectedRobot.name}」。`);
 
@@ -457,6 +462,11 @@ npx @vrs-soft/wecom-aibot-mcp
       if (client) {
         const name = agent_name || sessionData.agentName || '智能体';
         await client.sendText(`【${name}】已退出微信模式，恢复终端交互。`);
+      }
+
+      // 注销 ccId → robotName 映射
+      if (sessionData.ccId) {
+        unregisterCcId(sessionData.ccId);
       }
 
       // 断开连接

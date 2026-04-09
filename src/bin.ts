@@ -53,6 +53,7 @@ function showHelp() {
   --version, -v   显示版本号
   --start         启动 MCP Server（后台服务模式）
   --stop          停止 MCP Server
+  --debug         前台启动 MCP Server（日志直接输出到终端，用于调试）
   --status        显示服务状态和机器人配置
   --config        重新配置默认机器人（修改 Bot ID / Secret / 目标用户）
   --add           添加新的机器人配置（多机器人场景）
@@ -142,8 +143,10 @@ function isServerRunning(): boolean {
     process.kill(pid, 0);
     return true;
   } catch {
-    // 进程不存在，清理 PID 文件
-    fs.unlinkSync(PID_FILE);
+    // 进程不存在，清理 PID 文件（可能已被进程自身删除）
+    if (fs.existsSync(PID_FILE)) {
+      fs.unlinkSync(PID_FILE);
+    }
     return false;
   }
 }
@@ -178,7 +181,9 @@ function stopServer(): boolean {
     return true;
   } catch (err) {
     console.error('[mcp] 停止服务失败:', err);
-    fs.unlinkSync(PID_FILE);
+    if (fs.existsSync(PID_FILE)) {
+      fs.unlinkSync(PID_FILE);
+    }
     return false;
   }
 }
@@ -288,6 +293,7 @@ function startMcpServerBackground(): void {
   console.log(`[mcp] HTTP endpoint: http://127.0.0.1:18963/mcp`);
   console.log('[mcp] 健康检查: curl http://127.0.0.1:18963/health');
   console.log('[mcp] 停止服务: npx @vrs-soft/wecom-aibot-mcp --stop');
+  console.log('[mcp] 调试模式: npx @vrs-soft/wecom-aibot-mcp --debug');
 }
 
 async function main() {
@@ -338,10 +344,17 @@ async function main() {
     process.exit(0);
   }
 
-  // --start --foreground：前台启动（内部调用）
+  // --start --foreground：前台启动（内部调用，输出到日志文件）
   if (args.includes('--start') && args.includes('--foreground')) {
     await startMcpServerForeground();
     return; // 保持运行，不 exit
+  }
+
+  // --debug：前台启动，日志直接输出到终端
+  if (args.includes('--debug')) {
+    console.log('[mcp] Debug 模式：前台运行，Ctrl+C 退出');
+    await startMcpServerForeground();
+    return;
   }
 
   // --start：后台启动

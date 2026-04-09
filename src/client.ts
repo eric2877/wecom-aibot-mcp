@@ -106,7 +106,7 @@ class WecomClient extends EventEmitter {
 
   private setupEventHandlers() {
     this.wsClient.on('connected', () => {
-      logConnected(this.robotName);
+      logConnected();
     });
 
     this.wsClient.on('authenticated', () => {
@@ -114,7 +114,7 @@ class WecomClient extends EventEmitter {
       this.connected = true;
       this.wasReconnecting = false;
       this.reconnectAttempt = 0;
-      logAuthenticated(this.robotName);
+      logAuthenticated();
 
       // 重连成功后发送通知
       if (wasReconnecting) {
@@ -130,7 +130,7 @@ class WecomClient extends EventEmitter {
       this.connected = false;
       this.wasReconnecting = true;
       this.lastDisconnectTime = Date.now();
-      logDisconnected(this.robotName, reason);
+      logDisconnected(reason);
 
       // 发送断线通知
       this.sendText('【系统】连接中断，正在重连...').catch(err => {
@@ -140,11 +140,11 @@ class WecomClient extends EventEmitter {
 
     this.wsClient.on('reconnecting', (attempt: number) => {
       this.reconnectAttempt = attempt;
-      logReconnecting(this.robotName, attempt);
+      logReconnecting(attempt);
     });
 
     this.wsClient.on('error', (err: Error) => {
-      logError(this.robotName, err.message);
+      logError(err.message);
 
       // 检测授权相关错误（40058: invalid Request Parameter）
       if (err.message.includes('40058') || err.message.includes('invalid Request Parameter')) {
@@ -168,7 +168,8 @@ class WecomClient extends EventEmitter {
 
     // 监听模板卡片事件（审批结果）
     this.wsClient.on('event.template_card_event', (frame: WsFrame) => {
-      console.log('[wecom] 收到 template_card_event 事件');
+      console.log('[wecom] 收到 template_card_event 事件，完整 frame:');
+      console.log(JSON.stringify(frame, null, 2));
       this.handleApprovalResponse(frame);
     });
 
@@ -256,11 +257,18 @@ class WecomClient extends EventEmitter {
 
   private handleApprovalResponse(frame: WsFrame) {
     const event = frame.body?.event;
-    if (!event) return;
+    console.log('[wecom] handleApprovalResponse body.event:', JSON.stringify(event));
+    if (!event) {
+      console.log('[wecom] event 为空，frame.body:', JSON.stringify(frame.body));
+      return;
+    }
 
-    // task_id 和 event_key 在 event 层级，不在 template_card_event 内部
-    const taskId = event.task_id;
-    const eventKey = event.event_key; // 用户点击的按钮 key
+    // task_id 和 event_key 在 event.template_card_event 内部
+    const cardEvent = (event as any).template_card_event;
+    const taskId = cardEvent?.task_id;
+    const eventKey = cardEvent?.event_key; // 用户点击的按钮 key
+
+    console.log(`[wecom] taskId=${taskId}, eventKey=${eventKey}, approvals keys:`, [...this.approvals.keys()]);
 
     if (!taskId) return;
 

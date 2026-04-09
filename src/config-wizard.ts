@@ -282,7 +282,7 @@ function writeHookScript() {
 # HTTP Transport 版本
 #
 # 固定端口: 18963
-# 直接检查 $(pwd)/.claude/headless.json
+# 检查 $(pwd)/.claude/wecom-aibot.json 的 autoApprove 字段
 
 MCP_PORT=18963
 
@@ -303,12 +303,18 @@ case "$TOOL_NAME" in
     ;;
 esac
 
-# 直接检查项目目录的 headless 状态文件
+# 检查项目目录的微信模式配置文件
 PROJECT_DIR=$(pwd)
-HEADLESS_FILE="$PROJECT_DIR/.claude/headless.json"
+CONFIG_FILE="$PROJECT_DIR/.claude/wecom-aibot.json"
 
-# 不在 headless 模式
-if [[ ! -f "$HEADLESS_FILE" ]]; then
+# 配置文件不存在，不在微信模式
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  exit 0
+fi
+
+# 检查 autoApprove 是否为 true
+AUTO_APPROVE=$(jq -r '.autoApprove // false' "$CONFIG_FILE" 2>/dev/null)
+if [[ "$AUTO_APPROVE" != "true" ]]; then
   exit 0
 fi
 

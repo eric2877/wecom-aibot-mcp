@@ -22,6 +22,7 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { registerTools } from './tools/index.js';
 import { getClient, getConnectionState, getAllConnectionStates, connectAllRobots } from './connection-manager.js';
 import { subscribeWecomMessage, WecomMessage } from './message-bus.js';
+import { listAllRobots } from './config-wizard.js';
 
 // 固定端口
 export const HTTP_PORT = 18963;
@@ -150,6 +151,28 @@ export async function pushMessageToSession(robotName: string, message: {
 export interface ApprovalRequest {
   tool_name: string;
   tool_input: Record<string, unknown>;
+  projectDir?: string;
+  ccId?: string;
+}
+
+// ============================================
+// MCP 维护的 ccId → robotName 映射
+// 不依赖 session 生命周期，独立管理
+// ============================================
+const ccIdToRobotMap = new Map<string, string>();
+
+export function registerCcId(ccId: string, robotName: string): void {
+  ccIdToRobotMap.set(ccId, robotName);
+  console.log(`[ccid] 注册映射: ${ccId} → ${robotName}`);
+}
+
+export function unregisterCcId(ccId: string): void {
+  ccIdToRobotMap.delete(ccId);
+  console.log(`[ccid] 注销映射: ${ccId}`);
+}
+
+export function getRobotByCcId(ccId: string): string | null {
+  return ccIdToRobotMap.get(ccId) || null;
 }
 
 // 审批状态条目
@@ -232,9 +255,23 @@ function handleWecomMessage(msg: WecomMessage): void {
       timestamp: msg.timestamp,
     });
   } else if (sessionStore.size > 1) {
-    // 多 CC 在线但无引用，发送提示
-    console.log(`[http] 多 CC 模式，无引用，发送提示`);
-    sendNoReferencePrompt(msg);
+    // 多 CC 在线但无引用：先尝试按 from_userid 匹配机器人的 targetUserId
+    const userMatchedSession = findSessionByTargetUserId(msg.from_userid);
+    if (userMatchedSession) {
+      console.log(`[http] 多 CC 模式，按 from_userid 路由给 ${userMatchedSession.ccId}`);
+      pushMessageToSession(msg.robotName, {
+        msgid: msg.msgid,
+        content: msg.content,
+        from_userid: msg.from_userid,
+        chatid: msg.chatid,
+        chattype: msg.chattype,
+        timestamp: msg.timestamp,
+      });
+    } else {
+      // 无法确定目标 CC，发送引用提示
+      console.log(`[http] 多 CC 模式，无引用，发送提示`);
+      sendNoReferencePrompt(msg);
+    }
   }
 }
 
@@ -256,6 +293,19 @@ function findSessionByCcId(quoteContent?: string): SessionData | null {
 
   for (const [, data] of sessionStore) {
     if (data.ccId === ccId) {
+      return data;
+    }
+  }
+  return null;
+}
+
+// 根据 from_userid 匹配 session（2v2 场景：每个用户对应一个 CC）
+// 查找机器人配置中 targetUserId 与消息来源匹配的 session
+function findSessionByTargetUserId(fromUserId: string): SessionData | null {
+  const allRobots = listAllRobots();
+  for (const [, data] of sessionStore) {
+    const robot = allRobots.find(r => r.name === data.robotName);
+    if (robot && robot.targetUserId === fromUserId) {
       return data;
     }
   }
@@ -583,17 +633,21 @@ async function handleApprovalRequest(req: http.IncomingMessage, res: http.Server
     const body = await readRequestBody(req);
     const request: ApprovalRequest = JSON.parse(body);
 
-    // 获取第一个活跃 session 或第一个已连接的机器人
+    // 优先用 ccId 找到对应机器人，回退到第一个已连接机器人
     let robotName: string | null = null;
-    const session = getFirstActiveSession();
-    if (session && session.data.robotName) {
-      robotName = session.data.robotName;
-    } else {
-      // 检查已连接的机器人（启动时自动连接的）
+    const { ccId } = request;
+    if (ccId) {
+      robotName = getRobotByCcId(ccId);
+      if (robotName) {
+        console.log(`[http] 审批路由: ccId=${ccId} → ${robotName}`);
+      }
+    }
+    if (!robotName) {
       const states = getAllConnectionStates();
       const connectedRobot = states.find(s => s.connected);
       if (connectedRobot) {
         robotName = connectedRobot.robotName;
+        console.log(`[http] 审批路由: 回退到第一个已连接机器人 ${robotName}`);
       }
     }
 
