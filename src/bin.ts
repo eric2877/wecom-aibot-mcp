@@ -176,7 +176,10 @@ function stopServer(): boolean {
       }
     }
 
-    fs.unlinkSync(PID_FILE);
+    // 进程退出后删除 PID 文件（如果还存在）
+    if (fs.existsSync(PID_FILE)) {
+      fs.unlinkSync(PID_FILE);
+    }
     console.log('[mcp] 服务已停止');
     return true;
   } catch (err) {

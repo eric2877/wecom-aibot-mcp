@@ -12,6 +12,7 @@ import { getClient, getConnectionState } from './connection-manager.js';
 
 const KEEPALIVE_INTERVAL_MINUTES = 5;  // 每 5 分钟
 const CHECK_INTERVAL_MS = 60000;       // 每分钟检查一次
+const MAX_KEEPALIVE_COUNT = 2;         // 保活提醒最多 2 次
 
 let monitorTimer: NodeJS.Timeout | null = null;
 
@@ -62,15 +63,17 @@ async function checkAndSendKeepalive(): Promise<void> {
   for (const approval of pendingApprovals) {
     const waitTime = now - approval.timestamp;
     const minutes = Math.floor(waitTime / 60000);
+    const keepaliveCount = approval.keepaliveCount || 0;
 
-    // 每 5 分钟发送保活消息
+    // 每 5 分钟发送保活消息，最多 2 次
     if (minutes > 0 &&
         minutes % KEEPALIVE_INTERVAL_MINUTES === 0 &&
-        approval.lastKeepaliveMinute !== minutes) {
+        approval.lastKeepaliveMinute !== minutes &&
+        keepaliveCount < MAX_KEEPALIVE_COUNT) {
 
       await sendKeepaliveMessage(approval, minutes, state.robotName);
       approval.lastKeepaliveMinute = minutes;
-      approval.keepaliveCount = (approval.keepaliveCount || 0) + 1;
+      approval.keepaliveCount = keepaliveCount + 1;
     }
   }
 }

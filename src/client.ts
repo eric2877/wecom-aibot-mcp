@@ -37,6 +37,7 @@ interface ApprovalRecord {
   toolName?: string;  // 审批的工具名称
   toolInput?: Record<string, unknown>;  // 工具输入（用于智能代批）
   projectDir?: string;  // 项目目录（用于智能代批）
+  description?: string;  // 审批请求原文描述
   lastKeepaliveMinute?: number;  // 最后发送保活的分钟数
   keepaliveCount?: number;       // 已发送保活次数
   // 审批去重字段
@@ -77,6 +78,7 @@ class WecomClient extends EventEmitter {
   private wasReconnecting = false;  // 跟踪是否处于重连状态
   private reconnectAttempt = 0;  // 重连尝试次数
   private lastDisconnectTime = 0;  // 最后断线时间
+  private disconnectNotifyCount = 0;  // 断线通知次数（最多1次）
 
   constructor(botId: string, secret: string, targetUserId: string, robotName: string) {
     super();
@@ -114,6 +116,7 @@ class WecomClient extends EventEmitter {
       this.connected = true;
       this.wasReconnecting = false;
       this.reconnectAttempt = 0;
+      this.disconnectNotifyCount = 0;  // 重连成功后重置断线通知计数
       logAuthenticated();
 
       // 重连成功后发送通知
@@ -132,10 +135,13 @@ class WecomClient extends EventEmitter {
       this.lastDisconnectTime = Date.now();
       logDisconnected(reason);
 
-      // 发送断线通知
-      this.sendText('【系统】连接中断，正在重连...').catch(err => {
-        console.error('[wecom] 发送断线通知失败:', err);
-      });
+      // 断线通知最多发1次
+      if (this.disconnectNotifyCount < 1) {
+        this.disconnectNotifyCount++;
+        this.sendText('【系统】连接中断，正在重连...').catch(err => {
+          console.error('[wecom] 发送断线通知失败:', err);
+        });
+      }
     });
 
     this.wsClient.on('reconnecting', (attempt: number) => {
@@ -286,10 +292,34 @@ class WecomClient extends EventEmitter {
         : eventKey === 'allow-always' ? '✅ 已允许（永久）'
         : '❌ 已拒绝';
       const toolInfo = approval.toolName ? `: ${approval.toolName}` : '';
+      const descInfo = approval.description ? `\n\n> ${approval.description}` : '';
+      const content = `**审批结果**${toolInfo}\n\n${resultText}${descInfo}`;
 
-      this.sendText(`**审批结果**${toolInfo}\n\n${resultText}`).catch(err => {
+      this.sendText(content).catch(err => {
         console.error('[wecom] 发送审批确认失败:', err);
       });
+    } else if (approval && approval.resolved) {
+      console.log(`[wecom] 审批已解决，跳过点击: ${taskId}, resolved=${approval.resolved}, result=${approval.result}`);
+    } else {
+      console.log(`[wecom] 审批记录不存在: ${taskId}`);
+    }
+  }
+
+  // 使用 reply 方法回复审批结果（会有引用效果）
+  private async replyApprovalResult(frame: WsFrame, content: string): Promise<void> {
+    if (!this.connected) {
+      console.log('[wecom] 未连接，无法回复');
+      return;
+    }
+
+    try {
+      await this.wsClient.reply(frame, {
+        msgtype: 'markdown',
+        markdown: { content },
+      });
+      console.log(`[wecom] 已回复审批结果`);
+    } catch (err) {
+      console.error(`[wecom] 回复失败: ${err}`);
     }
   }
 
@@ -418,6 +448,7 @@ class WecomClient extends EventEmitter {
       timestamp: Date.now(),
       toolName,
       toolInput,
+      description,  // 保存审批请求原文
       operationHash,
     });
 
@@ -504,6 +535,37 @@ class WecomClient extends EventEmitter {
       return approval.result!;
     }
     return 'pending';
+  }
+
+  // 手动设置审批结果（供 Hook 超时自动决策使用）
+  setApprovalResult(taskId: string, result: 'allow-once' | 'deny', reason?: string): boolean {
+    const approval = this.approvals.get(taskId);
+    if (!approval) {
+      console.log(`[wecom] 设置审批结果失败：记录不存在 ${taskId}`);
+      return false;
+    }
+    if (approval.resolved) {
+      console.log(`[wecom] 设置审批结果失败：已解决 ${taskId}`);
+      return false;
+    }
+
+    approval.resolved = true;
+    approval.result = result;
+    approval.timestamp = Date.now();
+    this.emit('approval_resolved', { taskId, result });
+
+    // 发送确认消息给用户（包含超时原因和原文引用）
+    const resultText = result === 'deny' ? '❌ 已拒绝' : '✅ 已允许';
+    const reasonText = reason ? `\n\n原因：${reason}` : '';
+    const toolInfo = approval.toolName ? `: ${approval.toolName}` : '';
+    const descInfo = approval.description ? `\n\n> ${approval.description}` : '';
+
+    this.sendText(`**审批结果（超时自动决策）**${toolInfo}\n\n${resultText}${reasonText}${descInfo}`).catch(err => {
+      console.error('[wecom] 发送审批确认失败:', err);
+    });
+
+    console.log(`[wecom] 超时自动决策已设置: ${taskId} → ${result}`);
+    return true;
   }
 
   // 获取所有待处理的审批任务 ID（供 hook 轮询使用）

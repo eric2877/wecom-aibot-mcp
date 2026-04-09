@@ -184,12 +184,10 @@ interface ApprovalEntry {
   tool_input: Record<string, unknown>;
   description: string;
   robotName: string;
-  timer?: NodeJS.Timeout;
 }
 
 // 使用 Map 存储多个待处理审批（按 taskId 索引）
 const pendingApprovals: Map<string, ApprovalEntry> = new Map();
-const APPROVAL_TIMEOUT_MS = parseInt(process.env.APPROVAL_TIMEOUT_MS || '600000', 10);  // 默认 10 分钟
 
 const VERSION = '1.2.0';
 
@@ -474,6 +472,11 @@ export async function startHttpServer(
         return;
       }
 
+      if (req.method === 'POST' && url.startsWith('/approval_timeout/')) {
+        await handleApprovalTimeout(req, res, url);
+        return;
+      }
+
       if (req.method === 'GET' && url === '/health') {
         handleHealthCheck(req, res);
         return;
@@ -692,9 +695,6 @@ async function handleApprovalRequest(req: http.IncomingMessage, res: http.Server
       robotName,
     };
 
-    // 启动超时计时器
-    entry.timer = setTimeout(() => onApprovalTimeout(taskId), APPROVAL_TIMEOUT_MS);
-
     pendingApprovals.set(taskId, entry);
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -703,33 +703,6 @@ async function handleApprovalRequest(req: http.IncomingMessage, res: http.Server
     console.error('[http] 审批请求处理失败:', err);
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: (err as Error).message }));
-  }
-}
-
-async function onApprovalTimeout(taskId: string): Promise<void> {
-  const entry = pendingApprovals.get(taskId);
-  if (!entry || entry.status !== 'pending') return;
-
-  const client = await getClient(entry.robotName);
-  if (!client) {
-    // 机器人未连接，保留审批条目等待重连
-    console.log(`[http] 审批超时但机器人未连接，保留审批等待重连: ${taskId}`);
-    return;
-  }
-
-  const result = client.getApprovalResult(taskId);
-  if (result === 'pending') {
-    // 超时发送提醒，不改变状态，继续等待
-    console.log(`[http] 审批超时，发送提醒: ${taskId}`);
-
-    const waitTime = Math.floor((Date.now() - entry.timestamp) / 60000);
-    await client.sendText(`【审批提醒】您有 ${waitTime} 分钟前的审批请求待处理\n${entry.description}\n\n请在企业微信中完成审批。`);
-
-    // 重新设置超时计时器（再等 10 分钟）
-    entry.timer = setTimeout(() => onApprovalTimeout(taskId), APPROVAL_TIMEOUT_MS);
-  } else {
-    // 已有结果，清理条目
-    pendingApprovals.delete(taskId);
   }
 }
 
@@ -758,6 +731,43 @@ function handleApprovalStatus(_req: http.IncomingMessage, res: http.ServerRespon
   // 没找到对应的待处理审批，返回 pending
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ status: 'pending', result: 'pending' }));
+}
+
+async function handleApprovalTimeout(req: http.IncomingMessage, res: http.ServerResponse, url: string): Promise<void> {
+  const taskId = url.replace('/approval_timeout/', '');
+
+  try {
+    const body = await readRequestBody(req);
+    const { result, reason } = JSON.parse(body);
+
+    const entry = pendingApprovals.get(taskId);
+    if (!entry) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '审批记录不存在' }));
+      return;
+    }
+
+    const client = await getClient(entry.robotName);
+    if (!client) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '机器人未连接' }));
+      return;
+    }
+
+    // 设置审批结果并发送微信消息
+    const success = client.setApprovalResult(taskId, result, reason);
+    if (success) {
+      entry.status = result as 'allow-once' | 'deny';
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, taskId, result }));
+    } else {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '设置失败（已解决或不存在）' }));
+    }
+  } catch (err) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: (err as Error).message }));
+  }
 }
 
 function handleHealthCheck(_req: http.IncomingMessage, res: http.ServerResponse): void {

@@ -365,15 +365,15 @@ done
 IS_DELETE=0
 if [[ "$TOOL_NAME" == "Bash" ]]; then
   CMD=$(echo "$TOOL_INPUT" | jq -r '.command // empty')
-  if [[ "$CMD" =~ ^rm\\ ]] || [[ "$CMD" =~ \\ rm\\ ]] || \
-     [[ "$CMD" =~ ^rmdir\\ ]] || [[ "$CMD" =~ \\ rmdir\\ ]] || \
-     [[ "$CMD" =~ ^unlink\\ ]] || [[ "$CMD" =~ rm\\ -rf ]]; then
+  if [[ "$CMD" == rm* ]] || [[ "$CMD" == *" rm "* ]] || [[ "$CMD" == *"-rf"* ]]; then
     IS_DELETE=1
   fi
 fi
 
 # 删除操作 → 永远拒绝
 if [[ $IS_DELETE -eq 1 ]]; then
+  # 通知 MCP Server 发送微信消息
+  curl -s -m 5 -X POST "http://127.0.0.1:$MCP_PORT/approval_timeout/$TASK_ID" -H "Content-Type: application/json" -d '{"result":"deny","reason":"超时自动拒绝：删除操作需人工确认"}' > /dev/null 2>&1 &
   printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"超时自动拒绝：删除操作需人工确认"}}}'
   exit 0
 fi
@@ -384,12 +384,7 @@ IS_IN_PROJECT=0
 case "$TOOL_NAME" in
   Bash)
     CMD=$(echo "$TOOL_INPUT" | jq -r '.command // empty')
-    if [[ "$CMD" == *"$PROJECT_DIR"* ]] || \
-       [[ "$CMD" =~ ^\\./ ]] || \
-       [[ "$CMD" =~ ^npm\\ ]] || \
-       [[ "$CMD" =~ ^npx\\ ]] || \
-       [[ "$CMD" =~ ^git\\ ]] || \
-       [[ "$CMD" =~ ^node\\ ]]; then
+    if [[ "$CMD" == *"$PROJECT_DIR"* ]] || [[ "$CMD" == ./* ]] || [[ "$CMD" == npm* ]] || [[ "$CMD" == npx* ]] || [[ "$CMD" == git* ]] || [[ "$CMD" == node* ]]; then
       IS_IN_PROJECT=1
     fi
     ;;
@@ -411,8 +406,12 @@ esac
 
 # 根据项目内/外决策
 if [[ $IS_IN_PROJECT -eq 1 ]]; then
+  # 通知 MCP Server 发送微信消息
+  curl -s -m 5 -X POST "http://127.0.0.1:$MCP_PORT/approval_timeout/$TASK_ID" -H "Content-Type: application/json" -d '{"result":"allow-once","reason":"超时自动允许：项目内操作"}' > /dev/null 2>&1 &
   printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","message":"超时自动允许：项目内操作"}}}'
 else
+  # 通知 MCP Server 发送微信消息
+  curl -s -m 5 -X POST "http://127.0.0.1:$MCP_PORT/approval_timeout/$TASK_ID" -H "Content-Type: application/json" -d '{"result":"deny","reason":"超时自动拒绝：项目外操作需人工确认"}' > /dev/null 2>&1 &
   printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"超时自动拒绝：项目外操作需人工确认"}}}'
 fi
 `;
