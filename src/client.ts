@@ -258,11 +258,24 @@ class WecomClient extends EventEmitter {
     const event = frame.body?.event;
     if (!event) return;
 
-    // task_id 和 event_key 在 event 层级，不在 template_card_event 内部
-    const taskId = event.task_id;
-    const eventKey = event.event_key; // 用户点击的按钮 key
+    // 调试：打印完整事件结构
+    console.log('[wecom] 审批事件原始结构:', JSON.stringify(event).substring(0, 500));
 
-    if (!taskId) return;
+    // task_id 和 event_key 可能在 event 层级（SDK 扁平化）
+    // 也可能嵌套在 template_card_event 对象内（WeChat 原始结构）
+    let taskId = event.task_id;
+    let eventKey = event.event_key;
+
+    // 如果直接找不到，尝试嵌套结构
+    if (!taskId && event.template_card_event) {
+      taskId = event.template_card_event.task_id;
+      eventKey = event.template_card_event.event_key;
+    }
+
+    if (!taskId) {
+      console.log('[wecom] 审批事件未找到 task_id，事件 keys:', Object.keys(event));
+      return;
+    }
 
     console.log(`[wecom] 收到审批响应: taskId=${taskId}, key=${eventKey}`);
 
@@ -394,7 +407,7 @@ class WecomClient extends EventEmitter {
       const operationHash = hashOperation(ccId ?? '', toolName, toolInput);
       const existing = this.findApprovalByHash(operationHash);
 
-      if (existing) {
+      if (existing && !existing.resolved) {
         console.log(`[wecom] 复用已有审批: ${existing.taskId} (hash: ${operationHash.slice(0, 8)}...)`);
         return existing.taskId;
       }
@@ -672,23 +685,51 @@ class WecomClient extends EventEmitter {
   }
 }
 
-// 单例实例
-let instance: WecomClient | null = null;
+// 多实例支持（按 robotName 索引）
+const instances: Map<string, WecomClient> = new Map();
 
 export function initClient(botId: string, secret: string, targetUserId: string, robotName: string): WecomClient {
-  if (instance) {
-    instance.disconnect();
+  // 如果该机器人已存在，先断开旧连接
+  if (instances.has(robotName)) {
+    instances.get(robotName)!.disconnect();
   }
-  instance = new WecomClient(botId, secret, targetUserId, robotName);
-  instance.connect();
-  return instance;
+  const client = new WecomClient(botId, secret, targetUserId, robotName);
+  client.connect();
+  instances.set(robotName, client);
+  return client;
 }
 
-export function getClient(): WecomClient {
-  if (!instance) {
+export function getClient(robotName?: string): WecomClient {
+  if (robotName) {
+    const client = instances.get(robotName);
+    if (!client) {
+      throw new Error(`WecomClient 未初始化：机器人 "${robotName}" 不存在`);
+    }
+    return client;
+  }
+  // 无参数时返回第一个实例（向后兼容）
+  if (instances.size === 0) {
     throw new Error('WecomClient 未初始化，请先调用 initClient');
   }
-  return instance;
+  const first = instances.values().next().value;
+  if (!first) {
+    throw new Error('WecomClient 未初始化');
+  }
+  return first;
+}
+
+export function getAllClients(): Map<string, WecomClient> {
+  return instances;
+}
+
+export function disconnectClient(robotName: string): boolean {
+  const client = instances.get(robotName);
+  if (client) {
+    client.disconnect();
+    instances.delete(robotName);
+    return true;
+  }
+  return false;
 }
 
 export { WecomClient, ApprovalRecord, MessageRecord, MAX_PENDING_MESSAGES };

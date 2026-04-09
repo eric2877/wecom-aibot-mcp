@@ -113,14 +113,14 @@ mcp__wecom-aibot__send_message("【进度】已进入微信模式，所有交互
 while (true):
   result = mcp__wecom-aibot__get_pending_messages(timeout_ms=30000)
   if result.messages → 处理消息，然后继续轮询
-  if result.timeout  → 立即重新调用（不需要 sleep，不需要任何等待）
+  if result.timeout  → sleep(1) 后重新调用（避免快速轮询消耗 token）
 ```
 
 **timeout 不是停止信号**：
 - `timeout: true` 只表示"这 30 秒内没有消息"
-- 收到 timeout 后立即重新调用 `get_pending_messages`
+- 收到 timeout 后等待 1 秒再重新调用，避免空转
 - 长轮询会阻塞等待，有消息立即唤醒，无消息等满超时后才消耗 token
-- 比短轮询节省约 6 倍 token
+- 添加 sleep(1) 可进一步节省 token，同时保持响应速度
 
 ---
 

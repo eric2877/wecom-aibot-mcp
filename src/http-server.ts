@@ -25,8 +25,8 @@ import { getClient, getConnectionState, getAllConnectionStates, connectAllRobots
 import { getCcIdBinding } from './cc-registry.js';
 import { subscribeWecomMessage, WecomMessage } from './message-bus.js';
 
-// 固定端口
-export const HTTP_PORT = 18963;
+// 端口配置（支持环境变量覆盖）
+export const HTTP_PORT = parseInt(process.env.HTTP_PORT || '18963', 10);
 
 // Hook 脚本路径
 export const HOOK_SCRIPT_PATH = path.join(os.homedir(), '.wecom-aibot-mcp', 'permission-hook.sh');
