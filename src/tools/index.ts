@@ -32,13 +32,11 @@ import {
   getRobotOccupiedBy,
 } from '../connection-manager.js';
 import {
-  getSessionDataById,
-  setSessionData,
-  deleteSession,
   generateCcId,
-  findSessionByRobotName,
   registerCcId,
   unregisterCcId,
+  getRobotByCcId,
+  getCCRegistryEntry,
 } from '../http-server.js';
 import {
   enterHeadlessMode,
@@ -48,27 +46,22 @@ import {
 import { subscribeWecomMessageByRobot, WecomMessage } from '../message-bus.js';
 import { updateWechatModeConfig, addPermissionHook, removePermissionHook } from '../project-config.js';
 
-// 辅助函数：从 session 获取客户端
-async function getConnectedClient(sessionId: string | undefined): Promise<{ error: string | null; client: Awaited<ReturnType<typeof getClient>>; sessionData: ReturnType<typeof getSessionDataById> }> {
-  const sessionData = getSessionDataById(sessionId);
-
-  if (!sessionData || !sessionData.robotName) {
-    return {
-      error: '未在微信模式',
-      client: null,
-      sessionData: null,
-    };
+// 辅助函数：从 ccId 获取客户端
+async function getConnectedClient(ccId: string | undefined): Promise<{ error: string | null; client: Awaited<ReturnType<typeof getClient>>; robotName: string | null }> {
+  if (!ccId) {
+    return { error: '未在微信模式', client: null, robotName: null };
   }
 
-  const client = await getClient(sessionData.robotName);
+  const rn = getRobotByCcId(ccId);
+  if (!rn) {
+    return { error: '未在微信模式', client: null, robotName: null };
+  }
+
+  const client = await getClient(rn);
   if (!client) {
-    return {
-      error: '未连接机器人，请先进入微信模式',
-      client: null,
-      sessionData: null,
-    };
+    return { error: '未连接机器人，请先进入微信模式', client: null, robotName: null };
   }
-  return { error: null, client, sessionData };
+  return { error: null, client, robotName: rn };
 }
 
 export function registerTools(server: McpServer) {
@@ -81,14 +74,14 @@ export function registerTools(server: McpServer) {
     {
       content: z.string().describe('消息内容（支持 Markdown）'),
       target_user: z.string().optional().describe('目标用户/群 ID（可选）'),
+      cc_id: z.string().optional().describe('CC 唯一标识（enter_headless_mode 返回的 ccId）'),
     },
-    async ({ content, target_user }, extra) => {
-      const { error, client, sessionData } = await getConnectedClient(extra.sessionId);
+    async ({ content, target_user, cc_id }, extra) => {
+      const { error, client } = await getConnectedClient(cc_id);
       if (error || !client) {
         return { content: [{ type: 'text', text: JSON.stringify({ error }) }] };
       }
 
-      // 消息内容直接发送，ccId 已在 enter_headless_mode 时发送过
       const success = await client.sendText(content, target_user);
       return {
         content: [{ type: 'text', text: success ? '消息已发送' : '发送失败，请检查连接状态' }],
@@ -127,9 +120,10 @@ export function registerTools(server: McpServer) {
     {
       clear: z.boolean().optional().default(true).describe('是否清除已获取的消息'),
       timeout_ms: z.number().optional().default(0).describe('长轮询超时（毫秒），0 表示立即返回，最大 60000'),
+      cc_id: z.string().optional().describe('CC 唯一标识（enter_headless_mode 返回的 ccId）'),
     },
-    async ({ clear, timeout_ms = 0 }, extra) => {
-      const { error, client, sessionData } = await getConnectedClient(extra.sessionId);
+    async ({ clear, timeout_ms = 0, cc_id }) => {
+      const { error, client, robotName } = await getConnectedClient(cc_id);
 
       if (error || !client) {
         return {
@@ -170,14 +164,13 @@ export function registerTools(server: McpServer) {
       }
 
       // 长轮询：订阅消息总线，等待该机器人的消息
-      const robotName = sessionData!.robotName;
       const arrived = await new Promise<WecomMessage | null>(resolve => {
         const timer = setTimeout(() => {
           sub.unsubscribe();
           resolve(null);
         }, waitMs);
 
-        const sub = subscribeWecomMessageByRobot(robotName, (msg) => {
+        const sub = subscribeWecomMessageByRobot(robotName!, (msg) => {
           clearTimeout(timer);
           sub.unsubscribe();
           resolve(msg);
@@ -319,8 +312,11 @@ npx @vrs-soft/wecom-aibot-mcp
     {
       agent_name: z.string().describe('智能体名称'),
       robot_id: z.string().optional().describe('指定机器人名称或序号'),
+      project_dir: z.string().optional().describe('项目目录路径（用于写入配置文件）'),
+      auto_approve: z.boolean().optional().default(true).describe('超时自动审批（默认 true）'),
+      auto_approve_timeout: z.number().optional().default(600).describe('自动审批超时时间（秒，默认 600 即 10 分钟）'),
     },
-    async ({ agent_name, robot_id }, extra) => {
+    async ({ agent_name, robot_id, project_dir, auto_approve, auto_approve_timeout }, extra) => {
       const allRobots = listAllRobots();
 
       if (allRobots.length === 0) {
@@ -367,25 +363,6 @@ npx @vrs-soft/wecom-aibot-mcp
         }
       }
 
-      // 检查机器人是否被占用（检查是否有 headless session 绑定）
-      const existingSessionId = findSessionByRobotName(selectedRobot.name);
-      if (existingSessionId) {
-        const sessionData = getSessionDataById(existingSessionId);
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              status: 'error',
-              errorType: 'robot_occupied',
-              message: `机器人「${selectedRobot.name}」已被占用`,
-              occupiedBy: sessionData?.agentName,
-              hint: '请选择其他机器人，或让占用者退出微信模式',
-              availableRobots: allRobots.filter(r => !findSessionByRobotName(r.name)).map(r => r.name),
-            }, null, 2),
-          }],
-        };
-      }
-
       // 连接机器人
       const result = await connectRobot(selectedRobot.name, agent_name);
 
@@ -401,25 +378,19 @@ npx @vrs-soft/wecom-aibot-mcp
         };
       }
 
-      // 生成 ccId
+      // 生成 ccId 并注册到 CC 注册表
       const ccId = generateCcId();
-
-      // 存储到 Session
-      if (extra.sessionId) {
-        setSessionData(extra.sessionId, {
-          robotName: selectedRobot.name,
-          agentName: agent_name,
-          ccId,
-          createdAt: Date.now(),
-        });
-      }
-
-      // MCP 注册 ccId → robotName 映射（不依赖 session 生命周期）
-      registerCcId(ccId, selectedRobot.name);
+      registerCcId(ccId, selectedRobot.name, agent_name);
 
       // 更新项目配置文件中的 wechatMode 为 true
-      const projectDir = process.cwd();
-      updateWechatModeConfig(projectDir, { wechatMode: true, robotName: selectedRobot.name });
+      const projectDir = project_dir || process.cwd();
+      updateWechatModeConfig(projectDir, {
+        wechatMode: true,
+        robotName: selectedRobot.name,
+        ccId,
+        autoApprove: auto_approve,
+        autoApproveTimeout: auto_approve_timeout,
+      });
 
       // 添加 PermissionRequest hook 到项目 settings.json
       addPermissionHook(projectDir);
@@ -450,11 +421,13 @@ npx @vrs-soft/wecom-aibot-mcp
     '退出微信模式，断开连接。当用户说「结束微信模式」或「我回来了」时调用。',
     {
       agent_name: z.string().optional().describe('智能体名称'),
+      cc_id: z.string().optional().describe('CC 唯一标识（enter_headless_mode 返回的 ccId）'),
+      project_dir: z.string().optional().describe('项目目录路径（用于更新配置文件）'),
     },
-    async ({ agent_name }, extra) => {
-      const sessionData = getSessionDataById(extra.sessionId);
+    async ({ agent_name, cc_id, project_dir }) => {
+      const { error, client, robotName } = await getConnectedClient(cc_id);
 
-      if (!sessionData || !sessionData.robotName) {
+      if (error || !client || !robotName) {
         return {
           content: [{
             type: 'text',
@@ -463,30 +436,21 @@ npx @vrs-soft/wecom-aibot-mcp
         };
       }
 
-      const robotName = sessionData.robotName;
-      const client = await getClient(robotName);
-
       // 发送退出通知
-      if (client) {
-        const name = agent_name || sessionData.agentName || '智能体';
-        await client.sendText(`【${name}】已退出微信模式，恢复终端交互。`);
-      }
+      const entry = cc_id ? getCCRegistryEntry(cc_id) : null;
+      const name = agent_name || entry?.agentName || '智能体';
+      await client.sendText(`【${name}】已退出微信模式，恢复终端交互。`);
 
-      // 注销 ccId → robotName 映射
-      if (sessionData.ccId) {
-        unregisterCcId(sessionData.ccId);
+      // 注销 ccId
+      if (cc_id) {
+        unregisterCcId(cc_id);
       }
 
       // 断开连接
       disconnectRobot(robotName);
 
-      // 删除 Session
-      if (extra.sessionId) {
-        deleteSession(extra.sessionId);
-      }
-
       // 更新项目配置文件中的 wechatMode 为 false
-      const projectDir = process.cwd();
+      const projectDir = project_dir || process.cwd();
       updateWechatModeConfig(projectDir, { wechatMode: false });
 
       // 删除 PermissionRequest hook 从项目 settings.json
@@ -512,9 +476,12 @@ npx @vrs-soft/wecom-aibot-mcp
   server.tool(
     'detect_user_from_message',
     '等待用户发送消息并返回用户 ID。',
-    { timeout: z.number().optional().describe('超时时间（秒），默认 60') },
-    async ({ timeout = 60 }, extra) => {
-      const { error, client } = await getConnectedClient(extra.sessionId);
+    {
+      timeout: z.number().optional().describe('超时时间（秒），默认 60'),
+      cc_id: z.string().optional().describe('CC 唯一标识（enter_headless_mode 返回的 ccId）'),
+    },
+    async ({ timeout = 60, cc_id }) => {
+      const { error, client } = await getConnectedClient(cc_id);
       if (error || !client) {
         return { content: [{ type: 'text', text: JSON.stringify({ error }) }] };
       }

@@ -20,7 +20,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { registerTools } from './tools/index.js';
-import { getClient, getConnectionState, getAllConnectionStates, connectAllRobots, disconnectRobot } from './connection-manager.js';
+import { getClient, getConnectionState, getAllConnectionStates, connectAllRobots } from './connection-manager.js';
 import { subscribeWecomMessage, WecomMessage } from './message-bus.js';
 import { listAllRobots } from './config-wizard.js';
 
@@ -33,25 +33,10 @@ export const HOOK_SCRIPT_PATH = path.join(os.homedir(), '.wecom-aibot-mcp', 'per
 let httpServer: http.Server | null = null;
 let startTime: number = 0;
 
-// ============================================
-// Session 管理（核心：一个 session 对应一个机器人连接）
-// ============================================
-
-interface SessionData {
-  robotName: string;      // 当前使用的机器人名称
-  agentName?: string;     // 智能体名称
-  ccId: string;           // CC 唯一标识（服务端生成）
-  createdAt: number;      // 创建时间
-  lastSeenAt: number;     // 最后活跃时间（用于超时检测）
-}
-
-// Session 存储：sessionId → sessionData
-const sessionStore = new Map<string, SessionData>();
-
-// Session 序号计数器（用于生成 ccId）
+// ccId 序号计数器
 let sessionIndex = 0;
 
-// Session ID 生成器
+// Session ID 生成器（MCP SSE 使用）
 function generateSessionId(): string {
   return `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -60,83 +45,6 @@ function generateSessionId(): string {
 export function generateCcId(): string {
   sessionIndex++;
   return `cc-${sessionIndex}`;
-}
-
-// 设置 session 数据（enter_headless_mode 时调用）
-export function setSessionData(sessionId: string, data: SessionData): void {
-  sessionStore.set(sessionId, data);
-}
-
-// 获取 session 数据（供工具使用）
-export function getSessionData(sessionId: string): SessionData | null {
-  return sessionStore.get(sessionId) || null;
-}
-
-// 从 sessionId 获取 session 数据（兼容 undefined 参数）
-export function getSessionDataById(sessionId: string | undefined): SessionData | null {
-  if (!sessionId) return null;
-  return sessionStore.get(sessionId) || null;
-}
-
-// 删除 session（exit_headless_mode 时调用）
-export function deleteSession(sessionId: string): void {
-  sessionStore.delete(sessionId);
-}
-
-// 检查是否有活跃的 headless session（hook 使用）
-export function hasActiveHeadlessSession(): boolean {
-  return sessionStore.size > 0;
-}
-
-// 获取第一个活跃的 session（hook 使用，单 session 场景）
-export function getFirstActiveSession(): { sessionId: string; data: SessionData } | null {
-  for (const [sessionId, data] of sessionStore) {
-    return { sessionId, data };
-  }
-  return null;
-}
-
-// 根据 robotName 查找 session
-export function findSessionByRobotName(robotName: string): string | null {
-  for (const [sessionId, data] of sessionStore) {
-    if (data.robotName === robotName) {
-      return sessionId;
-    }
-  }
-  return null;
-}
-
-// 获取最后一个活跃的 session（处理 VSCode MCP 重连场景，最新 session 优先）
-export function getLastActiveSession(): { sessionId: string; data: SessionData } | null {
-  let last: { sessionId: string; data: SessionData } | null = null;
-  for (const [sessionId, data] of sessionStore) {
-    last = { sessionId, data };
-  }
-  return last;
-}
-
-// 更新 session 最后活跃时间（get_pending_messages 调用时触发）
-export function updateSessionLastSeen(sessionId: string): void {
-  const data = sessionStore.get(sessionId);
-  if (data) {
-    data.lastSeenAt = Date.now();
-  }
-}
-
-// 超时清理：超过 10 分钟没有心跳的 session 视为离线，直接清理
-const SESSION_TIMEOUT_MS = 10 * 60 * 1000;
-
-export function startSessionTimeoutCleanup(): void {
-  setInterval(() => {
-    const now = Date.now();
-    for (const [sessionId, data] of sessionStore) {
-      if (now - data.lastSeenAt > SESSION_TIMEOUT_MS) {
-        console.log(`[session] CC 超时离线，清理 session: ${sessionId}, robot: ${data.robotName}, ccId: ${data.ccId}`);
-        sessionStore.delete(sessionId);
-        disconnectRobot(data.robotName);
-      }
-    }
-  }, 60 * 1000); // 每分钟扫描一次
 }
 
 // 推送微信消息到 MCP 客户端（通过 SSE）
@@ -191,23 +99,49 @@ export interface ApprovalRequest {
 }
 
 // ============================================
-// MCP 维护的 ccId → robotName 映射
-// 不依赖 session 生命周期，独立管理
+// CC 注册表：ccId → { robotName, agentName }
+// ccId 是 CC 的唯一身份标识，与 SSE session 解耦
 // ============================================
-const ccIdToRobotMap = new Map<string, string>();
+interface CCRegistryEntry {
+  robotName: string;
+  agentName?: string;
+}
 
-export function registerCcId(ccId: string, robotName: string): void {
-  ccIdToRobotMap.set(ccId, robotName);
-  console.log(`[ccid] 注册映射: ${ccId} → ${robotName}`);
+const ccIdRegistry = new Map<string, CCRegistryEntry>();
+
+export function registerCcId(ccId: string, robotName: string, agentName?: string): void {
+  ccIdRegistry.set(ccId, { robotName, agentName });
+  console.log(`[ccid] 注册: ${ccId} → ${robotName} (${agentName || 'unknown'})`);
 }
 
 export function unregisterCcId(ccId: string): void {
-  ccIdToRobotMap.delete(ccId);
-  console.log(`[ccid] 注销映射: ${ccId}`);
+  ccIdRegistry.delete(ccId);
+  console.log(`[ccid] 注销: ${ccId}`);
 }
 
 export function getRobotByCcId(ccId: string): string | null {
-  return ccIdToRobotMap.get(ccId) || null;
+  return ccIdRegistry.get(ccId)?.robotName || null;
+}
+
+export function getCCRegistryEntry(ccId: string): CCRegistryEntry | null {
+  return ccIdRegistry.get(ccId) || null;
+}
+
+export function getCCCount(): number {
+  return ccIdRegistry.size;
+}
+
+export function getCCCountByRobot(robotName: string): number {
+  let count = 0;
+  for (const [, entry] of ccIdRegistry) {
+    if (entry.robotName === robotName) count++;
+  }
+  return count;
+}
+
+// 获取所有在线 ccId 列表（用于多 CC 提示）
+export function getOnlineCcIds(): string[] {
+  return Array.from(ccIdRegistry.keys());
 }
 
 // 审批状态条目
@@ -262,12 +196,12 @@ function handleWecomMessage(msg: WecomMessage): void {
     return;
   }
 
-  // 查找匹配的 Session（基于引用内容中的 ccId）
-  const targetSession = findSessionByCcId(msg.quoteContent);
+  // 查找匹配的 CC（基于引用内容中的 ccId）
+  const targetCcId = extractCcIdFromQuote(msg.quoteContent);
 
-  if (targetSession) {
+  if (targetCcId) {
     // 有引用，SSE 推送给对应的 CC
-    console.log(`[http] 消息路由给 ${targetSession.ccId}`);
+    console.log(`[http] 消息路由给 ${targetCcId}`);
     pushMessageToSession(msg.robotName, {
       msgid: msg.msgid,
       content: msg.content,
@@ -276,7 +210,7 @@ function handleWecomMessage(msg: WecomMessage): void {
       chattype: msg.chattype,
       timestamp: msg.timestamp,
     });
-  } else if (sessionStore.size === 1) {
+  } else if (getCCCount() === 1) {
     // 只有一个 CC 在线，直接推送（无需引用）
     console.log(`[http] 单 CC 模式，直接推送`);
     pushMessageToSession(msg.robotName, {
@@ -287,11 +221,11 @@ function handleWecomMessage(msg: WecomMessage): void {
       chattype: msg.chattype,
       timestamp: msg.timestamp,
     });
-  } else if (sessionStore.size > 1) {
+  } else if (getCCCount() > 1) {
     // 多 CC 在线但无引用：先尝试按 from_userid 匹配机器人的 targetUserId
-    const userMatchedSession = findSessionByTargetUserId(msg.from_userid);
-    if (userMatchedSession) {
-      console.log(`[http] 多 CC 模式，按 from_userid 路由给 ${userMatchedSession.ccId}`);
+    const matchedCcId = findCcIdByTargetUserId(msg.from_userid);
+    if (matchedCcId) {
+      console.log(`[http] 多 CC 模式，按 from_userid 路由给 ${matchedCcId}`);
       pushMessageToSession(msg.robotName, {
         msgid: msg.msgid,
         content: msg.content,
@@ -319,27 +253,13 @@ function extractCcIdFromQuote(quoteContent?: string): string | null {
   return null;
 }
 
-// 根据 ccId 查找 Session
-function findSessionByCcId(quoteContent?: string): SessionData | null {
-  const ccId = extractCcIdFromQuote(quoteContent);
-  if (!ccId) return null;
-
-  for (const [, data] of sessionStore) {
-    if (data.ccId === ccId) {
-      return data;
-    }
-  }
-  return null;
-}
-
-// 根据 from_userid 匹配 session（2v2 场景：每个用户对应一个 CC）
-// 查找机器人配置中 targetUserId 与消息来源匹配的 session
-function findSessionByTargetUserId(fromUserId: string): SessionData | null {
+// 根据 from_userid 匹配 ccId（2v2 场景：每个用户对应一个 CC）
+function findCcIdByTargetUserId(fromUserId: string): string | null {
   const allRobots = listAllRobots();
-  for (const [, data] of sessionStore) {
-    const robot = allRobots.find(r => r.name === data.robotName);
+  for (const [ccId, entry] of ccIdRegistry) {
+    const robot = allRobots.find(r => r.name === entry.robotName);
     if (robot && robot.targetUserId === fromUserId) {
-      return data;
+      return ccId;
     }
   }
   return null;
@@ -350,16 +270,14 @@ async function sendNoReferencePrompt(msg: WecomMessage): Promise<void> {
   const client = await getClient(msg.robotName);
   if (!client) return;
 
-  const onlineList = Array.from(sessionStore.values())
-    .map(s => `• ${s.ccId}`)
-    .join('\n');
+  const onlineList = getOnlineCcIds().map(id => `• ${id}`).join('\n');
 
   const reply = `检测到多个 Claude Code 会话在线，请引用回复指明接收者。
 
 当前在线：
 ${onlineList}
 
-示例：引用【${Array.from(sessionStore.values())[0].ccId}】的消息后回复`;
+示例：引用【${getOnlineCcIds()[0]}】的消息后回复`;
 
   await client.sendText(reply);
 }
@@ -458,7 +376,6 @@ export async function startHttpServer(
                 if (sid) {
                   console.log(`[http] Session 关闭: ${sid}`);
                   transports.delete(sid);
-                  sessionStore.delete(sid);
                 }
               };
 
@@ -539,29 +456,21 @@ export async function startHttpServer(
 
       // 临时调试端点：手动进入 headless 模式
       if (req.method === 'POST' && url === '/debug/enter_headless') {
-        const testSessionId = `test_session_${Date.now()}`;
         const ccId = generateCcId();
-        setSessionData(testSessionId, {
-          robotName: 'ClaudeCode',
-          agentName: '调试用户',
-          ccId,
-          createdAt: Date.now(),
-          lastSeenAt: Date.now(),
-        });
+        registerCcId(ccId, 'ClaudeCode', '调试用户');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           status: 'entered',
-          sessionId: testSessionId,
           ccId,
           message: '已进入 headless 模式（调试）'
         }));
-        console.log(`[http] [DEBUG] 进入 headless 模式: ${testSessionId}, ccId: ${ccId}`);
+        console.log(`[http] [DEBUG] 进入 headless 模式: ccId: ${ccId}`);
         return;
       }
 
       // 临时调试端点：退出 headless 模式
       if (req.method === 'POST' && url === '/debug/exit_headless') {
-        sessionStore.clear();
+        ccIdRegistry.clear();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'exited', message: '已退出 headless 模式（调试）' }));
         console.log(`[http] [DEBUG] 退出 headless 模式`);
@@ -653,9 +562,6 @@ export async function startHttpServer(
 
       // 自动连接所有配置的机器人
       await connectAllRobots();
-
-      // 启动 session 超时清理（10 分钟无心跳自动清理）
-      startSessionTimeoutCleanup();
 
       resolve();
     });
@@ -815,7 +721,7 @@ async function handleApprovalTimeout(req: http.IncomingMessage, res: http.Server
 
 function handleHealthCheck(_req: http.IncomingMessage, res: http.ServerResponse): void {
   const state = getConnectionState();
-  const hasActiveSession = hasActiveHeadlessSession();
+  const hasActiveSession = getCCCount() > 0;
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({
@@ -846,15 +752,15 @@ async function handleNotify(req: http.IncomingMessage, res: http.ServerResponse)
     const body = await readRequestBody(req);
     const { title, message } = JSON.parse(body);
 
-    // 获取第一个活跃 session
-    const session = getFirstActiveSession();
-    if (!session) {
+    // 获取第一个活跃 CC 的 robotName
+    const firstEntry = ccIdRegistry.values().next().value;
+    if (!firstEntry) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: '未连接机器人' }));
       return;
     }
 
-    const client = await getClient(session.data.robotName);
+    const client = await getClient(firstEntry.robotName);
     if (!client) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: '未连接机器人' }));
@@ -906,14 +812,14 @@ async function handlePushNotification(req: http.IncomingMessage, res: http.Serve
 
 async function handleTriggerKeepalive(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
-    const session = getFirstActiveSession();
-    if (!session) {
+    const firstEntry = ccIdRegistry.values().next().value;
+    if (!firstEntry) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: '未在微信模式' }));
       return;
     }
 
-    const client = await getClient(session.data.robotName);
+    const client = await getClient(firstEntry.robotName);
     if (!client) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: '未连接机器人' }));

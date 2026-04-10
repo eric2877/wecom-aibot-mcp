@@ -58,12 +58,12 @@ Claude Code 调用 MCP 工具时，会自动处理以下细节：
 
 ## MCP 工具调用方式
 
-| 功能 | MCP 工具名称 |
-|------|-------------|
-| 进入微信模式 | `mcp__wecom-aibot__enter_headless_mode` |
-| 发送消息 | `mcp__wecom-aibot__send_message` |
-| 获取消息（长轮询默认30秒间隔） | `mcp__wecom-aibot__get_pending_messages` |
-| 退出微信模式 | `mcp__wecom-aibot__exit_headless_mode` |
+| 功能 | MCP 工具名称 | 必需参数 |
+|------|-------------|----------|
+| 进入微信模式 | `mcp__wecom-aibot__enter_headless_mode` | agent_name, project_dir |
+| 发送消息 | `mcp__wecom-aibot__send_message` | cc_id, content |
+| 获取消息（长轮询默认30秒间隔） | `mcp__wecom-aibot__get_pending_messages` | cc_id |
+| 退出微信模式 | `mcp__wecom-aibot__exit_headless_mode` | cc_id, project_dir |
 
 ---
 
@@ -113,18 +113,18 @@ Claude Code 调用 MCP 工具时，会自动处理以下细节：
 
 ### 2. 调用 enter_headless_mode
 
-**重要**：`agent_name` 必须由智能体生成，格式为项目名称或任务名称，不要让 MCP 生成。
+**重要**：`agent_name` 和 `project_dir` 必须由智能体生成，格式为项目名称或任务名称，不要让 MCP 生成。
 
 ```
-mcp__wecom-aibot__enter_headless_mode(agent_name="<项目名称>", robot_id="<机器人名称>")
+mcp__wecom-aibot__enter_headless_mode(agent_name="<项目名称>", robot_id="<机器人名称>", project_dir="<项目目录>")
 ```
 
 **参数说明**：
 - `agent_name`: **必填**，智能体名称（使用当前项目名称或任务名称，如 "wecom-aibot-mcp"、"ModuleStudio"）
 - `robot_id`: **必填**（多机器人场景），指定机器人名称
+- `project_dir`: **必填**，项目目录路径（用于写入 `.claude/wecom-aibot.json` 配置文件）
 
 **处理返回值**：
-- `error: robot_occupied` → 告知用户该机器人已被占用，提示可用机器人列表
 - `entered` → 返回 `ccId`（服务端生成），继续下一步
 
 **注意**：
@@ -225,7 +225,7 @@ def on_task_complete():
 
 **触发词**：「结束微信模式」「我回来了」「我回电脑了」
 
-1. 调用 `mcp__wecom-aibot__exit_headless_mode`
+1. 调用 `mcp__wecom-aibot__exit_headless_mode(cc_id, project_dir)`
 2. **MCP 自动更新 `.claude/wecom-aibot.json` 的 `wechatMode` 为 `false`**
 3. 从 `.claude/settings.json` 删除 `hooks.PermissionRequest` 字段（如果之前配置了）
 4. 发送 `mcp__wecom-aibot__send_message("【进度】已退出微信模式，恢复终端交互。")`

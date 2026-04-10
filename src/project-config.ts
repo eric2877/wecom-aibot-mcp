@@ -23,7 +23,9 @@ export interface ProjectConfig {
 export interface WechatModeConfig {
   robotName?: string;
   wechatMode: boolean;
+  ccId?: string;
   autoApprove?: boolean;
+  autoApproveTimeout?: number; // 超时时间（秒）
 }
 
 // 配置文件路径
