@@ -289,6 +289,8 @@ export function updateAgentName(robotName: string, agentName: string): void {
 /**
  * 自动连接所有配置的机器人
  * 在 MCP Server 启动时调用
+ *
+ * 注意：多机器人场景下不自动连接，等待用户在 enter_headless_mode 时选择
  */
 export async function connectAllRobots(): Promise<void> {
   const robots = listAllRobots();
@@ -298,21 +300,20 @@ export async function connectAllRobots(): Promise<void> {
     return;
   }
 
-  console.log(`[connection] 自动连接 ${robots.length} 个机器人...`);
+  // 多机器人场景：不自动连接，等待用户选择
+  if (robots.length > 1) {
+    console.log(`[connection] 检测到 ${robots.length} 个机器人，等待用户选择`);
+    return;
+  }
 
-  for (const robot of robots) {
-    // 检查是否已被占用
-    if (isRobotOccupied(robot.name)) {
-      console.log(`[connection] 跳过已占用的机器人: ${robot.name}`);
-      continue;
-    }
+  // 单机器人场景：自动连接
+  console.log(`[connection] 自动连接机器人: ${robots[0].name}`);
 
-    const result = await connectRobot(robot.name);
+  const result = await connectRobot(robots[0].name);
 
-    if (result.success) {
-      console.log(`[connection] ✅ ${robot.name} 已连接`);
-    } else {
-      console.log(`[connection] ❌ ${robot.name} 连接失败: ${result.error}`);
-    }
+  if (result.success) {
+    console.log(`[connection] ✅ ${robots[0].name} 已连接`);
+  } else {
+    console.log(`[connection] ❌ ${robots[0].name} 连接失败: ${result.error}`);
   }
 }

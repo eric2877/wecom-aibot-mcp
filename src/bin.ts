@@ -25,6 +25,7 @@ import {
   detectUserIdFromMessage,
   ensureHookInstalled,
   listAllRobots,
+  ensureGlobalConfigs,
   WecomConfig,
 } from './config-wizard.js';
 import { initClient, WecomClient } from './client.js';
@@ -35,7 +36,7 @@ import { getAllConnectionStates } from './connection-manager.js';
 import { loadStats, cleanupOldLogs } from './connection-log.js';
 import { startKeepaliveMonitor, stopKeepaliveMonitor } from './keepalive-monitor.js';
 
-const VERSION = '1.2.0';
+const VERSION = '1.4.1';
 const PID_FILE = path.join(os.homedir(), '.wecom-aibot-mcp', 'server.pid');
 
 function showHelp() {
@@ -51,6 +52,8 @@ function showHelp() {
 选项:
   --help, -h      显示帮助信息
   --version, -v   显示版本号
+  --upgrade       强制升级全局配置（覆盖 MCP 配置、权限、skill）
+  --reinstall     重新安装全局配置（删除后重新写入，保留机器人配置）
   --start         启动 MCP Server（后台服务模式）
   --stop          停止 MCP Server
   --debug         前台启动 MCP Server（日志直接输出到终端，用于调试）
@@ -302,6 +305,12 @@ function startMcpServerBackground(): void {
 async function main() {
   const args = process.argv.slice(2);
 
+  // --reinstall 命令需要先删除再安装，跳过开头的 ensureGlobalConfigs
+  if (!args.includes('--reinstall')) {
+    // 强制覆盖所有全局配置（不依赖智能体）
+    ensureGlobalConfigs();
+  }
+
   // 解析命令行参数
   if (args.includes('--help') || args.includes('-h')) {
     showHelp();
@@ -310,6 +319,89 @@ async function main() {
 
   if (args.includes('--version') || args.includes('-v')) {
     showVersion();
+    process.exit(0);
+  }
+
+  // --upgrade 命令：强制升级全局配置（已在启动时执行，这里显示结果）
+  if (args.includes('--upgrade')) {
+    console.log('\n[mcp] ✅ 全局配置已更新完成！');
+    console.log('[mcp] 配置位置:');
+    console.log('  - ~/.claude.json (MCP Server 配置)');
+    console.log('  - ~/.claude/settings.local.json (权限和 Hook)');
+    console.log('  - ~/.claude/skills/headless-mode/ (Skill)');
+    console.log('  - ~/.wecom-aibot-mcp/version.json (版本记录)');
+    console.log('\n[mcp] 请重启 Claude Code 以加载最新配置');
+    process.exit(0);
+  }
+
+  // --reinstall 命令：删除所有全局配置（保留机器人配置）后重新安装
+  if (args.includes('--reinstall')) {
+    console.log('\n[mcp] 重新安装全局配置...');
+    console.log('[mcp] 保留所有机器人配置: ~/.wecom-aibot-mcp/config.json 和 robot-*.json');
+
+    const CLAUDE_CONFIG_FILE = path.join(os.homedir(), '.claude.json');
+    const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.local.json');
+    const SKILL_DIR = path.join(os.homedir(), '.claude', 'skills', 'headless-mode');
+    const VERSION_FILE = path.join(os.homedir(), '.wecom-aibot-mcp', 'version.json');
+    const HOOK_SCRIPT = path.join(os.homedir(), '.wecom-aibot-mcp', 'permission-hook.sh');
+
+    // 1. 删除 ~/.claude.json 中的 wecom-aibot 配置
+    if (fs.existsSync(CLAUDE_CONFIG_FILE)) {
+      const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
+      const config = JSON.parse(content);
+      if (config.mcpServers?.['wecom-aibot']) {
+        delete config.mcpServers['wecom-aibot'];
+        fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(config, null, 2));
+        console.log('[mcp] 已删除 ~/.claude.json 中的 wecom-aibot 配置');
+      }
+    }
+
+    // 2. 删除 ~/.claude/settings.local.json 中的权限和 Hook
+    if (fs.existsSync(CLAUDE_SETTINGS_FILE)) {
+      const content = fs.readFileSync(CLAUDE_SETTINGS_FILE, 'utf-8');
+      const config = JSON.parse(content);
+      if (config.permissions?.allow) {
+        config.permissions.allow = config.permissions.allow.filter(
+          (p: string) => !p.startsWith('mcp__wecom-aibot__')
+        );
+        console.log('[mcp] 已删除 wecom-aibot 工具权限');
+      }
+      if (config.hooks?.PermissionRequest) {
+        config.hooks.PermissionRequest = config.hooks.PermissionRequest.filter(
+          (h: any) => !h.hooks?.some?.((hook: any) => hook.command?.includes?.('wecom-aibot-mcp'))
+        );
+        if (config.hooks.PermissionRequest.length === 0) {
+          delete config.hooks.PermissionRequest;
+        }
+        console.log('[mcp] 已删除 PermissionRequest hook');
+      }
+      fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(config, null, 2));
+    }
+
+    // 3. 删除 skill 目录
+    if (fs.existsSync(SKILL_DIR)) {
+      fs.rmSync(SKILL_DIR, { recursive: true });
+      console.log('[mcp] 已删除 ~/.claude/skills/headless-mode/');
+    }
+
+    // 4. 删除版本文件
+    if (fs.existsSync(VERSION_FILE)) {
+      fs.unlinkSync(VERSION_FILE);
+      console.log('[mcp] 已删除 ~/.wecom-aibot-mcp/version.json');
+    }
+
+    // 5. 删除 hook 脚本
+    if (fs.existsSync(HOOK_SCRIPT)) {
+      fs.unlinkSync(HOOK_SCRIPT);
+      console.log('[mcp] 已删除 ~/.wecom-aibot-mcp/permission-hook.sh');
+    }
+
+    // 6. 重新安装全局配置
+    console.log('\n[mcp] 正在重新安装...');
+    ensureGlobalConfigs();
+
+    console.log('\n[mcp] ✅ 重新安装完成！');
+    console.log('[mcp] 请重启 Claude Code 以加载最新配置');
     process.exit(0);
   }
 

@@ -23,9 +23,13 @@ export interface WecomConfig {
 
 const CONFIG_DIR = path.join(os.homedir(), '.wecom-aibot-mcp');
 const BOT_CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+const VERSION_FILE = path.join(CONFIG_DIR, 'version.json');
 const CLAUDE_CONFIG_FILE = path.join(os.homedir(), '.claude.json');
 const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.local.json');
 const HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.sh');
+
+// 版本号（与 package.json 同步）
+const VERSION = '1.4.1';
 
 // Skill 模板路径（包内）- 使用 fileURLToPath 确保跨平台兼容
 const __filename = fileURLToPath(import.meta.url);
@@ -286,11 +290,18 @@ function writeHookScript() {
 
 MCP_PORT=18963
 
+# 先保存输入（只能读一次）
 INPUT=$(cat)
+
+# 调试日志
+DEBUG_LOG="/tmp/wecom-hook-debug.log"
+echo "[$(date)] Hook called. TOOL_NAME: $(echo "$INPUT" | jq -r '.tool_name')" >> "$DEBUG_LOG"
+
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
 
 # MCP 工具本身不需要拦截
 if [[ "$TOOL_NAME" == mcp__* ]]; then
+  echo "[$(date)] Allowed: MCP tool" >> "$DEBUG_LOG"
   printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
   exit 0
 fi
@@ -298,6 +309,7 @@ fi
 # 只读工具不需要拦截
 case "$TOOL_NAME" in
   Read|Glob|Grep|LS|TaskList|TaskGet|TaskOutput|TaskStop|CronList|CronCreate|CronDelete|AskUserQuestion|Skill|ListMcpResourcesTool|EnterPlanMode|ExitPlanMode|WebSearch|WebFetch|NotebookEdit)
+    echo "[$(date)] Allowed: read-only tool" >> "$DEBUG_LOG"
     printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
     exit 0
     ;;
@@ -307,20 +319,27 @@ esac
 PROJECT_DIR=$(pwd)
 CONFIG_FILE="$PROJECT_DIR/.claude/wecom-aibot.json"
 
+echo "[$(date)] Checking config: $CONFIG_FILE" >> "$DEBUG_LOG"
+
 # 配置文件不存在，不在微信模式
 if [[ ! -f "$CONFIG_FILE" ]]; then
+  echo "[$(date)] No config file, exit 0" >> "$DEBUG_LOG"
   exit 0
 fi
 
 # 检查 wechatMode 是否为 true（微信模式开关）
 WECHAT_MODE=$(jq -r '.wechatMode // false' "$CONFIG_FILE" 2>/dev/null)
+echo "[$(date)] wechatMode: $WECHAT_MODE" >> "$DEBUG_LOG"
 if [[ "$WECHAT_MODE" != "true" ]]; then
+  echo "[$(date)] wechatMode not true, exit 0" >> "$DEBUG_LOG"
   exit 0
 fi
 
 # 检查 MCP Server 是否在线
 HEALTH=$(curl -s -m 2 "http://127.0.0.1:$MCP_PORT/health" 2>/dev/null)
+echo "[$(date)] Health check: $HEALTH" >> "$DEBUG_LOG"
 if ! echo "$HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
+  echo "[$(date)] Health check failed, exit 0" >> "$DEBUG_LOG"
   exit 0
 fi
 
@@ -329,14 +348,19 @@ TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}')
 BODY=$(jq -n --arg tool_name "$TOOL_NAME" --argjson tool_input "$TOOL_INPUT" --arg project_dir "$PROJECT_DIR" \\
   '{"tool_name":$tool_name,"tool_input":$tool_input,"projectDir":$project_dir}')
 
+echo "[$(date)] Sending approval request..." >> "$DEBUG_LOG"
 RESPONSE=$(curl -s -m 10 -X POST "http://127.0.0.1:$MCP_PORT/approve" \\
   -H "Content-Type: application/json" \\
   -d "$BODY")
 
+echo "[$(date)] Approval response: $RESPONSE" >> "$DEBUG_LOG"
 TASK_ID=$(echo "$RESPONSE" | jq -r '.taskId // empty')
 if [[ -z "$TASK_ID" ]]; then
+  echo "[$(date)] No taskId, exit 0" >> "$DEBUG_LOG"
   exit 0
 fi
+
+echo "[$(date)] Waiting for approval, taskId: $TASK_ID" >> "$DEBUG_LOG"
 
 # 轮询审批结果（带超时：10 分钟）
 POLL_COUNT=0
@@ -535,6 +559,24 @@ export async function addMcpConfig() {
 
     rl.close();
 
+    // 检查是否已存在相同 botId 的配置
+    const existingRobots = listAllRobots();
+    const duplicate = existingRobots.find(r => r.botId === botId);
+
+    if (duplicate) {
+      console.log(`\n[config] ⚠️ 机器人已存在！`);
+      console.log(`[config] 已配置的机器人: ${duplicate.name} (Bot ID: ${duplicate.botId.slice(0, 12)}...)`);
+      console.log(`[config] 如需更新配置，请使用 --config 命令`);
+      return;
+    }
+
+    // 检查名称是否重复（仅提示，不阻止）
+    const duplicateName = existingRobots.find(r => r.name === robotName);
+    if (duplicateName) {
+      console.log(`\n[config] ⚠️ 注意：名称 "${robotName}" 已被使用`);
+      console.log(`[config] 建议使用不同的名称以方便识别`);
+    }
+
     // 先连接验证凭证
     console.log('\n[config] 正在连接企业微信...');
     const { initClient } = await import('./client.js');
@@ -717,18 +759,24 @@ function writeMcpPermissions() {
       if (!existingPerms.has(perm)) settings.permissions.allow.push(perm);
     }
 
-    // 注册 PermissionRequest hook（先生成脚本）
-    writeHookScript();
-    if (!settings.hooks) settings.hooks = {};
-    settings.hooks['PermissionRequest'] = [
-      {
-        matcher: '',
-        hooks: [{ type: 'command', command: HOOK_SCRIPT_PATH }],
-      },
-    ];
+    // 删除全局 PermissionRequest hook（hook 由 enter_headless_mode 写入项目级别）
+    if (settings.hooks && settings.hooks['PermissionRequest']) {
+      // 只删除 wecom-aibot 相关的 hook
+      settings.hooks['PermissionRequest'] = settings.hooks['PermissionRequest'].filter(
+        (hook: any) => !hook.hooks?.some?.((h: any) => h.command?.includes?.('wecom-aibot-mcp'))
+      );
+      if (settings.hooks['PermissionRequest'].length === 0) {
+        delete settings.hooks['PermissionRequest'];
+      }
+      if (Object.keys(settings.hooks).length === 0) {
+        delete settings.hooks;
+      }
+    }
 
     fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(settings, null, 2));
-    console.log(`[config] PermissionRequest hook 已注册: ${HOOK_SCRIPT_PATH}`);
+
+    // 确保 hook 脚本文件存在（进入微信模式时需要）
+    writeHookScript();
   } catch (err) {
     console.error('[config] 写入配置失败:', err);
     console.log('[config] ⚠️  请手动配置，详见 README');
@@ -739,6 +787,57 @@ function writeMcpPermissions() {
 export function ensureHookInstalled() {
   writeMcpPermissions();
   installSkills();
+}
+
+// 确保所有全局配置已写入（强制覆盖，不依赖智能体）
+export function ensureGlobalConfigs(): { upgraded: boolean; previousVersion?: string } {
+  ensureConfigDir();
+
+  // 读取已安装版本
+  let previousVersion: string | undefined;
+  let upgraded = false;
+
+  if (fs.existsSync(VERSION_FILE)) {
+    const versionData = JSON.parse(fs.readFileSync(VERSION_FILE, 'utf-8'));
+    previousVersion = versionData.version;
+  }
+
+  // 版本升级检测
+  if (previousVersion !== VERSION) {
+    upgraded = true;
+    console.log(`[config] 版本升级: ${previousVersion || '未安装'} -> ${VERSION}`);
+  }
+
+  // 1. 强制写入 MCP 配置到 ~/.claude.json（覆盖）
+  let claudeConfig: any = {};
+  if (fs.existsSync(CLAUDE_CONFIG_FILE)) {
+    const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
+    claudeConfig = JSON.parse(content);
+  }
+
+  if (!claudeConfig.mcpServers) claudeConfig.mcpServers = {};
+
+  // 强制覆盖（不检查是否存在）
+  claudeConfig.mcpServers['wecom-aibot'] = {
+    type: 'http',
+    url: 'http://127.0.0.1:18963/mcp',
+  };
+  fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
+  console.log('[config] 已写入 MCP 配置到 ~/.claude.json');
+
+  // 2. 强制写入权限配置和 Hook
+  writeMcpPermissions();
+  console.log('[config] 已写入权限配置到 ~/.claude/settings.local.json');
+
+  // 3. 强制安装 skill
+  installSkills();
+  console.log('[config] 已安装 skill 到 ~/.claude/skills/');
+
+  // 4. 写入版本号
+  fs.writeFileSync(VERSION_FILE, JSON.stringify({ version: VERSION, installedAt: Date.now() }, null, 2));
+  console.log(`[config] 已记录版本号: ${VERSION}`);
+
+  return { upgraded, previousVersion };
 }
 
 // 保存配置（直接写入 ~/.claude.json）

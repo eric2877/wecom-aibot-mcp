@@ -37,9 +37,26 @@ MCP 服务器地址：`http://127.0.0.1:18963/mcp`
 
 ---
 
-## MCP 工具调用方式
+## MCP 协议说明
 
-**重要**：所有工具调用必须通过 `wecom-aibot` MCP 服务器：
+**重要**：所有 wecom-aibot 工具通过 MCP (Model Context Protocol) HTTP Transport 调用，**不是直接 HTTP 请求**。
+
+### 工具调用方式
+
+Claude Code 调用 MCP 工具时，会自动处理以下细节：
+- **sessionId**: MCP HTTP Transport 要求在 `initialize` 请求时获取 sessionId，后续所有请求必须在 `mcp-session-id` header 中传递。Claude Code **自动处理** sessionId，智能体无需手动管理。
+- **工具命名**: 所有工具名称格式为 `mcp__wecom-aibot__<tool_name>`（例如 `mcp__wecom-aibot__send_message`）
+
+### 智能体无需关心的事项
+
+- ❌ 不需要手动获取 sessionId
+- ❌ 不需要手动传递 HTTP headers
+- ❌ 不需要了解 MCP 协议细节
+- ✅ 只需调用 MCP 工具，Claude Code 自动处理底层通信
+
+---
+
+## MCP 工具调用方式
 
 | 功能 | MCP 工具名称 |
 |------|-------------|
@@ -52,31 +69,68 @@ MCP 服务器地址：`http://127.0.0.1:18963/mcp`
 
 ## 进入流程
 
-### 0. 读取配置文件（进入前必须执行）
+### 1. 检查配置文件和机器人选择（必须首先执行）
+
+**第一步：检查项目配置文件**
 
 检查项目目录下的 `.claude/wecom-aibot.json`：
+- **文件存在且有 robotName** → 直接使用该 robotName，跳过机器人选择
+- **文件不存在或没有 robotName** → 需要用户选择机器人
 
-- **文件存在** → 读取 `robotName`，用于选择机器人
-- **文件不存在** → 进入时让用户选择机器人
+**第二步：获取机器人列表**
 
-**重要**：不要依赖记忆中的 robotName，必须从配置文件获取最新值。
+调用 `mcp__wecom-aibot__list_robots` 获取所有可用机器人。
+
+**第三步：处理机器人选择**
+
+- **机器人数量 = 1** → 直接使用该机器人
+- **机器人数量 > 1 且配置文件中没有 robotName** → **必须使用 AskUserQuestion 让用户选择**
+
+```
+使用 AskUserQuestion 让用户选择机器人:
+    question: "检测到多个机器人，请选择要使用的机器人"
+    options: 每个机器人的名称（从 list_robots 返回的 robots 数组获取）
+```
+
+**完整流程示例**：
+```
+1. 检查项目目录下的 .claude/wecom-aibot.json 是否存在
+   - 存在 → 读取 robotName
+   - 不存在 → robotName = null
+2. 调用 list_robots 获取机器人列表
+3. 判断：
+   - 如果 robotName 存在 → 使用该 robotName
+   - 如果机器人数量 = 1 → 使用该机器人
+   - 如果机器人数量 > 1 且没有 robotName → 使用 AskUserQuestion 让用户选择
+4. 调用 enter_headless_mode(agent_name, robot_id=确定的机器人名称)
+```
+
+**禁止的行为**：
+- ❌ 在多机器人场景下自动选择第一个
+- ❌ 直接调用 enter_headless_mode 不传 robot_id
+- ❌ 假设只有一个机器人而不检查
+- ❌ 忽略项目配置文件中的 robotName
 
 ### 2. 调用 enter_headless_mode
 
+**重要**：`agent_name` 必须由智能体生成，格式为项目名称或任务名称，不要让 MCP 生成。
+
 ```
-mcp__wecom-aibot__enter_headless_mode(agent_name="<项目名称>", robot_id="<机器人名称或序号>")
+mcp__wecom-aibot__enter_headless_mode(agent_name="<项目名称>", robot_id="<机器人名称>")
 ```
 
 **参数说明**：
-- `agent_name`: 智能体名称（建议使用项目名称）
-- `robot_id`: 可选，指定机器人名称或序号
+- `agent_name`: **必填**，智能体名称（使用当前项目名称或任务名称，如 "wecom-aibot-mcp"、"ModuleStudio"）
+- `robot_id`: **必填**（多机器人场景），指定机器人名称
 
 **处理返回值**：
-- `select_robot` → 展示机器人列表，等用户回复序号，再调用 `enter_headless_mode(agent_name, robot_id)`
 - `error: robot_occupied` → 告知用户该机器人已被占用，提示可用机器人列表
 - `entered` → 返回 `ccId`（服务端生成），继续下一步
 
-**注意**：ccId 由 MCP Server 自动生成（如 `cc-1`），无需手动指定。
+**注意**：
+- ccId 由 MCP Server 自动生成（如 `cc-1`），无需手动指定
+- 如果正确执行了步骤 1（机器人选择），不会收到 `select_robot` 状态
+- **进入微信模式时，MCP 会自动写入 `.claude/wecom-aibot.json`，设置 `wechatMode: true` 和 `robotName`**
 
 ### 3. 写入项目级 Hook（可选）
 
@@ -172,9 +226,10 @@ def on_task_complete():
 **触发词**：「结束微信模式」「我回来了」「我回电脑了」
 
 1. 调用 `mcp__wecom-aibot__exit_headless_mode`
-2. 从 `.claude/settings.json` 删除 `hooks.PermissionRequest` 字段（如果之前配置了）
-3. 发送 `mcp__wecom-aibot__send_message("【进度】已退出微信模式，恢复终端交互。")`
-4. 停止轮询
+2. **MCP 自动更新 `.claude/wecom-aibot.json` 的 `wechatMode` 为 `false`**
+3. 从 `.claude/settings.json` 删除 `hooks.PermissionRequest` 字段（如果之前配置了）
+4. 发送 `mcp__wecom-aibot__send_message("【进度】已退出微信模式，恢复终端交互。")`
+5. 停止轮询
 
 **「我已经回到电脑旁了」** → 先确认：
 ```

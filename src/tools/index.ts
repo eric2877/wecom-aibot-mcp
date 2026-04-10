@@ -46,6 +46,7 @@ import {
   isHeadlessMode,
 } from '../headless-state.js';
 import { subscribeWecomMessageByRobot, WecomMessage } from '../message-bus.js';
+import { updateWechatModeConfig, addPermissionHook, removePermissionHook } from '../project-config.js';
 
 // 辅助函数：从 session 获取客户端
 async function getConnectedClient(sessionId: string | undefined): Promise<{ error: string | null; client: Awaited<ReturnType<typeof getClient>>; sessionData: ReturnType<typeof getSessionDataById> }> {
@@ -416,6 +417,13 @@ npx @vrs-soft/wecom-aibot-mcp
       // MCP 注册 ccId → robotName 映射（不依赖 session 生命周期）
       registerCcId(ccId, selectedRobot.name);
 
+      // 更新项目配置文件中的 wechatMode 为 true
+      const projectDir = process.cwd();
+      updateWechatModeConfig(projectDir, { wechatMode: true, robotName: selectedRobot.name });
+
+      // 添加 PermissionRequest hook 到项目 settings.json
+      addPermissionHook(projectDir);
+
       // 发送确认消息（包含 ccId 标识）
       await result.client.sendText(`【${ccId}】已进入微信模式，使用机器人「${selectedRobot.name}」。`);
 
@@ -476,6 +484,13 @@ npx @vrs-soft/wecom-aibot-mcp
       if (extra.sessionId) {
         deleteSession(extra.sessionId);
       }
+
+      // 更新项目配置文件中的 wechatMode 为 false
+      const projectDir = process.cwd();
+      updateWechatModeConfig(projectDir, { wechatMode: false });
+
+      // 删除 PermissionRequest hook 从项目 settings.json
+      removePermissionHook(projectDir);
 
       return {
         content: [{

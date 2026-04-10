@@ -19,10 +19,18 @@ export interface ProjectConfig {
   nameTag?: string;
 }
 
+// 微信模式配置接口
+export interface WechatModeConfig {
+  robotName?: string;
+  wechatMode: boolean;
+  autoApprove?: boolean;
+}
+
 // 配置文件路径
 const CLAUDE_CONFIG_FILE = path.join(os.homedir(), '.claude.json');
 const PROJECT_CONFIG_SUBDIR = '.claude/wecom-aibot';
 const PROJECT_CONFIG_FILE = 'config.json';
+const WECHAT_MODE_CONFIG_FILE = 'wecom-aibot.json';
 
 /**
  * 获取项目配置文件路径
@@ -97,6 +105,63 @@ export function deleteProjectConfig(projectDir: string): void {
     fs.unlinkSync(configPath);
     console.log(`[project-config] 已删除项目配置: ${configPath}`);
   }
+}
+
+/**
+ * 获取微信模式配置文件路径
+ */
+export function getWechatModeConfigPath(projectDir: string): string {
+  return path.join(projectDir, '.claude', WECHAT_MODE_CONFIG_FILE);
+}
+
+/**
+ * 加载微信模式配置
+ */
+export function loadWechatModeConfig(projectDir: string): WechatModeConfig | null {
+  const configPath = getWechatModeConfigPath(projectDir);
+
+  if (!fs.existsSync(configPath)) {
+    return null;
+  }
+
+  try {
+    const content = fs.readFileSync(configPath, 'utf-8');
+    return JSON.parse(content);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 更新微信模式配置
+ *
+ * @param projectDir 项目目录路径
+ * @param updates 要更新的字段
+ */
+export function updateWechatModeConfig(projectDir: string, updates: Partial<WechatModeConfig>): void {
+  const configPath = getWechatModeConfigPath(projectDir);
+  const configDir = path.dirname(configPath);
+
+  // 确保目录存在
+  if (!fs.existsSync(configDir)) {
+    fs.mkdirSync(configDir, { recursive: true });
+  }
+
+  // 读取现有配置
+  let config: WechatModeConfig = { wechatMode: false };
+  if (fs.existsSync(configPath)) {
+    try {
+      const content = fs.readFileSync(configPath, 'utf-8');
+      config = JSON.parse(content);
+    } catch {
+      // ignore
+    }
+  }
+
+  // 合并更新
+  const newConfig = { ...config, ...updates };
+  fs.writeFileSync(configPath, JSON.stringify(newConfig, null, 2));
+  console.log(`[project-config] 已更新微信模式配置: ${configPath}`);
 }
 
 /**
@@ -227,4 +292,85 @@ export function listConfiguredProjects(searchDirs: string[] = []): Array<{
  */
 export function validateConfig(config: Partial<ProjectConfig>): boolean {
   return !!(config.botId && config.secret && config.defaultUser);
+}
+
+/**
+ * 获取项目 settings.json 路径
+ */
+export function getProjectSettingsPath(projectDir: string): string {
+  return path.join(projectDir, '.claude', 'settings.json');
+}
+
+/**
+ * PermissionRequest hook 配置
+ */
+const PERMISSION_HOOK = {
+  matcher: '',
+  hooks: [{ type: 'command', command: '~/.wecom-aibot-mcp/permission-hook.sh' }],
+};
+
+/**
+ * 添加 PermissionRequest hook 到项目 settings.json
+ */
+export function addPermissionHook(projectDir: string): void {
+  const settingsPath = getProjectSettingsPath(projectDir);
+  const settingsDir = path.dirname(settingsPath);
+
+  // 确保目录存在
+  if (!fs.existsSync(settingsDir)) {
+    fs.mkdirSync(settingsDir, { recursive: true });
+  }
+
+  // 读取现有配置
+  let settings: Record<string, unknown> = {};
+  if (fs.existsSync(settingsPath)) {
+    try {
+      const content = fs.readFileSync(settingsPath, 'utf-8');
+      settings = JSON.parse(content);
+    } catch {
+      // ignore
+    }
+  }
+
+  // 添加 hooks.PermissionRequest
+  if (!settings.hooks) {
+    settings.hooks = {};
+  }
+  (settings.hooks as Record<string, unknown>).PermissionRequest = [PERMISSION_HOOK];
+
+  // 写入配置
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  console.log(`[project-config] 已添加 PermissionRequest hook: ${settingsPath}`);
+}
+
+/**
+ * 删除 PermissionRequest hook 从项目 settings.json
+ */
+export function removePermissionHook(projectDir: string): void {
+  const settingsPath = getProjectSettingsPath(projectDir);
+
+  if (!fs.existsSync(settingsPath)) {
+    return;
+  }
+
+  try {
+    const content = fs.readFileSync(settingsPath, 'utf-8');
+    const settings = JSON.parse(content);
+
+    // 删除 hooks.PermissionRequest
+    if (settings.hooks && (settings.hooks as Record<string, unknown>).PermissionRequest) {
+      delete (settings.hooks as Record<string, unknown>).PermissionRequest;
+
+      // 如果 hooks 为空，删除整个 hooks 字段
+      if (Object.keys(settings.hooks as Record<string, unknown>).length === 0) {
+        delete settings.hooks;
+      }
+
+      // 写入配置
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+      console.log(`[project-config] 已删除 PermissionRequest hook: ${settingsPath}`);
+    }
+  } catch {
+    // ignore
+  }
 }
