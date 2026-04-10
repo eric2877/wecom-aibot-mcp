@@ -20,7 +20,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { registerTools } from './tools/index.js';
-import { getClient, getConnectionState, getAllConnectionStates, connectAllRobots } from './connection-manager.js';
+import { getClient, getConnectionState, getAllConnectionStates, connectAllRobots, disconnectRobot } from './connection-manager.js';
 import { subscribeWecomMessage, WecomMessage } from './message-bus.js';
 import { listAllRobots } from './config-wizard.js';
 
@@ -42,6 +42,7 @@ interface SessionData {
   agentName?: string;     // 智能体名称
   ccId: string;           // CC 唯一标识（服务端生成）
   createdAt: number;      // 创建时间
+  lastSeenAt: number;     // 最后活跃时间（用于超时检测）
 }
 
 // Session 存储：sessionId → sessionData
@@ -105,6 +106,39 @@ export function findSessionByRobotName(robotName: string): string | null {
   return null;
 }
 
+// 获取最后一个活跃的 session（处理 VSCode MCP 重连场景，最新 session 优先）
+export function getLastActiveSession(): { sessionId: string; data: SessionData } | null {
+  let last: { sessionId: string; data: SessionData } | null = null;
+  for (const [sessionId, data] of sessionStore) {
+    last = { sessionId, data };
+  }
+  return last;
+}
+
+// 更新 session 最后活跃时间（get_pending_messages 调用时触发）
+export function updateSessionLastSeen(sessionId: string): void {
+  const data = sessionStore.get(sessionId);
+  if (data) {
+    data.lastSeenAt = Date.now();
+  }
+}
+
+// 超时清理：超过 10 分钟没有心跳的 session 视为离线，直接清理
+const SESSION_TIMEOUT_MS = 10 * 60 * 1000;
+
+export function startSessionTimeoutCleanup(): void {
+  setInterval(() => {
+    const now = Date.now();
+    for (const [sessionId, data] of sessionStore) {
+      if (now - data.lastSeenAt > SESSION_TIMEOUT_MS) {
+        console.log(`[session] CC 超时离线，清理 session: ${sessionId}, robot: ${data.robotName}, ccId: ${data.ccId}`);
+        sessionStore.delete(sessionId);
+        disconnectRobot(data.robotName);
+      }
+    }
+  }, 60 * 1000); // 每分钟扫描一次
+}
+
 // 推送微信消息到 MCP 客户端（通过 SSE）
 export async function pushMessageToSession(robotName: string, message: {
   msgid: string;
@@ -153,6 +187,7 @@ export interface ApprovalRequest {
   tool_input: Record<string, unknown>;
   projectDir?: string;
   ccId?: string;
+  robotName?: string;  // 从项目配置读取的机器人名称（优先级高于 ccId）
 }
 
 // ============================================
@@ -511,6 +546,7 @@ export async function startHttpServer(
           agentName: '调试用户',
           ccId,
           createdAt: Date.now(),
+          lastSeenAt: Date.now(),
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -618,6 +654,9 @@ export async function startHttpServer(
       // 自动连接所有配置的机器人
       await connectAllRobots();
 
+      // 启动 session 超时清理（10 分钟无心跳自动清理）
+      startSessionTimeoutCleanup();
+
       resolve();
     });
   });
@@ -636,10 +675,14 @@ async function handleApprovalRequest(req: http.IncomingMessage, res: http.Server
     const body = await readRequestBody(req);
     const request: ApprovalRequest = JSON.parse(body);
 
-    // 优先用 ccId 找到对应机器人，回退到第一个已连接机器人
+    // 优先级：请求中的 robotName > ccId 映射 > 第一个已连接机器人
     let robotName: string | null = null;
-    const { ccId } = request;
-    if (ccId) {
+    const { ccId, robotName: requestedRobotName } = request;
+
+    if (requestedRobotName) {
+      robotName = requestedRobotName;
+      console.log(`[http] 审批路由: 请求指定 robotName=${robotName}`);
+    } else if (ccId) {
       robotName = getRobotByCcId(ccId);
       if (robotName) {
         console.log(`[http] 审批路由: ccId=${ccId} → ${robotName}`);

@@ -29,7 +29,7 @@ const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.local.
 const HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.sh');
 
 // 版本号（与 package.json 同步）
-const VERSION = '1.4.1';
+const VERSION = '1.4.2';
 
 // Skill 模板路径（包内）- 使用 fileURLToPath 确保跨平台兼容
 const __filename = fileURLToPath(import.meta.url);
@@ -343,10 +343,13 @@ if ! echo "$HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
   exit 0
 fi
 
+# 读取当前项目使用的机器人名称
+ROBOT_NAME=$(jq -r '.robotName // empty' "$CONFIG_FILE" 2>/dev/null)
+
 # 发送审批请求（使用 pwd 作为 projectDir）
 TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}')
-BODY=$(jq -n --arg tool_name "$TOOL_NAME" --argjson tool_input "$TOOL_INPUT" --arg project_dir "$PROJECT_DIR" \\
-  '{"tool_name":$tool_name,"tool_input":$tool_input,"projectDir":$project_dir}')
+BODY=$(jq -n --arg tool_name "$TOOL_NAME" --argjson tool_input "$TOOL_INPUT" --arg project_dir "$PROJECT_DIR" --arg robot_name "$ROBOT_NAME" \\
+  '{"tool_name":$tool_name,"tool_input":$tool_input,"projectDir":$project_dir,"robotName":$robot_name}')
 
 echo "[$(date)] Sending approval request..." >> "$DEBUG_LOG"
 RESPONSE=$(curl -s -m 10 -X POST "http://127.0.0.1:$MCP_PORT/approve" \\
