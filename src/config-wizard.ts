@@ -293,15 +293,21 @@ MCP_PORT=18963
 # 先保存输入（只能读一次）
 INPUT=$(cat)
 
-# 调试日志
-DEBUG_LOG="/tmp/wecom-hook-debug.log"
-echo "[$(date)] Hook called. TOOL_NAME: $(echo "$INPUT" | jq -r '.tool_name')" >> "$DEBUG_LOG"
+# 日志输出：--debug 模式下输出到 stderr，否则静默
+DEBUG_FILE="$HOME/.wecom-aibot-mcp/debug"
+log_debug() {
+  if [[ -f "$DEBUG_FILE" ]]; then
+    echo "$1" >&2
+  fi
+}
+
+log_debug "[$(date)] Hook called. TOOL_NAME: $(echo "$INPUT" | jq -r '.tool_name')"
 
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
 
 # MCP 工具本身不需要拦截
 if [[ "$TOOL_NAME" == mcp__* ]]; then
-  echo "[$(date)] Allowed: MCP tool" >> "$DEBUG_LOG"
+  log_debug "[$(date)] Allowed: MCP tool"
   printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
   exit 0
 fi
@@ -309,7 +315,7 @@ fi
 # 只读工具不需要拦截
 case "$TOOL_NAME" in
   Read|Glob|Grep|LS|TaskList|TaskGet|TaskOutput|TaskStop|CronList|CronCreate|CronDelete|AskUserQuestion|Skill|ListMcpResourcesTool|EnterPlanMode|ExitPlanMode|WebSearch|WebFetch|NotebookEdit)
-    echo "[$(date)] Allowed: read-only tool" >> "$DEBUG_LOG"
+    log_debug "[$(date)] Allowed: read-only tool"
     printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
     exit 0
     ;;
@@ -319,27 +325,27 @@ esac
 PROJECT_DIR=$(pwd)
 CONFIG_FILE="$PROJECT_DIR/.claude/wecom-aibot.json"
 
-echo "[$(date)] Checking config: $CONFIG_FILE" >> "$DEBUG_LOG"
+log_debug "[$(date)] Checking config: $CONFIG_FILE"
 
 # 配置文件不存在，不在微信模式
 if [[ ! -f "$CONFIG_FILE" ]]; then
-  echo "[$(date)] No config file, exit 0" >> "$DEBUG_LOG"
+  log_debug "[$(date)] No config file, exit 0"
   exit 0
 fi
 
 # 检查 wechatMode 是否为 true（微信模式开关）
 WECHAT_MODE=$(jq -r '.wechatMode // false' "$CONFIG_FILE" 2>/dev/null)
-echo "[$(date)] wechatMode: $WECHAT_MODE" >> "$DEBUG_LOG"
+log_debug "[$(date)] wechatMode: $WECHAT_MODE"
 if [[ "$WECHAT_MODE" != "true" ]]; then
-  echo "[$(date)] wechatMode not true, exit 0" >> "$DEBUG_LOG"
+  log_debug "[$(date)] wechatMode not true, exit 0"
   exit 0
 fi
 
 # 检查 MCP Server 是否在线
 HEALTH=$(curl -s -m 2 "http://127.0.0.1:$MCP_PORT/health" 2>/dev/null)
-echo "[$(date)] Health check: $HEALTH" >> "$DEBUG_LOG"
+log_debug "[$(date)] Health check: $HEALTH"
 if ! echo "$HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
-  echo "[$(date)] Health check failed, exit 0" >> "$DEBUG_LOG"
+  log_debug "[$(date)] Health check failed, exit 0"
   exit 0
 fi
 
@@ -351,19 +357,19 @@ TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}')
 BODY=$(jq -n --arg tool_name "$TOOL_NAME" --argjson tool_input "$TOOL_INPUT" --arg project_dir "$PROJECT_DIR" --arg robot_name "$ROBOT_NAME" \\
   '{"tool_name":$tool_name,"tool_input":$tool_input,"projectDir":$project_dir,"robotName":$robot_name}')
 
-echo "[$(date)] Sending approval request..." >> "$DEBUG_LOG"
+log_debug "[$(date)] Sending approval request..."
 RESPONSE=$(curl -s -m 10 -X POST "http://127.0.0.1:$MCP_PORT/approve" \\
   -H "Content-Type: application/json" \\
   -d "$BODY")
 
-echo "[$(date)] Approval response: $RESPONSE" >> "$DEBUG_LOG"
+log_debug "[$(date)] Approval response: $RESPONSE"
 TASK_ID=$(echo "$RESPONSE" | jq -r '.taskId // empty')
 if [[ -z "$TASK_ID" ]]; then
-  echo "[$(date)] No taskId, exit 0" >> "$DEBUG_LOG"
+  log_debug "[$(date)] No taskId, exit 0"
   exit 0
 fi
 
-echo "[$(date)] Waiting for approval, taskId: $TASK_ID" >> "$DEBUG_LOG"
+log_debug "[$(date)] Waiting for approval, taskId: $TASK_ID"
 
 # 轮询审批结果（带超时：从配置读取）
 AUTO_APPROVE_TIMEOUT=$(jq -r '.autoApproveTimeout // 600' "$CONFIG_FILE" 2>/dev/null)
@@ -375,7 +381,7 @@ if [[ $MAX_POLL -lt 1 ]]; then
 fi
 POLL_COUNT=0
 
-echo "[$(date)] autoApproveTimeout: $AUTO_APPROVE_TIMEOUT seconds, MAX_POLL: $MAX_POLL (actual wait: ~$((MAX_POLL * 2))s)" >> "$DEBUG_LOG"
+log_debug "[$(date)] autoApproveTimeout: $AUTO_APPROVE_TIMEOUT seconds, MAX_POLL: $MAX_POLL (actual wait: ~$((MAX_POLL * 2))s)"
 
 while [[ $POLL_COUNT -lt $MAX_POLL ]]; do
   sleep 2
@@ -383,29 +389,29 @@ while [[ $POLL_COUNT -lt $MAX_POLL ]]; do
 
   STATUS=$(curl -s -m 3 "http://127.0.0.1:$MCP_PORT/approval_status/$TASK_ID" 2>/dev/null)
   RESULT=$(echo "$STATUS" | jq -r '.result // empty')
-  echo "[$(date)] Poll $POLL_COUNT/$MAX_POLL: result=$RESULT" >> "$DEBUG_LOG"
+  log_debug "[$(date)] Poll $POLL_COUNT/$MAX_POLL: result=$RESULT"
 
   if [[ "$RESULT" == "allow-once" || "$RESULT" == "allow-always" ]]; then
-    echo "[$(date)] Approved by user" >> "$DEBUG_LOG"
+    log_debug "[$(date)] Approved by user"
     printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
     exit 0
   elif [[ "$RESULT" == "deny" ]]; then
-    echo "[$(date)] Denied by user" >> "$DEBUG_LOG"
+    log_debug "[$(date)] Denied by user"
     printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"用户拒绝"}}}'
     exit 0
   fi
 done
 
-echo "[$(date)] Timeout reached, checking autoApprove setting" >> "$DEBUG_LOG"
+log_debug "[$(date)] Timeout reached, checking autoApprove setting"
 
 # 超时处理：根据 autoApprove 决定行为
 # autoApprove: false → 继续等待（无限轮询）
 # autoApprove: true → 智能代批
 
 AUTO_APPROVE=$(jq -r '.autoApprove // false' "$CONFIG_FILE" 2>/dev/null)
-echo "[$(date)] autoApprove: $AUTO_APPROVE" >> "$DEBUG_LOG"
+log_debug "[$(date)] autoApprove: $AUTO_APPROVE"
 if [[ "$AUTO_APPROVE" != "true" ]]; then
-  echo "[$(date)] autoApprove off, entering infinite wait" >> "$DEBUG_LOG"
+  log_debug "[$(date)] autoApprove off, entering infinite wait"
   # autoApprove 关闭，继续无限等待用户响应
   while true; do
     sleep 2
@@ -413,11 +419,11 @@ if [[ "$AUTO_APPROVE" != "true" ]]; then
     RESULT=$(echo "$STATUS" | jq -r '.result // empty')
 
     if [[ "$RESULT" == "allow-once" || "$RESULT" == "allow-always" ]]; then
-      echo "[$(date)] Approved by user (infinite wait)" >> "$DEBUG_LOG"
+      log_debug "[$(date)] Approved by user (infinite wait)"
       printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
       exit 0
     elif [[ "$RESULT" == "deny" ]]; then
-      echo "[$(date)] Denied by user (infinite wait)" >> "$DEBUG_LOG"
+      log_debug "[$(date)] Denied by user (infinite wait)"
       printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"用户拒绝"}}}'
       exit 0
     fi
@@ -426,23 +432,23 @@ fi
 
 # autoApprove: true，执行智能代批
 # 规则：删除命令→拒绝，项目内操作→允许，项目外操作→拒绝
-echo "[$(date)] Executing smart auto-approval" >> "$DEBUG_LOG"
+log_debug "[$(date)] Executing smart auto-approval"
 
 # 检查是否是删除命令
 IS_DELETE=0
 if [[ "$TOOL_NAME" == "Bash" ]]; then
   CMD=$(echo "$TOOL_INPUT" | jq -r '.command // empty')
-  echo "[$(date)] Checking delete: CMD=$CMD" >> "$DEBUG_LOG"
+  log_debug "[$(date)] Checking delete: CMD=$CMD"
   if [[ "$CMD" == rm* ]] || [[ "$CMD" == *" rm "* ]] || [[ "$CMD" == *"-rf"* ]]; then
     IS_DELETE=1
   fi
 fi
 
-echo "[$(date)] IS_DELETE: $IS_DELETE" >> "$DEBUG_LOG"
+log_debug "[$(date)] IS_DELETE: $IS_DELETE"
 
 # 删除操作 → 永远拒绝
 if [[ $IS_DELETE -eq 1 ]]; then
-  echo "[$(date)] Auto-deny: delete operation" >> "$DEBUG_LOG"
+  log_debug "[$(date)] Auto-deny: delete operation"
   # 通知 MCP Server 发送微信消息
   curl -s -m 5 -X POST "http://127.0.0.1:$MCP_PORT/approval_timeout/$TASK_ID" -H "Content-Type: application/json" -d '{"result":"deny","reason":"超时自动拒绝：删除操作需人工确认"}' > /dev/null 2>&1 &
   printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"超时自动拒绝：删除操作需人工确认"}}}'
@@ -455,7 +461,9 @@ IS_IN_PROJECT=0
 case "$TOOL_NAME" in
   Bash)
     CMD=$(echo "$TOOL_INPUT" | jq -r '.command // empty')
-    if [[ "$CMD" == *"$PROJECT_DIR"* ]] || [[ "$CMD" == ./* ]] || [[ "$CMD" == npm* ]] || [[ "$CMD" == npx* ]] || [[ "$CMD" == git* ]] || [[ "$CMD" == node* ]]; then
+    # 只有明确在项目目录内操作才认为是项目内操作
+    # 相对路径 ./ 或包含项目目录路径
+    if [[ "$CMD" == *"$PROJECT_DIR"* ]] || [[ "$CMD" == ./* ]]; then
       IS_IN_PROJECT=1
     fi
     ;;
@@ -475,16 +483,16 @@ case "$TOOL_NAME" in
     ;;
 esac
 
-echo "[$(date)] IS_IN_PROJECT: $IS_IN_PROJECT" >> "$DEBUG_LOG"
+log_debug "[$(date)] IS_IN_PROJECT: $IS_IN_PROJECT"
 
 # 根据项目内/外决策
 if [[ $IS_IN_PROJECT -eq 1 ]]; then
-  echo "[$(date)] Auto-allow: project operation" >> "$DEBUG_LOG"
+  log_debug "[$(date)] Auto-allow: project operation"
   # 通知 MCP Server 发送微信消息
   curl -s -m 5 -X POST "http://127.0.0.1:$MCP_PORT/approval_timeout/$TASK_ID" -H "Content-Type: application/json" -d '{"result":"allow-once","reason":"超时自动允许：项目内操作"}' > /dev/null 2>&1 &
   printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","message":"超时自动允许：项目内操作"}}}'
 else
-  echo "[$(date)] Auto-deny: outside project" >> "$DEBUG_LOG"
+  log_debug "[$(date)] Auto-deny: outside project"
   # 通知 MCP Server 发送微信消息
   curl -s -m 5 -X POST "http://127.0.0.1:$MCP_PORT/approval_timeout/$TASK_ID" -H "Content-Type: application/json" -d '{"result":"deny","reason":"超时自动拒绝：项目外操作需人工确认"}' > /dev/null 2>&1 &
   printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"超时自动拒绝：项目外操作需人工确认"}}}'

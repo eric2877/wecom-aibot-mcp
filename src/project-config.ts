@@ -314,7 +314,7 @@ const PERMISSION_HOOK = {
 /**
  * 添加 PermissionRequest hook 到项目 settings.json
  */
-export function addPermissionHook(projectDir: string): void {
+export function addPermissionHook(projectDir: string): { success: boolean; path: string } {
   const settingsPath = getProjectSettingsPath(projectDir);
   const settingsDir = path.dirname(settingsPath);
 
@@ -341,18 +341,24 @@ export function addPermissionHook(projectDir: string): void {
   (settings.hooks as Record<string, unknown>).PermissionRequest = [PERMISSION_HOOK];
 
   // 写入配置
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-  console.log(`[project-config] 已添加 PermissionRequest hook: ${settingsPath}`);
+  try {
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+    console.log(`[project-config] 已添加 PermissionRequest hook: ${settingsPath}`);
+    return { success: true, path: settingsPath };
+  } catch (err) {
+    console.error(`[project-config] 添加 PermissionRequest hook 失败: ${err}`);
+    return { success: false, path: settingsPath };
+  }
 }
 
 /**
  * 删除 PermissionRequest hook 从项目 settings.json
  */
-export function removePermissionHook(projectDir: string): void {
+export function removePermissionHook(projectDir: string): { success: boolean; path: string; existed: boolean } {
   const settingsPath = getProjectSettingsPath(projectDir);
 
   if (!fs.existsSync(settingsPath)) {
-    return;
+    return { success: true, path: settingsPath, existed: false };
   }
 
   try {
@@ -371,8 +377,11 @@ export function removePermissionHook(projectDir: string): void {
       // 写入配置
       fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
       console.log(`[project-config] 已删除 PermissionRequest hook: ${settingsPath}`);
+      return { success: true, path: settingsPath, existed: true };
     }
-  } catch {
-    // ignore
+    return { success: true, path: settingsPath, existed: false };
+  } catch (err) {
+    console.error(`[project-config] 删除 PermissionRequest hook 失败: ${err}`);
+    return { success: false, path: settingsPath, existed: false };
   }
 }

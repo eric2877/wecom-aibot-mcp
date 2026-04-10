@@ -448,7 +448,12 @@ async function main() {
   // --debug：前台启动，日志直接输出到终端
   if (args.includes('--debug')) {
     console.log('[mcp] Debug 模式：前台运行，Ctrl+C 退出');
+    // 写入 debug 标记文件，hook 脚本检测后日志输出到 stderr
+    const debugFile = path.join(os.homedir(), '.wecom-aibot-mcp', 'debug');
+    fs.writeFileSync(debugFile, 'true');
     await startMcpServerForeground();
+    // 退出时删除标记文件
+    fs.unlinkSync(debugFile);
     return;
   }
 

@@ -393,7 +393,7 @@ npx @vrs-soft/wecom-aibot-mcp
       });
 
       // 添加 PermissionRequest hook 到项目 settings.json
-      addPermissionHook(projectDir);
+      const hookResult = addPermissionHook(projectDir);
 
       // 发送确认消息（包含 ccId 标识）
       await result.client.sendText(`【${ccId}】已进入微信模式，使用机器人「${selectedRobot.name}」。`);
@@ -406,6 +406,7 @@ npx @vrs-soft/wecom-aibot-mcp
             headless: true,
             robotName: selectedRobot.name,
             ccId,
+            hook: hookResult,
             message: '用户消息通过 SSE 实时推送，审批请求通过微信发送',
           }),
         }],
@@ -454,7 +455,7 @@ npx @vrs-soft/wecom-aibot-mcp
       updateWechatModeConfig(projectDir, { wechatMode: false });
 
       // 删除 PermissionRequest hook 从项目 settings.json
-      removePermissionHook(projectDir);
+      const hookResult = removePermissionHook(projectDir);
 
       return {
         content: [{
@@ -463,6 +464,7 @@ npx @vrs-soft/wecom-aibot-mcp
             status: 'exited',
             headless: false,
             robotName,
+            hook: hookResult,
             message: '审批将使用默认 UI',
           }),
         }],
