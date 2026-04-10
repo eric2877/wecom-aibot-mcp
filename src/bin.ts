@@ -19,7 +19,7 @@ import {
   loadConfig,
   saveConfig,
   deleteConfig,
-  deleteMcpConfigInteractive,
+  deleteRobotConfigInteractive,
   uninstall,
   addMcpConfig,
   detectUserIdFromMessage,
@@ -35,12 +35,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { getAllConnectionStates } from './connection-manager.js';
 import { loadStats, cleanupOldLogs } from './connection-log.js';
 import { startKeepaliveMonitor, stopKeepaliveMonitor } from './keepalive-monitor.js';
+import { logger } from './logger.js';
 
-const VERSION = '1.4.2';
+const VERSION = '1.6.0';
 const PID_FILE = path.join(os.homedir(), '.wecom-aibot-mcp', 'server.pid');
 
 function showHelp() {
-  console.log(`
+  logger.log(`
 企业微信智能机器人 MCP 服务 v${VERSION}
 
 安装:
@@ -61,7 +62,7 @@ function showHelp() {
   --config        重新配置默认机器人（修改 Bot ID / Secret / 目标用户）
   --add           添加新的机器人配置（多机器人场景）
   --list          列出所有已配置的机器人及其占用状态
-  --delete [名称] 删除指定的机器人配置（无参数则显示列表选择）
+  --delete [名称] 删除指定的机器人配置（保留 MCP 配置）
   --uninstall     卸载并删除所有配置（包括 MCP 配置、hook、skill）
 
 使用流程:
@@ -94,7 +95,7 @@ MCP 配置（HTTP Transport）:
 }
 
 function showVersion() {
-  console.log(`wecom-aibot-mcp v${VERSION}`);
+  logger.log(`wecom-aibot-mcp v${VERSION}`);
 }
 
 function showStatus() {
@@ -103,10 +104,10 @@ function showStatus() {
 
   // 检查服务是否运行
   const serverRunning = isServerRunning();
-  console.log(`\n服务状态: ${serverRunning ? '✅ 运行中' : '❌ 未启动'}\n`);
+  logger.log(`\n服务状态: ${serverRunning ? '✅ 运行中' : '❌ 未启动'}\n`);
 
   if (allRobots.length === 0) {
-    console.log('尚未配置机器人，请运行 npx @vrs-soft/wecom-aibot-mcp 启动配置向导');
+    logger.log('尚未配置机器人，请运行 npx @vrs-soft/wecom-aibot-mcp 启动配置向导');
     return;
   }
 
@@ -118,19 +119,19 @@ function showStatus() {
     }
   }
 
-  console.log(`已配置 ${allRobots.length} 个机器人:\n`);
+  logger.log(`已配置 ${allRobots.length} 个机器人:\n`);
 
   for (const robot of allRobots) {
     const usage = robotUsage.get(robot.name);
     const statusTag = usage ? ` [使用中]` : '';
 
-    console.log(`  ${robot.name}${statusTag}`);
-    console.log(`    Bot ID:     ${robot.botId}`);
-    console.log(`    目标用户:   ${robot.targetUserId}`);
+    logger.log(`  ${robot.name}${statusTag}`);
+    logger.log(`    Bot ID:     ${robot.botId}`);
+    logger.log(`    目标用户:   ${robot.targetUserId}`);
     if (usage) {
-      console.log(`    使用者:     ${usage.agentName}`);
+      logger.log(`    使用者:     ${usage.agentName}`);
     }
-    console.log('');
+    logger.log('');
   }
 }
 
@@ -157,7 +158,7 @@ function isServerRunning(): boolean {
 // 停止服务
 function stopServer(): boolean {
   if (!fs.existsSync(PID_FILE)) {
-    console.log('[mcp] 服务未运行');
+    logger.log('[mcp] 服务未运行');
     return false;
   }
 
@@ -183,10 +184,10 @@ function stopServer(): boolean {
     if (fs.existsSync(PID_FILE)) {
       fs.unlinkSync(PID_FILE);
     }
-    console.log('[mcp] 服务已停止');
+    logger.log('[mcp] 服务已停止');
     return true;
   } catch (err) {
-    console.error('[mcp] 停止服务失败:', err);
+    logger.error('[mcp] 停止服务失败:', err);
     if (fs.existsSync(PID_FILE)) {
       fs.unlinkSync(PID_FILE);
     }
@@ -214,7 +215,7 @@ async function waitForConnection(client: WecomClient, timeoutMs = 10000): Promis
 async function startMcpServerForeground(): Promise<void> {
   const savedConfig = loadConfig();
   if (!savedConfig || !savedConfig.botId || !savedConfig.secret || !savedConfig.targetUserId) {
-    console.error('[mcp] 未找到配置，请先运行: npx @vrs-soft/wecom-aibot-mcp');
+    logger.error('[mcp] 未找到配置，请先运行: npx @vrs-soft/wecom-aibot-mcp');
     process.exit(1);
   }
 
@@ -237,27 +238,27 @@ async function startMcpServerForeground(): Promise<void> {
   registerTools(server);
 
   // 启动 HTTP 服务
-  console.log('');
-  console.log('  ╔════════════════════════════════════════════════════════╗');
-  console.log(`  ║   企业微信智能机器人 MCP 服务 v${VERSION}                   ║`);
-  console.log('  ║   Claude Code 审批通道                                 ║');
-  console.log('  ╚════════════════════════════════════════════════════════╝');
-  console.log('');
+  logger.log('');
+  logger.log('  ╔════════════════════════════════════════════════════════╗');
+  logger.log(`  ║   企业微信智能机器人 MCP 服务 v${VERSION}                   ║`);
+  logger.log('  ║   Claude Code 审批通道                                 ║');
+  logger.log('  ╚════════════════════════════════════════════════════════╝');
+  logger.log('');
 
-  console.log(`[mcp] 启动 MCP HTTP Server (端口: ${HTTP_PORT})...`);
+  logger.log(`[mcp] 启动 MCP HTTP Server (端口: ${HTTP_PORT})...`);
   await startHttpServer(server);
 
   startKeepaliveMonitor();
 
-  console.log(`[mcp] MCP Server 已就绪`);
-  console.log(`[mcp] HTTP endpoint: http://127.0.0.1:${HTTP_PORT}/mcp`);
-  console.log(`[mcp] 健康检查: http://127.0.0.1:${HTTP_PORT}/health`);
-  console.log(`[mcp] 微信模式：enter_headless_mode 时建立连接`);
-  console.log(`[mcp] PID: ${process.pid}`);
+  logger.log(`[mcp] MCP Server 已就绪`);
+  logger.log(`[mcp] HTTP endpoint: http://127.0.0.1:${HTTP_PORT}/mcp`);
+  logger.log(`[mcp] 健康检查: http://127.0.0.1:${HTTP_PORT}/health`);
+  logger.log(`[mcp] 微信模式：enter_headless_mode 时建立连接`);
+  logger.log(`[mcp] PID: ${process.pid}`);
 
   // 退出处理
   const gracefulShutdown = () => {
-    console.log('[mcp] 正在关闭...');
+    logger.log('[mcp] 正在关闭...');
     stopKeepaliveMonitor();
     stopHttpServer();
     if (fs.existsSync(PID_FILE)) {
@@ -275,13 +276,13 @@ function startMcpServerBackground(): void {
   // 检查配置是否存在
   const savedConfig = loadConfig();
   if (!savedConfig || !savedConfig.botId || !savedConfig.secret || !savedConfig.targetUserId) {
-    console.error('[mcp] 未找到配置，请先运行: npx @vrs-soft/wecom-aibot-mcp');
+    logger.error('[mcp] 未找到配置，请先运行: npx @vrs-soft/wecom-aibot-mcp');
     process.exit(1);
   }
 
   // 检查是否已运行
   if (isServerRunning()) {
-    console.log('[mcp] 服务已在运行中');
+    logger.log('[mcp] 服务已在运行中');
     return;
   }
 
@@ -295,11 +296,11 @@ function startMcpServerBackground(): void {
 
   child.unref();
 
-  console.log('[mcp] MCP Server 已在后台启动');
-  console.log(`[mcp] HTTP endpoint: http://127.0.0.1:18963/mcp`);
-  console.log('[mcp] 健康检查: curl http://127.0.0.1:18963/health');
-  console.log('[mcp] 停止服务: npx @vrs-soft/wecom-aibot-mcp --stop');
-  console.log('[mcp] 调试模式: npx @vrs-soft/wecom-aibot-mcp --debug');
+  logger.log('[mcp] MCP Server 已在后台启动');
+  logger.log(`[mcp] HTTP endpoint: http://127.0.0.1:18963/mcp`);
+  logger.log('[mcp] 健康检查: curl http://127.0.0.1:18963/health');
+  logger.log('[mcp] 停止服务: npx @vrs-soft/wecom-aibot-mcp --stop');
+  logger.log('[mcp] 调试模式: npx @vrs-soft/wecom-aibot-mcp --debug');
 }
 
 async function main() {
@@ -324,20 +325,20 @@ async function main() {
 
   // --upgrade 命令：强制升级全局配置（已在启动时执行，这里显示结果）
   if (args.includes('--upgrade')) {
-    console.log('\n[mcp] ✅ 全局配置已更新完成！');
-    console.log('[mcp] 配置位置:');
-    console.log('  - ~/.claude.json (MCP Server 配置)');
-    console.log('  - ~/.claude/settings.local.json (权限和 Hook)');
-    console.log('  - ~/.claude/skills/headless-mode/ (Skill)');
-    console.log('  - ~/.wecom-aibot-mcp/version.json (版本记录)');
-    console.log('\n[mcp] 请重启 Claude Code 以加载最新配置');
+    logger.log('\n[mcp] ✅ 全局配置已更新完成！');
+    logger.log('[mcp] 配置位置:');
+    logger.log('  - ~/.claude.json (MCP Server 配置)');
+    logger.log('  - ~/.claude/settings.local.json (权限和 Hook)');
+    logger.log('  - ~/.claude/skills/headless-mode/ (Skill)');
+    logger.log('  - ~/.wecom-aibot-mcp/version.json (版本记录)');
+    logger.log('\n[mcp] 请重启 Claude Code 以加载最新配置');
     process.exit(0);
   }
 
   // --reinstall 命令：删除所有全局配置（保留机器人配置）后重新安装
   if (args.includes('--reinstall')) {
-    console.log('\n[mcp] 重新安装全局配置...');
-    console.log('[mcp] 保留所有机器人配置: ~/.wecom-aibot-mcp/config.json 和 robot-*.json');
+    logger.log('\n[mcp] 重新安装全局配置...');
+    logger.log('[mcp] 保留所有机器人配置: ~/.wecom-aibot-mcp/config.json 和 robot-*.json');
 
     const CLAUDE_CONFIG_FILE = path.join(os.homedir(), '.claude.json');
     const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.local.json');
@@ -352,7 +353,7 @@ async function main() {
       if (config.mcpServers?.['wecom-aibot']) {
         delete config.mcpServers['wecom-aibot'];
         fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(config, null, 2));
-        console.log('[mcp] 已删除 ~/.claude.json 中的 wecom-aibot 配置');
+        logger.log('[mcp] 已删除 ~/.claude.json 中的 wecom-aibot 配置');
       }
     }
 
@@ -364,7 +365,7 @@ async function main() {
         config.permissions.allow = config.permissions.allow.filter(
           (p: string) => !p.startsWith('mcp__wecom-aibot__')
         );
-        console.log('[mcp] 已删除 wecom-aibot 工具权限');
+        logger.log('[mcp] 已删除 wecom-aibot 工具权限');
       }
       if (config.hooks?.PermissionRequest) {
         config.hooks.PermissionRequest = config.hooks.PermissionRequest.filter(
@@ -373,7 +374,7 @@ async function main() {
         if (config.hooks.PermissionRequest.length === 0) {
           delete config.hooks.PermissionRequest;
         }
-        console.log('[mcp] 已删除 PermissionRequest hook');
+        logger.log('[mcp] 已删除 PermissionRequest hook');
       }
       fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(config, null, 2));
     }
@@ -381,27 +382,27 @@ async function main() {
     // 3. 删除 skill 目录
     if (fs.existsSync(SKILL_DIR)) {
       fs.rmSync(SKILL_DIR, { recursive: true });
-      console.log('[mcp] 已删除 ~/.claude/skills/headless-mode/');
+      logger.log('[mcp] 已删除 ~/.claude/skills/headless-mode/');
     }
 
     // 4. 删除版本文件
     if (fs.existsSync(VERSION_FILE)) {
       fs.unlinkSync(VERSION_FILE);
-      console.log('[mcp] 已删除 ~/.wecom-aibot-mcp/version.json');
+      logger.log('[mcp] 已删除 ~/.wecom-aibot-mcp/version.json');
     }
 
     // 5. 删除 hook 脚本
     if (fs.existsSync(HOOK_SCRIPT)) {
       fs.unlinkSync(HOOK_SCRIPT);
-      console.log('[mcp] 已删除 ~/.wecom-aibot-mcp/permission-hook.sh');
+      logger.log('[mcp] 已删除 ~/.wecom-aibot-mcp/permission-hook.sh');
     }
 
     // 6. 重新安装全局配置
-    console.log('\n[mcp] 正在重新安装...');
+    logger.log('\n[mcp] 正在重新安装...');
     ensureGlobalConfigs();
 
-    console.log('\n[mcp] ✅ 重新安装完成！');
-    console.log('[mcp] 请重启 Claude Code 以加载最新配置');
+    logger.log('\n[mcp] ✅ 重新安装完成！');
+    logger.log('[mcp] 请重启 Claude Code 以加载最新配置');
     process.exit(0);
   }
 
@@ -419,7 +420,7 @@ async function main() {
   // --uninstall 命令：先停止服务再卸载
   if (args.includes('--uninstall')) {
     if (isServerRunning()) {
-      console.log('[mcp] 正在停止服务...');
+      logger.log('[mcp] 正在停止服务...');
       stopServer();
     }
     uninstall();
@@ -434,8 +435,8 @@ async function main() {
   // --delete 命令：删除单个机器人配置
   const deleteIndex = args.indexOf('--delete');
   if (deleteIndex !== -1) {
-    const instanceName = args[deleteIndex + 1]; // 可选参数：实例名
-    await deleteMcpConfigInteractive(instanceName);
+    const robotName = args[deleteIndex + 1]; // 可选参数：机器人名称
+    await deleteRobotConfigInteractive(robotName);
     process.exit(0);
   }
 
@@ -447,7 +448,7 @@ async function main() {
 
   // --debug：前台启动，日志直接输出到终端
   if (args.includes('--debug')) {
-    console.log('[mcp] Debug 模式：前台运行，Ctrl+C 退出');
+    logger.log('[mcp] Debug 模式：前台运行，Ctrl+C 退出');
     // 写入 debug 标记文件，hook 脚本检测后日志输出到 stderr
     const debugFile = path.join(os.homedir(), '.wecom-aibot-mcp', 'debug');
     fs.writeFileSync(debugFile, 'true');
@@ -466,12 +467,12 @@ async function main() {
   const reconfig = args.includes('--config');
   const isInteractive = process.stdin.isTTY; // 是否为用户交互模式
 
-  console.log('');
-  console.log('  ╔════════════════════════════════════════════════════════╗');
-  console.log(`  ║   企业微信智能机器人 MCP 服务 v${VERSION}                   ║`);
-  console.log('  ║   Claude Code 审批通道                                 ║');
-  console.log('  ╚════════════════════════════════════════════════════════╝');
-  console.log('');
+  logger.log('');
+  logger.log('  ╔════════════════════════════════════════════════════════╗');
+  logger.log(`  ║   企业微信智能机器人 MCP 服务 v${VERSION}                   ║`);
+  logger.log('  ║   Claude Code 审批通道                                 ║');
+  logger.log('  ╚════════════════════════════════════════════════════════╝');
+  logger.log('');
 
   // 加载统计并清理旧日志（保留 1 小时）
   loadStats();
@@ -483,7 +484,7 @@ async function main() {
   let instanceName = 'wecom-aibot';
 
   if (reconfig) {
-    console.log('[config] 重新配置模式\n');
+    logger.log('[config] 重新配置模式\n');
     const result = await runConfigWizard();
     config = result.config;
     instanceName = result.instanceName;
@@ -495,15 +496,15 @@ async function main() {
       config = savedConfig;
     } else if (isInteractive) {
       // TTY 模式下没有配置，启动配置向导
-      console.log('[config] 未找到配置，启动配置向导...\n');
+      logger.log('[config] 未找到配置，启动配置向导...\n');
       const result = await runConfigWizard();
       config = result.config;
       instanceName = result.instanceName;
       ranWizard = true;
     } else {
       // 非 TTY 模式（MCP HTTP），必须有配置
-      console.error('[config] 未找到配置，且当前为非交互模式。');
-      console.error('[config] 请在终端运行: npx @vrs-soft/wecom-aibot-mcp --config');
+      logger.error('[config] 未找到配置，且当前为非交互模式。');
+      logger.error('[config] 请在终端运行: npx @vrs-soft/wecom-aibot-mcp --config');
       process.exit(1);
     }
   }
@@ -513,38 +514,38 @@ async function main() {
 
   // 配置向导模式：验证连接并识别用户 ID
   if (isInteractive && (ranWizard || reconfig)) {
-    console.log('[mcp] 验证机器人连接...');
+    logger.log('[mcp] 验证机器人连接...');
 
     // 临时建立连接验证凭证
     const tempClient = initClient(config.botId, config.secret, config.targetUserId || 'placeholder', 'temp-validation');
     const connected = await waitForConnection(tempClient, 10000);
 
     if (!connected) {
-      console.log('[mcp] 连接失败，可能是配置错误或机器人未授权');
-      console.log('[mcp] 请检查上面的错误提示，修复后重新配置');
+      logger.log('[mcp] 连接失败，可能是配置错误或机器人未授权');
+      logger.log('[mcp] 请检查上面的错误提示，修复后重新配置');
 
       // 删除无效配置，让用户重新输入
       deleteConfig();
 
-      console.log('\n请检查：');
-      console.log('  1. Bot ID 和 Secret 是否正确');
-      console.log('  2. 新建机器人需等待约 2 分钟同步');
-      console.log('  3. 是否已完成授权（机器人详情 → 可使用权限 → 授权）');
-      console.log('\n修复后重新运行: npx @vrs-soft/wecom-aibot-mcp --config');
+      logger.log('\n请检查：');
+      logger.log('  1. Bot ID 和 Secret 是否正确');
+      logger.log('  2. 新建机器人需等待约 2 分钟同步');
+      logger.log('  3. 是否已完成授权（机器人详情 → 可使用权限 → 授权）');
+      logger.log('\n修复后重新运行: npx @vrs-soft/wecom-aibot-mcp --config');
 
       tempClient.disconnect();
       process.exit(1);
     }
 
     // 连接成功
-    console.log('\n[mcp] ✅ 机器人连接成功！');
+    logger.log('\n[mcp] ✅ 机器人连接成功！');
 
     // 提示用户发送消息来识别用户 ID
     const userId = await detectUserIdFromMessage(tempClient, 180);
 
     if (!userId) {
-      console.log('\n[mcp] 未能在规定时间内识别用户 ID');
-      console.log('[mcp] 请重新运行配置：npx @vrs-soft/wecom-aibot-mcp --config');
+      logger.log('\n[mcp] 未能在规定时间内识别用户 ID');
+      logger.log('[mcp] 请重新运行配置：npx @vrs-soft/wecom-aibot-mcp --config');
       tempClient.disconnect();
       process.exit(1);
     }
@@ -555,26 +556,26 @@ async function main() {
     // 保存最终配置
     saveConfig(config, instanceName);
 
-    console.log('\n[mcp] ✅ 配置完成！');
-    console.log(`[mcp] 用户 ID: ${userId}`);
+    logger.log('\n[mcp] ✅ 配置完成！');
+    logger.log(`[mcp] 用户 ID: ${userId}`);
 
     // 配置完成后断开连接
     tempClient.disconnect();
 
     // 首次安装后自动后台启动服务
-    console.log('\n[mcp] 正在后台启动 MCP Server...');
+    logger.log('\n[mcp] 正在后台启动 MCP Server...');
     startMcpServerBackground();
-    console.log('[mcp] 请重启 Claude Code 以加载 MCP 服务\n');
+    logger.log('[mcp] 请重启 Claude Code 以加载 MCP 服务\n');
     process.exit(0);
   }
 
   // 已有配置，显示状态并提示启动命令
   showStatus();
-  console.log('\n[mcp] 使用 --start 启动服务，--stop 停止服务');
-  console.log('[mcp] 命令: npx @vrs-soft/wecom-aibot-mcp --start\n');
+  logger.log('\n[mcp] 使用 --start 启动服务，--stop 停止服务');
+  logger.log('[mcp] 命令: npx @vrs-soft/wecom-aibot-mcp --start\n');
 }
 
 main().catch((err) => {
-  console.error('[mcp] 启动失败:', err);
+  logger.error('[mcp] 启动失败:', err);
   process.exit(1);
 });

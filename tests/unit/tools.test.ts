@@ -2,7 +2,7 @@
  * MCP 工具单元测试
  *
  * 测试覆盖：
- * - T-001 ~ T-013: 各种工具场景
+ * - T-001 ~ T-010: 各种工具场景
  * - 完整工具执行流程
  */
 
@@ -14,39 +14,48 @@ vi.mock('../../src/connection-manager.js', () => ({
     success: true,
     client: {
       sendText: vi.fn().mockResolvedValue(true),
-      sendApprovalRequest: vi.fn().mockResolvedValue('approval_123'),
-      getApprovalResult: vi.fn().mockReturnValue('pending'),
       getPendingMessages: vi.fn().mockReturnValue([]),
       isConnected: vi.fn().mockReturnValue(true),
-      getPendingApprovalsRecords: vi.fn().mockReturnValue([]),
     }
   }),
   disconnectRobot: vi.fn(),
   getClient: vi.fn().mockResolvedValue({
     sendText: vi.fn().mockResolvedValue(true),
-    sendApprovalRequest: vi.fn().mockResolvedValue('approval_123'),
-    getApprovalResult: vi.fn().mockReturnValue('pending'),
     getPendingMessages: vi.fn().mockReturnValue([]),
     isConnected: vi.fn().mockReturnValue(true),
-    getPendingApprovalsRecords: vi.fn().mockReturnValue([]),
   }),
   getConnectionState: vi.fn(() => ({ connected: true, robotName: 'ClaudeCode', connectedAt: Date.now() })),
-  isRobotOccupied: vi.fn(() => false),
-  getRobotOccupiedBy: vi.fn(() => undefined),
 }));
 
 vi.mock('../../src/config-wizard.js', () => ({
   listAllRobots: vi.fn(() => [
-    { name: 'ClaudeCode', botId: 'bot1', targetUserId: 'user1', isDefault: true },
-    { name: 'module-studio', botId: 'bot2', targetUserId: 'user2', isDefault: false }
+    { name: 'ClaudeCode', botId: 'bot1', targetUserId: 'user1' },
+    { name: 'module-studio', botId: 'bot2', targetUserId: 'user2' }
   ]),
 }));
 
 vi.mock('../../src/http-server.js', () => ({
-  getSessionDataById: vi.fn(),
-  setSessionData: vi.fn(),
-  deleteSession: vi.fn(),
-  generateCcId: vi.fn(() => 'cc-1'),
+  registerCcId: vi.fn(),
+  unregisterCcId: vi.fn(),
+  getRobotByCcId: vi.fn(),
+}));
+
+vi.mock('../../src/headless-state.js', () => ({
+  enterHeadlessMode: vi.fn(),
+  exitHeadlessMode: vi.fn(),
+  isHeadlessMode: vi.fn(),
+}));
+
+vi.mock('../../src/project-config.js', () => ({
+  updateWechatModeConfig: vi.fn(),
+  addPermissionHook: vi.fn(),
+  removePermissionHook: vi.fn(),
+  addTaskCompletedHook: vi.fn(),
+  removeTaskCompletedHook: vi.fn(),
+}));
+
+vi.mock('../../src/message-bus.js', () => ({
+  subscribeWecomMessageByRobot: vi.fn(),
 }));
 
 vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
@@ -63,14 +72,11 @@ import {
   disconnectRobot,
   getClient,
   getConnectionState,
-  isRobotOccupied,
-  getRobotOccupiedBy,
 } from '../../src/connection-manager';
 import {
-  getSessionDataById,
-  setSessionData,
-  deleteSession,
-  generateCcId,
+  registerCcId,
+  unregisterCcId,
+  getRobotByCcId,
 } from '../../src/http-server';
 
 describe('MCP Tools', () => {
@@ -95,8 +101,9 @@ describe('MCP Tools', () => {
   });
 
   describe('registerTools', () => {
-    it('应该注册 11 个工具', () => {
-      expect(toolHandlers.size).toBe(11);
+    it('应该注册正确数量的工具', () => {
+      // 当前注册的工具数量：10 个
+      expect(toolHandlers.size).toBe(10);
     });
 
     it('应该注册 send_message 工具', () => {
@@ -111,14 +118,6 @@ describe('MCP Tools', () => {
       expect(toolHandlers.has('exit_headless_mode')).toBe(true);
     });
 
-    it('应该注册 send_approval_request 工具', () => {
-      expect(toolHandlers.has('send_approval_request')).toBe(true);
-    });
-
-    it('应该注册 get_approval_result 工具', () => {
-      expect(toolHandlers.has('get_approval_result')).toBe(true);
-    });
-
     it('应该注册 list_robots 工具', () => {
       expect(toolHandlers.has('list_robots')).toBe(true);
     });
@@ -130,83 +129,39 @@ describe('MCP Tools', () => {
     it('应该注册 get_setup_guide 工具', () => {
       expect(toolHandlers.has('get_setup_guide')).toBe(true);
     });
+
+    it('应该注册 get_pending_messages 工具', () => {
+      expect(toolHandlers.has('get_pending_messages')).toBe(true);
+    });
+
+    it('应该注册 detect_user_from_message 工具', () => {
+      expect(toolHandlers.has('detect_user_from_message')).toBe(true);
+    });
+
+    it('应该注册 add_robot_config 工具', () => {
+      expect(toolHandlers.has('add_robot_config')).toBe(true);
+    });
   });
 
   describe('send_message 工具', () => {
-    it('有 Session 时应该调用 getClient', async () => {
-      vi.mocked(getSessionDataById).mockReturnValue({
-        robotName: 'ClaudeCode',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
-      });
+    it('有 cc_id 时应该调用 getClient', async () => {
+      vi.mocked(getRobotByCcId).mockReturnValue('ClaudeCode');
 
       const handler = toolHandlers.get('send_message')!.handler;
       await handler(
-        { content: 'test message' },
-        { sessionId: 'session-1' }
+        { content: 'test message', cc_id: 'cc-1' }
       );
 
       expect(getClient).toHaveBeenCalledWith('ClaudeCode');
     });
 
-    it('无 Session 时应该返回错误', async () => {
-      vi.mocked(getSessionDataById).mockReturnValue(null);
-
+    it('无 cc_id 时应该返回错误', async () => {
       const handler = toolHandlers.get('send_message')!.handler;
       const result = await handler(
-        { content: 'test message' },
-        { sessionId: 'session-1' }
+        { content: 'test message' }
       );
 
       expect(result.content[0].text).toContain('未在微信模式');
-    });
-  });
-
-  describe('send_approval_request 工具', () => {
-    it('应该调用 getClient', async () => {
-      vi.mocked(getSessionDataById).mockReturnValue({
-        robotName: 'ClaudeCode',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
-      });
-
-      const handler = toolHandlers.get('send_approval_request')!.handler;
-      await handler(
-        { title: 'Bash', description: 'Execute command', request_id: 'req-001' },
-        { sessionId: 'session-1' }
-      );
-
-      expect(getClient).toHaveBeenCalledWith('ClaudeCode');
-    });
-
-    it('无 Session 时应该返回错误', async () => {
-      vi.mocked(getSessionDataById).mockReturnValue(null);
-
-      const handler = toolHandlers.get('send_approval_request')!.handler;
-      const result = await handler(
-        { title: 'Bash', description: 'Execute command', request_id: 'req-001' },
-        { sessionId: 'session-1' }
-      );
-
-      expect(result.content[0].text).toContain('未在微信模式');
-    });
-  });
-
-  describe('get_approval_result 工具', () => {
-    it('应该调用 getClient', async () => {
-      vi.mocked(getSessionDataById).mockReturnValue({
-        robotName: 'ClaudeCode',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
-      });
-
-      const handler = toolHandlers.get('get_approval_result')!.handler;
-      const result = await handler(
-        { task_id: 'approval_123' },
-        { sessionId: 'session-1' }
-      );
-
-      expect(getClient).toHaveBeenCalledWith('ClaudeCode');
     });
   });
 
@@ -216,8 +171,7 @@ describe('MCP Tools', () => {
 
       const handler = toolHandlers.get('enter_headless_mode')!.handler;
       const result = await handler(
-        { agent_name: 'TestAgent' },
-        { sessionId: 'session-1' }
+        { agent_name: 'TestAgent' }
       );
 
       const response = JSON.parse(result.content[0].text);
@@ -227,8 +181,7 @@ describe('MCP Tools', () => {
     it('多机器人未指定时应该返回选择列表', async () => {
       const handler = toolHandlers.get('enter_headless_mode')!.handler;
       const result = await handler(
-        { agent_name: 'TestAgent' },
-        { sessionId: 'session-1' }
+        { cc_id: 'test-cc', agent_name: 'TestAgent' }
       );
 
       const response = JSON.parse(result.content[0].text);
@@ -236,22 +189,7 @@ describe('MCP Tools', () => {
       expect(response.robots.length).toBe(2);
     });
 
-    it('机器人被占用时应该返回错误', async () => {
-      vi.mocked(isRobotOccupied).mockReturnValue(true);
-      vi.mocked(getRobotOccupiedBy).mockReturnValue('OtherAgent');
-
-      const handler = toolHandlers.get('enter_headless_mode')!.handler;
-      const result = await handler(
-        { agent_name: 'TestAgent', robot_id: 'ClaudeCode' },
-        { sessionId: 'session-1' }
-      );
-
-      const response = JSON.parse(result.content[0].text);
-      expect(response.status).toBe('error');
-      expect(response.errorType).toBe('robot_occupied');
-    });
-
-    it('连接成功时应该设置 Session', async () => {
+    it('连接成功时应该注册 ccId（由智能体传入）', async () => {
       vi.mocked(connectRobot).mockResolvedValueOnce({
         success: true,
         client: {
@@ -261,14 +199,11 @@ describe('MCP Tools', () => {
 
       const handler = toolHandlers.get('enter_headless_mode')!.handler;
       const result = await handler(
-        { agent_name: 'TestAgent', robot_id: '1' },
-        { sessionId: 'session-1' }
+        { cc_id: 'my-project', agent_name: 'TestAgent', robot_id: '1', project_dir: '/path/to/test-project' }
       );
 
-      expect(setSessionData).toHaveBeenCalledWith('session-1', expect.objectContaining({
-        robotName: 'ClaudeCode',
-        agentName: 'TestAgent',
-      }));
+      // ccId 由智能体传入
+      expect(registerCcId).toHaveBeenCalledWith('my-project', 'ClaudeCode', 'TestAgent');
     });
 
     it('连接失败时应该返回错误', async () => {
@@ -279,50 +214,66 @@ describe('MCP Tools', () => {
 
       const handler = toolHandlers.get('enter_headless_mode')!.handler;
       const result = await handler(
-        { agent_name: 'TestAgent', robot_id: '1' },
-        { sessionId: 'session-1' }
+        { cc_id: 'test-cc', agent_name: 'TestAgent', robot_id: '1', project_dir: '/path/to/test-project' }
       );
 
       const response = JSON.parse(result.content[0].text);
       expect(response.status).toBe('error');
     });
+
+    it('未指定 agent_name 时应使用 cc_id', async () => {
+      vi.mocked(connectRobot).mockResolvedValueOnce({
+        success: true,
+        client: {
+          sendText: vi.fn().mockResolvedValue(true),
+        },
+      } as any);
+
+      const handler = toolHandlers.get('enter_headless_mode')!.handler;
+      const result = await handler(
+        { cc_id: 'my-project', robot_id: '1', project_dir: '/path/to/my-app' }
+      );
+
+      // agent_name 未指定，应使用 cc_id 'my-project'
+      expect(connectRobot).toHaveBeenCalledWith('ClaudeCode', 'my-project');
+    });
   });
 
   describe('exit_headless_mode 工具', () => {
-    it('无 Session 时应该返回错误', async () => {
-      vi.mocked(getSessionDataById).mockReturnValue(null);
+    it('无 cc_id 时应该返回错误', async () => {
+      vi.mocked(getRobotByCcId).mockReturnValue(null);
 
       const handler = toolHandlers.get('exit_headless_mode')!.handler;
-      const result = await handler({}, { sessionId: 'session-1' });
+      const result = await handler({});
 
       const response = JSON.parse(result.content[0].text);
       expect(response.status).toBe('error');
     });
 
-    it('有 Session 时应该断开连接', async () => {
-      vi.mocked(getSessionDataById).mockReturnValue({
-        robotName: 'ClaudeCode',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
-      });
+    it('有 cc_id 且注册时应该断开连接', async () => {
+      // 需要模拟 getClient 返回有效客户端
+      vi.mocked(getRobotByCcId).mockReturnValue('ClaudeCode');
+      vi.mocked(getClient).mockResolvedValueOnce({
+        sendText: vi.fn().mockResolvedValue(true),
+        isConnected: vi.fn().mockReturnValue(true),
+      } as any);
 
       const handler = toolHandlers.get('exit_headless_mode')!.handler;
-      const result = await handler({}, { sessionId: 'session-1' });
+      const result = await handler({ cc_id: 'cc-1' });
 
-      expect(disconnectRobot).toHaveBeenCalledWith('ClaudeCode');
-      expect(deleteSession).toHaveBeenCalledWith('session-1');
+      expect(disconnectRobot).toHaveBeenCalled();
+      expect(unregisterCcId).toHaveBeenCalledWith('cc-1');
     });
 
     it('应该返回退出状态', async () => {
-      vi.mocked(getSessionDataById).mockReturnValue({
-        robotName: 'ClaudeCode',
-        ccId: 'cc-1',
-        createdAt: Date.now(),
-        agentName: 'TestAgent',
-      });
+      vi.mocked(getRobotByCcId).mockReturnValue('ClaudeCode');
+      vi.mocked(getClient).mockResolvedValueOnce({
+        sendText: vi.fn().mockResolvedValue(true),
+        isConnected: vi.fn().mockReturnValue(true),
+      } as any);
 
       const handler = toolHandlers.get('exit_headless_mode')!.handler;
-      const result = await handler({}, { sessionId: 'session-1' });
+      const result = await handler({ cc_id: 'cc-1' });
 
       const response = JSON.parse(result.content[0].text);
       expect(response.status).toBe('exited');
@@ -331,13 +282,14 @@ describe('MCP Tools', () => {
   });
 
   describe('list_robots 工具', () => {
-    it('应该列出所有机器人', async () => {
+    it('应该列出所有机器人名称', async () => {
       const handler = toolHandlers.get('list_robots')!.handler;
       const result = await handler({}, {});
 
       const response = JSON.parse(result.content[0].text);
       expect(response.robots.length).toBe(2);
-      expect(response.total).toBe(2);
+      expect(response.robots).toContain('ClaudeCode');
+      expect(response.robots).toContain('module-studio');
     });
   });
 
@@ -371,8 +323,8 @@ describe('MCP Tools', () => {
   describe('机器人选择逻辑', () => {
     it('通过序号选择机器人', async () => {
       vi.mocked(listAllRobots).mockReturnValue([
-        { name: 'ClaudeCode', botId: 'bot1', targetUserId: 'user1', isDefault: true },
-        { name: 'module-studio', botId: 'bot2', targetUserId: 'user2', isDefault: false }
+        { name: 'ClaudeCode', botId: 'bot1', targetUserId: 'user1' },
+        { name: 'module-studio', botId: 'bot2', targetUserId: 'user2' }
       ]);
 
       const robots = listAllRobots();
@@ -389,8 +341,8 @@ describe('MCP Tools', () => {
 
     it('通过名称选择机器人', async () => {
       vi.mocked(listAllRobots).mockReturnValue([
-        { name: 'ClaudeCode', botId: 'bot1', targetUserId: 'user1', isDefault: true },
-        { name: 'module-studio', botId: 'bot2', targetUserId: 'user2', isDefault: false }
+        { name: 'ClaudeCode', botId: 'bot1', targetUserId: 'user1' },
+        { name: 'module-studio', botId: 'bot2', targetUserId: 'user2' }
       ]);
 
       const robots = listAllRobots();
@@ -404,8 +356,8 @@ describe('MCP Tools', () => {
 
     it('通过部分名称匹配机器人', async () => {
       vi.mocked(listAllRobots).mockReturnValue([
-        { name: 'ClaudeCode', botId: 'bot1', targetUserId: 'user1', isDefault: true },
-        { name: 'module-studio', botId: 'bot2', targetUserId: 'user2', isDefault: false }
+        { name: 'ClaudeCode', botId: 'bot1', targetUserId: 'user1' },
+        { name: 'module-studio', botId: 'bot2', targetUserId: 'user2' }
       ]);
 
       const robots = listAllRobots();
@@ -415,19 +367,6 @@ describe('MCP Tools', () => {
       );
 
       expect(selectedRobot?.name).toBe('module-studio');
-    });
-  });
-
-  describe('机器人占用检查', () => {
-    it('机器人被占用时应该返回错误', async () => {
-      vi.mocked(isRobotOccupied).mockReturnValue(true);
-      vi.mocked(getRobotOccupiedBy).mockReturnValue('OtherAgent');
-
-      const occupied = isRobotOccupied('ClaudeCode');
-      expect(occupied).toBe(true);
-
-      const occupiedBy = getRobotOccupiedBy('ClaudeCode');
-      expect(occupiedBy).toBe('OtherAgent');
     });
   });
 });

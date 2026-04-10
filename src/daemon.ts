@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { WecomClient } from './client.js';
+import { logger } from './logger.js';
 
 const CONFIG_DIR = path.join(os.homedir(), '.wecom-aibot-mcp');
 const DAEMON_PORT = 18964;
@@ -352,7 +353,7 @@ class ConnectionDaemon {
   log(message: string): void {
     const timestamp = new Date().toISOString();
     const line = `[${timestamp}] ${message}`;
-    console.log(line);
+    logger.log(line);
     fs.appendFileSync(LOG_FILE, line + '\n');
   }
 
@@ -389,13 +390,13 @@ if (command === '--stop') {
     const pid = parseInt(fs.readFileSync(PID_FILE, 'utf-8'));
     try {
       process.kill(pid, 'SIGTERM');
-      console.log(`守护进程已停止 (PID: ${pid})`);
+      logger.log(`守护进程已停止 (PID: ${pid})`);
     } catch {
-      console.log('守护进程未运行');
+      logger.log('守护进程未运行');
     }
     fs.unlinkSync(PID_FILE);
   } else {
-    console.log('守护进程未运行');
+    logger.log('守护进程未运行');
   }
 } else if (command === '--status') {
   // 查看状态
@@ -403,10 +404,10 @@ if (command === '--stop') {
     let data = '';
     res.on('data', chunk => data += chunk);
     res.on('end', () => {
-      console.log(JSON.stringify(JSON.parse(data), null, 2));
+      logger.log(JSON.stringify(JSON.parse(data), null, 2));
     });
   }).on('error', () => {
-    console.log('守护进程未运行');
+    logger.log('守护进程未运行');
   });
 } else {
   // 启动守护进程

@@ -21,6 +21,7 @@ import {
 } from './connection-log.js';
 import { publishWecomMessage } from './message-bus.js';
 import { hashOperation } from './utils/hash.js';
+import { logger } from './logger.js';
 
 // 最大待处理消息数量
 const MAX_PENDING_MESSAGES = 100;
@@ -122,7 +123,7 @@ class WecomClient extends EventEmitter {
       // 重连成功后发送通知
       if (wasReconnecting) {
         this.sendText('【系统】连接已恢复').catch(err => {
-          console.error('[wecom] 发送恢复通知失败:', err);
+          logger.error('wecom', `发送恢复通知失败: ${err}`);
         });
         // 刷新待发送消息队列
         this.flushPendingMessages();
@@ -139,7 +140,7 @@ class WecomClient extends EventEmitter {
       if (this.disconnectNotifyCount < 1) {
         this.disconnectNotifyCount++;
         this.sendText('【系统】连接中断，正在重连...').catch(err => {
-          console.error('[wecom] 发送断线通知失败:', err);
+          logger.error('wecom', `发送断线通知失败: ${err}`);
         });
       }
     });
@@ -154,16 +155,16 @@ class WecomClient extends EventEmitter {
 
       // 检测授权相关错误（40058: invalid Request Parameter）
       if (err.message.includes('40058') || err.message.includes('invalid Request Parameter')) {
-        console.log('');
-        console.log('  ⚠️  机器人未授权或配置有误，请检查以下事项：');
-        console.log('');
-        console.log('  1. 新建机器人需要等待约 2 分钟同步时间，请稍后再试');
-        console.log('  2. 确认 Bot ID 和 Secret 是否正确');
-        console.log('  3. 完成机器人授权（任选其一）：');
-        console.log('     • 在电脑端企业微信APP中打开：机器人详情 → 可使用权限 → 授权');
-        console.log('     • 打开浏览器访问以下地址，使用手机企业微信扫码授权：');
-        console.log(`       ${this.getAuthUrl()}`);
-        console.log('');
+        logger.info('wecom', '');
+        logger.info('wecom', '  ⚠️  机器人未授权或配置有误，请检查以下事项：');
+        logger.info('wecom', '');
+        logger.info('wecom', '  1. 新建机器人需要等待约 2 分钟同步时间，请稍后再试');
+        logger.info('wecom', '  2. 确认 Bot ID 和 Secret 是否正确');
+        logger.info('wecom', '  3. 完成机器人授权（任选其一）：');
+        logger.info('wecom', '     • 在电脑端企业微信APP中打开：机器人详情 → 可使用权限 → 授权');
+        logger.info('wecom', '     • 打开浏览器访问以下地址，使用手机企业微信扫码授权：');
+        logger.info('wecom', `       ${this.getAuthUrl()}`);
+        logger.info('wecom', '');
       }
     });
 
@@ -174,14 +175,13 @@ class WecomClient extends EventEmitter {
 
     // 监听模板卡片事件（审批结果）
     this.wsClient.on('event.template_card_event', (frame: WsFrame) => {
-      console.log('[wecom] 收到 template_card_event 事件，完整 frame:');
-      console.log(JSON.stringify(frame, null, 2));
+      logger.log('wecom', `收到 template_card_event 事件: ${JSON.stringify(frame)}`);
       this.handleApprovalResponse(frame);
     });
 
     // 监听进入会话事件
     this.wsClient.on('event.enter_chat', (frame: WsFrame) => {
-      console.log('[wecom] 用户进入会话');
+      logger.log('wecom', '用户进入会话');
       this.wsClient.replyWelcome(frame, {
         msgtype: 'text',
         text: { content: '您好！Claude Code 审批通道已就绪。' },
@@ -194,7 +194,7 @@ class WecomClient extends EventEmitter {
     if (!body) return;
 
     // 打印完整消息结构（调试用）
-    console.log('[wecom] 收到消息帧:', JSON.stringify(body, null, 2).substring(0, 500));
+    logger.log('wecom', `收到消息帧: ${JSON.stringify(body).substring(0, 500)}`);
 
     const msgid = body.msgid;
     const from_userid = body.from?.userid || '';
@@ -220,7 +220,7 @@ class WecomClient extends EventEmitter {
     }
 
     if (quoteContent) {
-      console.log('[wecom] 检测到引用内容:', quoteContent.substring(0, 100));
+      logger.log('wecom', `检测到引用内容: ${quoteContent.substring(0, 100)}`);
     }
 
     if (content) {
@@ -240,12 +240,12 @@ class WecomClient extends EventEmitter {
       // v3.0: 检查队列上限
       if (this.messages.length >= MAX_PENDING_MESSAGES) {
         const dropped = this.messages.shift();
-        console.warn(`[wecom] 消息队列已满，丢弃旧消息: ${dropped?.msgid}`);
+        logger.warn('wecom', `消息队列已满，丢弃旧消息: ${dropped?.msgid}`);
       }
 
       this.messages.push(msgRecord);
       const source = chattype === 'group' ? `群聊(${chatid})` : '单聊';
-      console.log(`[wecom] 收到${source}消息: ${from_userid} -> ${content.slice(0, 100)}`);
+      logger.log('wecom', `收到${source}消息: ${from_userid} -> ${content.slice(0, 100)}`);
 
       // 发布到消息总线（用于 SSE 推送）
       publishWecomMessage({
@@ -263,9 +263,9 @@ class WecomClient extends EventEmitter {
 
   private handleApprovalResponse(frame: WsFrame) {
     const event = frame.body?.event;
-    console.log('[wecom] handleApprovalResponse body.event:', JSON.stringify(event));
+    logger.log('wecom', `handleApprovalResponse body.event: ${JSON.stringify(event)}`);
     if (!event) {
-      console.log('[wecom] event 为空，frame.body:', JSON.stringify(frame.body));
+      logger.log('wecom', `event 为空，frame.body: ${JSON.stringify(frame.body)}`);
       return;
     }
 
@@ -274,11 +274,11 @@ class WecomClient extends EventEmitter {
     const taskId = cardEvent?.task_id;
     const eventKey = cardEvent?.event_key; // 用户点击的按钮 key
 
-    console.log(`[wecom] taskId=${taskId}, eventKey=${eventKey}, approvals keys:`, [...this.approvals.keys()]);
+    logger.log('wecom', `taskId=${taskId}, eventKey=${eventKey}, approvals keys: ${[...this.approvals.keys()].join(',')}`);
 
     if (!taskId) return;
 
-    console.log(`[wecom] 收到审批响应: taskId=${taskId}, key=${eventKey}`);
+    logger.log('wecom', `收到审批响应: taskId=${taskId}, key=${eventKey}`);
 
     const approval = this.approvals.get(taskId);
     if (approval && !approval.resolved) {
@@ -296,19 +296,19 @@ class WecomClient extends EventEmitter {
       const content = `**审批结果**${toolInfo}\n\n${resultText}${descInfo}`;
 
       this.sendText(content).catch(err => {
-        console.error('[wecom] 发送审批确认失败:', err);
+        logger.error('wecom', `发送审批确认失败: ${err}`);
       });
     } else if (approval && approval.resolved) {
-      console.log(`[wecom] 审批已解决，跳过点击: ${taskId}, resolved=${approval.resolved}, result=${approval.result}`);
+      logger.log('wecom', `审批已解决，跳过点击: ${taskId}, resolved=${approval.resolved}, result=${approval.result}`);
     } else {
-      console.log(`[wecom] 审批记录不存在: ${taskId}`);
+      logger.log('wecom', `审批记录不存在: ${taskId}`);
     }
   }
 
   // 使用 reply 方法回复审批结果（会有引用效果）
   private async replyApprovalResult(frame: WsFrame, content: string): Promise<void> {
     if (!this.connected) {
-      console.log('[wecom] 未连接，无法回复');
+      logger.log('wecom', '未连接，无法回复');
       return;
     }
 
@@ -317,9 +317,9 @@ class WecomClient extends EventEmitter {
         msgtype: 'markdown',
         markdown: { content },
       });
-      console.log(`[wecom] 已回复审批结果`);
+      logger.log('wecom', '已回复审批结果');
     } catch (err) {
-      console.error(`[wecom] 回复失败: ${err}`);
+      logger.error('wecom', `回复失败: ${err}`);
     }
   }
 
@@ -356,11 +356,11 @@ class WecomClient extends EventEmitter {
         msgtype: 'markdown',
         markdown: { content: '【系统消息】机器人配置验证成功，此消息可忽略。' },
       });
-      console.log(`[wecom] 用户验证成功: ${targetId}`);
+      logger.log('wecom', `用户验证成功: ${targetId}`);
       return { valid: true };
     } catch (err: any) {
       const errorMsg = err.message || String(err);
-      console.error(`[wecom] 用户验证失败: ${errorMsg}`);
+      logger.error('wecom', `用户验证失败: ${errorMsg}`);
 
       // 解析错误类型
       if (errorMsg.includes('93006') || errorMsg.includes('invalid chatid')) {
@@ -383,7 +383,7 @@ class WecomClient extends EventEmitter {
 
     // 断线时将消息加入队列，等待重连后发送
     if (!this.connected) {
-      console.log('[wecom] 未连接，消息已加入队列');
+      logger.log('wecom', '未连接，消息已加入队列');
       this.pendingMessages.push({
         type: 'text',
         content,
@@ -398,10 +398,10 @@ class WecomClient extends EventEmitter {
         msgtype: 'markdown',
         markdown: { content },
       });
-      console.log(`[wecom] 已发送消息到 ${userId}`);
+      logger.log('wecom', `已发送消息到 ${userId}`);
       return true;
     } catch (err) {
-      console.error(`[wecom] 发送失败: ${err}`);
+      logger.error('wecom', `发送失败: ${err}`);
       // 发送失败也加入队列
       this.pendingMessages.push({
         type: 'text',
@@ -433,7 +433,7 @@ class WecomClient extends EventEmitter {
       const existing = this.findApprovalByHash(operationHash);
 
       if (existing) {
-        console.log(`[wecom] 复用已有审批: ${existing.taskId} (hash: ${operationHash.slice(0, 8)}...)`);
+        logger.log(`[wecom] 复用已有审批: ${existing.taskId} (hash: ${operationHash.slice(0, 8)}...)`);
         return existing.taskId;
       }
     }
@@ -454,7 +454,7 @@ class WecomClient extends EventEmitter {
 
     // 断线时将审批请求加入队列，等待重连后发送
     if (!this.connected) {
-      console.log('[wecom] 未连接，审批请求已加入队列');
+      logger.log('[wecom] 未连接，审批请求已加入队列');
       this.pendingMessages.push({
         type: 'approval',
         content: { title, description, requestId, targetUser: userId, taskId },
@@ -481,7 +481,7 @@ class WecomClient extends EventEmitter {
       },
     });
 
-    console.log(`[wecom] 已发送审批请求到 ${userId}: ${taskId}`);
+    logger.log(`[wecom] 已发送审批请求到 ${userId}: ${taskId}`);
     return taskId;
   }
 
@@ -495,11 +495,11 @@ class WecomClient extends EventEmitter {
     // 检查审批是否已解决
     const approval = this.approvals.get(taskId);
     if (!approval) {
-      console.log(`[wecom] 审批记录不存在: ${taskId}`);
+      logger.log(`[wecom] 审批记录不存在: ${taskId}`);
       return false;
     }
     if (approval.resolved) {
-      console.log(`[wecom] 审批已解决，跳过发送: ${taskId}`);
+      logger.log(`[wecom] 审批已解决，跳过发送: ${taskId}`);
       return false;
     }
 
@@ -521,7 +521,7 @@ class WecomClient extends EventEmitter {
       },
     });
 
-    console.log(`[wecom] 已发送排队审批请求到 ${userId}: ${taskId}`);
+    logger.log(`[wecom] 已发送排队审批请求到 ${userId}: ${taskId}`);
     return true;
   }
 
@@ -541,11 +541,11 @@ class WecomClient extends EventEmitter {
   setApprovalResult(taskId: string, result: 'allow-once' | 'deny', reason?: string): boolean {
     const approval = this.approvals.get(taskId);
     if (!approval) {
-      console.log(`[wecom] 设置审批结果失败：记录不存在 ${taskId}`);
+      logger.log(`[wecom] 设置审批结果失败：记录不存在 ${taskId}`);
       return false;
     }
     if (approval.resolved) {
-      console.log(`[wecom] 设置审批结果失败：已解决 ${taskId}`);
+      logger.log(`[wecom] 设置审批结果失败：已解决 ${taskId}`);
       return false;
     }
 
@@ -561,10 +561,10 @@ class WecomClient extends EventEmitter {
     const descInfo = approval.description ? `\n\n> ${approval.description}` : '';
 
     this.sendText(`**审批结果（超时自动决策）**${toolInfo}\n\n${resultText}${reasonText}${descInfo}`).catch(err => {
-      console.error('[wecom] 发送审批确认失败:', err);
+      logger.error('[wecom] 发送审批确认失败:', err);
     });
 
-    console.log(`[wecom] 超时自动决策已设置: ${taskId} → ${result}`);
+    logger.log(`[wecom] 超时自动决策已设置: ${taskId} → ${result}`);
     return true;
   }
 
@@ -666,7 +666,7 @@ class WecomClient extends EventEmitter {
       toolName: partial.toolName,
       toolInput: partial.toolInput,
     });
-    console.log(`[wecom] 注入恢复审批记录: ${taskId}`);
+    logger.log(`[wecom] 注入恢复审批记录: ${taskId}`);
   }
 
   // 清理过期消息
@@ -686,7 +686,7 @@ class WecomClient extends EventEmitter {
       return;
     }
 
-    console.log(`[wecom] 刷新待发送消息队列: ${this.pendingMessages.length} 条`);
+    logger.log(`[wecom] 刷新待发送消息队列: ${this.pendingMessages.length} 条`);
 
     while (this.pendingMessages.length > 0 && this.connected) {
       const msg = this.pendingMessages.shift();
@@ -718,11 +718,11 @@ class WecomClient extends EventEmitter {
               task_id: taskId,
             },
           });
-          console.log(`[wecom] 重发审批请求: ${taskId}`);
+          logger.log(`[wecom] 重发审批请求: ${taskId}`);
         }
-        console.log(`[wecom] 重发消息成功: ${msg.type}`);
+        logger.log(`[wecom] 重发消息成功: ${msg.type}`);
       } catch (err) {
-        console.error(`[wecom] 重发消息失败: ${err}`);
+        logger.error(`[wecom] 重发消息失败: ${err}`);
       }
     }
   }

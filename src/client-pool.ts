@@ -10,6 +10,7 @@
  */
 
 import { WecomClient } from './client.js';
+import { logger } from './logger.js';
 
 export interface WecomConfig {
   botId: string;
@@ -54,7 +55,7 @@ export function getOrCreateClient(projectDir: string, config?: WecomConfig): Wec
     clientPool.set(projectDir, client);
     configCache.set(projectDir, config);
 
-    console.log(`[client-pool] 已创建 client: ${projectDir}`);
+    logger.log(`[client-pool] 已创建 client: ${projectDir}`);
   }
 
   return client;
@@ -120,7 +121,7 @@ export function removeClient(projectDir: string): void {
   if (client) {
     client.disconnect();
     clientPool.delete(projectDir);
-    console.log(`[client-pool] 已移除 client: ${projectDir}`);
+    logger.log(`[client-pool] 已移除 client: ${projectDir}`);
   }
 }
 
@@ -133,7 +134,7 @@ export function clearAll(): void {
   }
   clientPool.clear();
   configCache.clear();
-  console.log('[client-pool] 已清空所有 client');
+  logger.log('[client-pool] 已清空所有 client');
 }
 
 /**

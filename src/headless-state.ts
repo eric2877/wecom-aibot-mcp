@@ -11,6 +11,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { logger } from './logger.js';
 
 export interface HeadlessState {
   projectDir: string;    // 项目目录路径
@@ -98,7 +99,7 @@ export function enterHeadlessMode(projectDir: string, agentName?: string, robotN
   }
 
   fs.writeFileSync(stateFilePath, JSON.stringify(state, null, 2));
-  console.log(`[headless] 已进入微信模式: ${stateFilePath}`);
+  logger.log(`[headless] 已进入微信模式: ${stateFilePath}`);
 
   // 2. 添加到全局索引
   const index = readHeadlessIndex();
@@ -126,7 +127,7 @@ export function exitHeadlessMode(projectDir?: string): HeadlessState | null {
   const state = loadHeadlessState(dir);
 
   if (!state) {
-    console.log('[headless] 未在微信模式');
+    logger.log('[headless] 未在微信模式');
     return null;
   }
 
@@ -134,7 +135,7 @@ export function exitHeadlessMode(projectDir?: string): HeadlessState | null {
   const stateFilePath = getProjectHeadlessFile(state.projectDir);
   if (fs.existsSync(stateFilePath)) {
     fs.unlinkSync(stateFilePath);
-    console.log(`[headless] 已删除状态文件: ${stateFilePath}`);
+    logger.log(`[headless] 已删除状态文件: ${stateFilePath}`);
   }
 
   // 2. 从全局索引移除
@@ -164,7 +165,7 @@ export function setAutoApprove(enabled: boolean, projectDir?: string): HeadlessS
   // 写入状态文件
   const stateFilePath = getProjectHeadlessFile(state.projectDir);
   fs.writeFileSync(stateFilePath, JSON.stringify(state, null, 2));
-  console.log(`[headless] 已${enabled ? '启用' : '禁用'}智能代批`);
+  logger.log(`[headless] 已${enabled ? '启用' : '禁用'}智能代批`);
 
   return state;
 }
@@ -184,7 +185,7 @@ export function loadHeadlessState(projectDir?: string): HeadlessState | null {
     const content = fs.readFileSync(stateFilePath, 'utf-8');
     return JSON.parse(content);
   } catch (err) {
-    console.error(`[headless] 解析状态文件失败: ${stateFilePath}`, err);
+    logger.error(`[headless] 解析状态文件失败: ${stateFilePath}`, err);
     return null;
   }
 }
@@ -216,7 +217,7 @@ function configureProjectHook(projectDir: string): void {
       const content = fs.readFileSync(settingsPath, 'utf-8');
       settings = JSON.parse(content);
     } catch (err) {
-      console.error(`[headless] 读取 settings.json 失败: ${settingsPath}`, err);
+      logger.error(`[headless] 读取 settings.json 失败: ${settingsPath}`, err);
     }
   }
 
@@ -240,7 +241,7 @@ function configureProjectHook(projectDir: string): void {
 
   // 写入配置
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-  console.log(`[headless] 已配置项目 Hook: ${settingsPath}`);
+  logger.log(`[headless] 已配置项目 Hook: ${settingsPath}`);
 }
 
 /**
@@ -266,10 +267,10 @@ function clearProjectHook(projectDir: string): void {
       }
 
       fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-      console.log(`[headless] 已清除项目 Hook: ${settingsPath}`);
+      logger.log(`[headless] 已清除项目 Hook: ${settingsPath}`);
     }
   } catch (err) {
-    console.error(`[headless] 清除项目 Hook 失败: ${settingsPath}`, err);
+    logger.error(`[headless] 清除项目 Hook 失败: ${settingsPath}`, err);
   }
 }
 
@@ -293,7 +294,7 @@ export function cleanupOrphanFiles(): void {
     } else {
       // 状态文件不存在，清理 Hook 配置
       clearProjectHook(projectDir);
-      console.log(`[headless] 清理孤儿项目: ${projectDir}`);
+      logger.log(`[headless] 清理孤儿项目: ${projectDir}`);
     }
   }
 
@@ -325,38 +326,6 @@ export function getAllHeadlessStates(): Array<{
   }
 
   return results;
-}
-
-/**
- * 检查机器人是否被占用
- *
- * 扫描所有 headless 项目，检查是否有使用该机器人
- */
-export function checkRobotOccupied(robotName: string, excludeProjectDir?: string): {
-  occupied: boolean;
-  by?: { projectDir: string; agentName: string };
-} {
-  const allStates = getAllHeadlessStates();
-
-  for (const { projectDir, state } of allStates) {
-    // 排除当前项目
-    if (excludeProjectDir && projectDir === excludeProjectDir) {
-      continue;
-    }
-
-    // 检查是否使用同一机器人
-    if (state.robotName === robotName) {
-      return {
-        occupied: true,
-        by: {
-          projectDir,
-          agentName: state.agentName || '未知',
-        },
-      };
-    }
-  }
-
-  return { occupied: false };
 }
 
 /**

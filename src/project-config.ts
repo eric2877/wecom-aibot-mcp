@@ -11,6 +11,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { logger } from './logger.js';
 
 export interface ProjectConfig {
   botId: string;
@@ -60,7 +61,7 @@ export function loadProjectConfig(projectDir: string): ProjectConfig | null {
 
     // 验证必需字段
     if (!config.botId || !config.secret || !config.defaultUser) {
-      console.error(`[project-config] 项目配置缺少必需字段: ${configPath}`);
+      logger.error(`[project-config] 项目配置缺少必需字段: ${configPath}`);
       return null;
     }
 
@@ -71,7 +72,7 @@ export function loadProjectConfig(projectDir: string): ProjectConfig | null {
       nameTag: config.nameTag,
     };
   } catch (err) {
-    console.error(`[project-config] 解析项目配置失败: ${configPath}`, err);
+    logger.error(`[project-config] 解析项目配置失败: ${configPath}`, err);
     return null;
   }
 }
@@ -92,7 +93,7 @@ export function saveProjectConfig(projectDir: string, config: ProjectConfig): vo
   }
 
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-  console.log(`[project-config] 已保存项目配置: ${configPath}`);
+  logger.log(`[project-config] 已保存项目配置: ${configPath}`);
 }
 
 /**
@@ -105,7 +106,7 @@ export function deleteProjectConfig(projectDir: string): void {
 
   if (fs.existsSync(configPath)) {
     fs.unlinkSync(configPath);
-    console.log(`[project-config] 已删除项目配置: ${configPath}`);
+    logger.log(`[project-config] 已删除项目配置: ${configPath}`);
   }
 }
 
@@ -163,7 +164,7 @@ export function updateWechatModeConfig(projectDir: string, updates: Partial<Wech
   // 合并更新
   const newConfig = { ...config, ...updates };
   fs.writeFileSync(configPath, JSON.stringify(newConfig, null, 2));
-  console.log(`[project-config] 已更新微信模式配置: ${configPath}`);
+  logger.log(`[project-config] 已更新微信模式配置: ${configPath}`);
 }
 
 /**
@@ -197,7 +198,7 @@ export function loadGlobalConfig(): ProjectConfig | null {
       defaultUser: WECOM_TARGET_USER,
     };
   } catch (err) {
-    console.error('[project-config] 加载全局配置失败:', err);
+    logger.error('[project-config] 加载全局配置失败:', err);
     return null;
   }
 }
@@ -217,7 +218,7 @@ export function getConfig(projectDir?: string): ProjectConfig | null {
   if (projectDir) {
     const projectConfig = loadProjectConfig(projectDir);
     if (projectConfig) {
-      console.log(`[project-config] 使用项目配置: ${projectDir}`);
+      logger.log(`[project-config] 使用项目配置: ${projectDir}`);
       return projectConfig;
     }
   }
@@ -225,7 +226,7 @@ export function getConfig(projectDir?: string): ProjectConfig | null {
   // 2. 回退全局配置
   const globalConfig = loadGlobalConfig();
   if (globalConfig) {
-    console.log('[project-config] 使用全局配置');
+    logger.log('[project-config] 使用全局配置');
     return globalConfig;
   }
 
@@ -312,6 +313,19 @@ const PERMISSION_HOOK = {
 };
 
 /**
+ * TaskCompleted hook 脚本路径
+ */
+const TASK_COMPLETED_HOOK_SCRIPT_PATH = path.join(os.homedir(), '.wecom-aibot-mcp', 'task-completed-hook.sh');
+
+/**
+ * TaskCompleted hook 配置
+ */
+const TASK_COMPLETED_HOOK = {
+  matcher: '',
+  hooks: [{ type: 'command', command: TASK_COMPLETED_HOOK_SCRIPT_PATH }],
+};
+
+/**
  * 添加 PermissionRequest hook 到项目 settings.json
  */
 export function addPermissionHook(projectDir: string): { success: boolean; path: string } {
@@ -343,10 +357,10 @@ export function addPermissionHook(projectDir: string): { success: boolean; path:
   // 写入配置
   try {
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-    console.log(`[project-config] 已添加 PermissionRequest hook: ${settingsPath}`);
+    logger.log(`[project-config] 已添加 PermissionRequest hook: ${settingsPath}`);
     return { success: true, path: settingsPath };
   } catch (err) {
-    console.error(`[project-config] 添加 PermissionRequest hook 失败: ${err}`);
+    logger.error(`[project-config] 添加 PermissionRequest hook 失败: ${err}`);
     return { success: false, path: settingsPath };
   }
 }
@@ -376,12 +390,87 @@ export function removePermissionHook(projectDir: string): { success: boolean; pa
 
       // 写入配置
       fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-      console.log(`[project-config] 已删除 PermissionRequest hook: ${settingsPath}`);
+      logger.log(`[project-config] 已删除 PermissionRequest hook: ${settingsPath}`);
       return { success: true, path: settingsPath, existed: true };
     }
     return { success: true, path: settingsPath, existed: false };
   } catch (err) {
-    console.error(`[project-config] 删除 PermissionRequest hook 失败: ${err}`);
+    logger.error(`[project-config] 删除 PermissionRequest hook 失败: ${err}`);
+    return { success: false, path: settingsPath, existed: false };
+  }
+}
+
+/**
+ * 添加 TaskCompleted hook 到项目 settings.json
+ */
+export function addTaskCompletedHook(projectDir: string): { success: boolean; path: string } {
+  const settingsPath = getProjectSettingsPath(projectDir);
+  const settingsDir = path.dirname(settingsPath);
+
+  // 确保目录存在
+  if (!fs.existsSync(settingsDir)) {
+    fs.mkdirSync(settingsDir, { recursive: true });
+  }
+
+  // 读取现有配置
+  let settings: Record<string, unknown> = {};
+  if (fs.existsSync(settingsPath)) {
+    try {
+      const content = fs.readFileSync(settingsPath, 'utf-8');
+      settings = JSON.parse(content);
+    } catch {
+      // ignore
+    }
+  }
+
+  // 添加 hooks.TaskCompleted
+  if (!settings.hooks) {
+    settings.hooks = {};
+  }
+  (settings.hooks as Record<string, unknown>).TaskCompleted = [TASK_COMPLETED_HOOK];
+
+  // 写入配置
+  try {
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+    logger.log(`[project-config] 已添加 TaskCompleted hook: ${settingsPath}`);
+    return { success: true, path: settingsPath };
+  } catch (err) {
+    logger.error(`[project-config] 添加 TaskCompleted hook 失败: ${err}`);
+    return { success: false, path: settingsPath };
+  }
+}
+
+/**
+ * 删除 TaskCompleted hook 从项目 settings.json
+ */
+export function removeTaskCompletedHook(projectDir: string): { success: boolean; path: string; existed: boolean } {
+  const settingsPath = getProjectSettingsPath(projectDir);
+
+  if (!fs.existsSync(settingsPath)) {
+    return { success: true, path: settingsPath, existed: false };
+  }
+
+  try {
+    const content = fs.readFileSync(settingsPath, 'utf-8');
+    const settings = JSON.parse(content);
+
+    // 删除 hooks.TaskCompleted
+    if (settings.hooks && (settings.hooks as Record<string, unknown>).TaskCompleted) {
+      delete (settings.hooks as Record<string, unknown>).TaskCompleted;
+
+      // 如果 hooks 为空，删除整个 hooks 字段
+      if (Object.keys(settings.hooks as Record<string, unknown>).length === 0) {
+        delete settings.hooks;
+      }
+
+      // 写入配置
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+      logger.log(`[project-config] 已删除 TaskCompleted hook: ${settingsPath}`);
+      return { success: true, path: settingsPath, existed: true };
+    }
+    return { success: true, path: settingsPath, existed: false };
+  } catch (err) {
+    logger.error(`[project-config] 删除 TaskCompleted hook 失败: ${err}`);
     return { success: false, path: settingsPath, existed: false };
   }
 }

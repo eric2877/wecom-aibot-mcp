@@ -40,18 +40,7 @@ describe('连接管理集成测试', () => {
     }
   });
 
-  describe('CM-INT-001: 机器人占用检查', () => {
-    it('未占用时应该返回 false', () => {
-      expect(connectionManager.isRobotOccupied('non-existent-robot')).toBe(false);
-    });
-
-    it('应该能获取占用者信息', () => {
-      const agentName = connectionManager.getRobotOccupiedBy('non-existent-robot');
-      expect(agentName).toBeUndefined();
-    });
-  });
-
-  describe('CM-INT-002: 连接状态', () => {
+  describe('CM-INT-001: 连接状态', () => {
     it('无连接时应该返回 disconnected', () => {
       const state = connectionManager.getConnectionState();
       expect(state.connected).toBe(false);
@@ -65,7 +54,7 @@ describe('连接管理集成测试', () => {
     });
   });
 
-  describe('CM-INT-003: 连接机器人', () => {
+  describe('CM-INT-002: 连接机器人', () => {
     it('连接不存在的机器人应该返回错误', async () => {
       const result = await connectionManager.connectRobot('non-existent-robot', 'TestAgent');
       expect(result.success).toBe(false);
@@ -73,21 +62,21 @@ describe('连接管理集成测试', () => {
     });
   });
 
-  describe('CM-INT-004: 获取客户端', () => {
+  describe('CM-INT-003: 获取客户端', () => {
     it('未连接的机器人应该返回 null', async () => {
       const client = await connectionManager.getClient('non-existent-robot');
       expect(client).toBeNull();
     });
   });
 
-  describe('CM-INT-005: 断开连接', () => {
+  describe('CM-INT-004: 断开连接', () => {
     it('断开不存在的机器人应该无操作', () => {
       // 不应该抛出错误
       connectionManager.disconnectRobot('unknown-robot');
     });
   });
 
-  describe('CM-INT-006: 更新智能体名称', () => {
+  describe('CM-INT-005: 更新智能体名称', () => {
     it('更新不存在的机器人应该无操作', () => {
       // 不应该抛出错误
       connectionManager.updateAgentName('unknown', 'NewAgent');

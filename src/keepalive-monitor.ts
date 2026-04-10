@@ -9,6 +9,7 @@
  */
 
 import { getClient, getConnectionState } from './connection-manager.js';
+import { logger } from './logger.js';
 
 const KEEPALIVE_INTERVAL_MINUTES = 5;  // 每 5 分钟
 const CHECK_INTERVAL_MS = 60000;       // 每分钟检查一次
@@ -21,7 +22,7 @@ let monitorTimer: NodeJS.Timeout | null = null;
  */
 export function startKeepaliveMonitor(): void {
   monitorTimer = setInterval(checkAndSendKeepalive, CHECK_INTERVAL_MS);
-  console.log('[keepalive] 保活监控已启动 (每 5 分钟发送审批提醒)');
+  logger.log('[keepalive] 保活监控已启动 (每 5 分钟发送审批提醒)');
 }
 
 /**
@@ -32,7 +33,7 @@ export function stopKeepaliveMonitor(): void {
     clearInterval(monitorTimer);
     monitorTimer = null;
   }
-  console.log('[keepalive] 保活监控已停止');
+  logger.log('[keepalive] 保活监控已停止');
 }
 
 /**
@@ -91,11 +92,11 @@ async function sendKeepaliveMessage(approval: any, minutes: number, robotName: s
     if (client) {
       const sent = await client.sendText(message);
       if (sent) {
-        console.log(`[keepalive] 已发送审批提醒: ${approval.taskId}, 等待 ${minutes} 分钟`);
+        logger.log(`[keepalive] 已发送审批提醒: ${approval.taskId}, 等待 ${minutes} 分钟`);
       }
     }
   } catch (err) {
-    console.error(`[keepalive] 发送审批提醒失败:`, err);
+    logger.error(`[keepalive] 发送审批提醒失败:`, err);
   }
 }
 

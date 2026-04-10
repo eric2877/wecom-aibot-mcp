@@ -19,8 +19,6 @@ export {
   getClient,
   getConnectionState,
   getAllConnectionStates,
-  isRobotOccupied,
-  getRobotOccupiedBy,
 } from './connection-manager.js';
 
 // HTTP 服务模块

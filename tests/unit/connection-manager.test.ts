@@ -4,7 +4,6 @@
  * 测试覆盖：
  * - CM-001: 连接机器人
  * - CM-002: 连接不存在的机器人
- * - CM-003: 机器人占用检查
  * - CM-004: 断开连接
  * - CM-005: 获取客户端
  * - CM-006: 重连机制
@@ -30,8 +29,8 @@ vi.mock('../../src/client.js', () => ({
 
 vi.mock('../../src/config-wizard.js', () => ({
   listAllRobots: vi.fn(() => [
-    { name: 'robot1', botId: 'bot1', targetUserId: 'user1', isDefault: true },
-    { name: 'robot2', botId: 'bot2', targetUserId: 'user2', isDefault: false }
+    { name: 'robot1', botId: 'bot1', targetUserId: 'user1' },
+    { name: 'robot2', botId: 'bot2', targetUserId: 'user2' }
   ])
 }));
 
@@ -52,8 +51,6 @@ vi.mock('fs', async (importOriginal) => {
 
 // 导入实际函数
 import {
-  isRobotOccupied,
-  getRobotOccupiedBy,
   disconnectRobot,
   getAllConnectionStates,
   getConnectionState,
@@ -70,17 +67,6 @@ describe('ConnectionManager', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-  });
-
-  describe('CM-003: 机器人占用检查', () => {
-    it('未占用时应该返回 false', () => {
-      expect(isRobotOccupied('non-existent-robot')).toBe(false);
-    });
-
-    it('应该能获取占用者的智能体名称', () => {
-      const agentName = getRobotOccupiedBy('non-existent-robot');
-      expect(agentName).toBeUndefined();
-    });
   });
 
   describe('CM-004: 断开连接', () => {
@@ -144,8 +130,8 @@ describe('ConnectionManager', () => {
     it('应该能通过名称匹配机器人', () => {
       const robotName = 'robot1';
       const robots = [
-        { name: 'robot1', botId: 'bot1', targetUserId: 'user1', isDefault: true },
-        { name: 'robot2', botId: 'bot2', targetUserId: 'user2', isDefault: false }
+        { name: 'robot1', botId: 'bot1', targetUserId: 'user1' },
+        { name: 'robot2', botId: 'bot2', targetUserId: 'user2' }
       ];
 
       const robot = robots.find(r =>
@@ -158,8 +144,8 @@ describe('ConnectionManager', () => {
     it('应该能通过 botId 匹配机器人', () => {
       const robotId = 'bot2';
       const robots = [
-        { name: 'robot1', botId: 'bot1', targetUserId: 'user1', isDefault: true },
-        { name: 'robot2', botId: 'bot2', targetUserId: 'user2', isDefault: false }
+        { name: 'robot1', botId: 'bot1', targetUserId: 'user1' },
+        { name: 'robot2', botId: 'bot2', targetUserId: 'user2' }
       ];
 
       const robot = robots.find(r =>
@@ -172,8 +158,8 @@ describe('ConnectionManager', () => {
     it('应该能通过部分名称匹配机器人', () => {
       const robotId = 'robot';
       const robots = [
-        { name: 'robot1', botId: 'bot1', targetUserId: 'user1', isDefault: true },
-        { name: 'robot2', botId: 'bot2', targetUserId: 'user2', isDefault: false }
+        { name: 'robot1', botId: 'bot1', targetUserId: 'user1' },
+        { name: 'robot2', botId: 'bot2', targetUserId: 'user2' }
       ];
 
       const robot = robots.find(r =>

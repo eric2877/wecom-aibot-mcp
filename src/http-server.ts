@@ -23,6 +23,7 @@ import { registerTools } from './tools/index.js';
 import { getClient, getConnectionState, getAllConnectionStates, connectAllRobots } from './connection-manager.js';
 import { subscribeWecomMessage, WecomMessage } from './message-bus.js';
 import { listAllRobots } from './config-wizard.js';
+import { logger } from './logger.js';
 
 // 固定端口
 export const HTTP_PORT = 18963;
@@ -33,18 +34,9 @@ export const HOOK_SCRIPT_PATH = path.join(os.homedir(), '.wecom-aibot-mcp', 'per
 let httpServer: http.Server | null = null;
 let startTime: number = 0;
 
-// ccId 序号计数器
-let sessionIndex = 0;
-
 // Session ID 生成器（MCP SSE 使用）
 function generateSessionId(): string {
   return `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-// ccId 生成器（基于序号）
-export function generateCcId(): string {
-  sessionIndex++;
-  return `cc-${sessionIndex}`;
 }
 
 // 推送微信消息到 MCP 客户端（通过 SSE）
@@ -58,7 +50,7 @@ export async function pushMessageToSession(robotName: string, message: {
 }): Promise<void> {
   // 推送给所有活跃的 session
   if (transports.size === 0) {
-    console.log('[http] 无活跃 session，无法推送消息');
+    logger.log('[http] 无活跃 session，无法推送消息');
     return;
   }
 
@@ -82,9 +74,9 @@ export async function pushMessageToSession(robotName: string, message: {
           }),
         },
       });
-      console.log(`[http] 已推送消息到 session ${sessionId}`);
+      logger.log(`[http] 已推送消息到 session ${sessionId}`);
     } catch (err) {
-      console.error(`[http] 推送消息到 session ${sessionId} 失败:`, err);
+      logger.error(`[http] 推送消息到 session ${sessionId} 失败:`, err);
     }
   }
 }
@@ -111,12 +103,12 @@ const ccIdRegistry = new Map<string, CCRegistryEntry>();
 
 export function registerCcId(ccId: string, robotName: string, agentName?: string): void {
   ccIdRegistry.set(ccId, { robotName, agentName });
-  console.log(`[ccid] 注册: ${ccId} → ${robotName} (${agentName || 'unknown'})`);
+  logger.log(`[ccid] 注册: ${ccId} → ${robotName} (${agentName || 'unknown'})`);
 }
 
 export function unregisterCcId(ccId: string): void {
   ccIdRegistry.delete(ccId);
-  console.log(`[ccid] 注销: ${ccId}`);
+  logger.log(`[ccid] 注销: ${ccId}`);
 }
 
 export function getRobotByCcId(ccId: string): string | null {
@@ -158,7 +150,7 @@ interface ApprovalEntry {
 // 使用 Map 存储多个待处理审批（按 taskId 索引）
 const pendingApprovals: Map<string, ApprovalEntry> = new Map();
 
-const VERSION = '1.2.0';
+const VERSION = '1.6.0';
 
 // Transport 和 Server 存储（每个 session 一个）
 interface TransportEntry {
@@ -192,7 +184,7 @@ function createMcpServerInstance(): McpServer {
 // 处理微信消息（路由给对应的 Session）
 function handleWecomMessage(msg: WecomMessage): void {
   if (transports.size === 0) {
-    console.log('[http] 无活跃 MCP session，跳过消息处理');
+    logger.log('[http] 无活跃 MCP session，跳过消息处理');
     return;
   }
 
@@ -201,7 +193,7 @@ function handleWecomMessage(msg: WecomMessage): void {
 
   if (targetCcId) {
     // 有引用，SSE 推送给对应的 CC
-    console.log(`[http] 消息路由给 ${targetCcId}`);
+    logger.log(`[http] 消息路由给 ${targetCcId}`);
     pushMessageToSession(msg.robotName, {
       msgid: msg.msgid,
       content: msg.content,
@@ -212,7 +204,7 @@ function handleWecomMessage(msg: WecomMessage): void {
     });
   } else if (getCCCount() === 1) {
     // 只有一个 CC 在线，直接推送（无需引用）
-    console.log(`[http] 单 CC 模式，直接推送`);
+    logger.log(`[http] 单 CC 模式，直接推送`);
     pushMessageToSession(msg.robotName, {
       msgid: msg.msgid,
       content: msg.content,
@@ -225,7 +217,7 @@ function handleWecomMessage(msg: WecomMessage): void {
     // 多 CC 在线但无引用：先尝试按 from_userid 匹配机器人的 targetUserId
     const matchedCcId = findCcIdByTargetUserId(msg.from_userid);
     if (matchedCcId) {
-      console.log(`[http] 多 CC 模式，按 from_userid 路由给 ${matchedCcId}`);
+      logger.log(`[http] 多 CC 模式，按 from_userid 路由给 ${matchedCcId}`);
       pushMessageToSession(msg.robotName, {
         msgid: msg.msgid,
         content: msg.content,
@@ -236,7 +228,7 @@ function handleWecomMessage(msg: WecomMessage): void {
       });
     } else {
       // 无法确定目标 CC，发送引用提示
-      console.log(`[http] 多 CC 模式，无引用，发送提示`);
+      logger.log(`[http] 多 CC 模式，无引用，发送提示`);
       sendNoReferencePrompt(msg);
     }
   }
@@ -319,7 +311,7 @@ export async function startHttpServer(
             // 没有 session ID，返回 405 表示不支持匿名 SSE
             // 客户端会先发送 POST 初始化，然后带着 session ID 来 GET
             if (!sessionId) {
-              console.log('[http] GET /mcp: 无 session ID，返回 405');
+              logger.log('[http] GET /mcp: 无 session ID，返回 405');
               res.writeHead(405, { 'Content-Type': 'text/plain' });
               res.end('Method Not Allowed: Session ID required for SSE stream');
               return;
@@ -327,13 +319,13 @@ export async function startHttpServer(
 
             const entry = transports.get(sessionId);
             if (!entry) {
-              console.log(`[http] GET /mcp: session ${sessionId} not found`);
+              logger.log(`[http] GET /mcp: session ${sessionId} not found`);
               res.writeHead(404, { 'Content-Type': 'text/plain' });
               res.end('Session not found');
               return;
             }
 
-            console.log(`[http] 建立 SSE 流: session ${sessionId}`);
+            logger.log(`[http] 建立 SSE 流: session ${sessionId}`);
             await entry.transport.handleRequest(req, res);
             return;
           }
@@ -365,7 +357,7 @@ export async function startHttpServer(
               const newTransport = new StreamableHTTPServerTransport({
                 sessionIdGenerator: generateSessionId,
                 onsessioninitialized: (sid) => {
-                  console.log(`[http] Session 初始化: ${sid}`);
+                  logger.log(`[http] Session 初始化: ${sid}`);
                   transports.set(sid, { transport: newTransport, server: newServer });
                 },
               });
@@ -374,7 +366,7 @@ export async function startHttpServer(
               newTransport.onclose = () => {
                 const sid = newTransport.sessionId;
                 if (sid) {
-                  console.log(`[http] Session 关闭: ${sid}`);
+                  logger.log(`[http] Session 关闭: ${sid}`);
                   transports.delete(sid);
                 }
               };
@@ -405,7 +397,7 @@ export async function startHttpServer(
             return;
           }
         } catch (err) {
-          console.error('[http] MCP 请求处理失败:', err);
+          logger.error('[http] MCP 请求处理失败:', err);
           if (!res.headersSent) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: (err as Error).message }));
@@ -456,7 +448,7 @@ export async function startHttpServer(
 
       // 临时调试端点：手动进入 headless 模式
       if (req.method === 'POST' && url === '/debug/enter_headless') {
-        const ccId = generateCcId();
+        const ccId = `debug-${Date.now()}`;
         registerCcId(ccId, 'ClaudeCode', '调试用户');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -464,7 +456,7 @@ export async function startHttpServer(
           ccId,
           message: '已进入 headless 模式（调试）'
         }));
-        console.log(`[http] [DEBUG] 进入 headless 模式: ccId: ${ccId}`);
+        logger.log(`[http] [DEBUG] 进入 headless 模式: ccId: ${ccId}`);
         return;
       }
 
@@ -473,14 +465,14 @@ export async function startHttpServer(
         ccIdRegistry.clear();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'exited', message: '已退出 headless 模式（调试）' }));
-        console.log(`[http] [DEBUG] 退出 headless 模式`);
+        logger.log(`[http] [DEBUG] 退出 headless 模式`);
         return;
       }
 
       // 调试端点：模拟断开指定机器人的连接（不删除状态，保留待发送队列）
       if (req.method === 'POST' && url.startsWith('/debug/disconnect/')) {
         const robotName = decodeURIComponent(url.replace('/debug/disconnect/', ''));
-        console.log(`[http] [DEBUG] 模拟断开机器人: ${robotName}`);
+        logger.log(`[http] [DEBUG] 模拟断开机器人: ${robotName}`);
         const client = await getClient(robotName);
         if (client) {
           client.disconnect();
@@ -496,7 +488,7 @@ export async function startHttpServer(
       // 调试端点：触发重连（通过 getClient 自动重连）
       if (req.method === 'POST' && url.startsWith('/debug/reconnect/')) {
         const robotName = decodeURIComponent(url.replace('/debug/reconnect/', ''));
-        console.log(`[http] [DEBUG] 触发重连机器人: ${robotName}`);
+        logger.log(`[http] [DEBUG] 触发重连机器人: ${robotName}`);
         const client = await getClient(robotName);
         if (client && client.isConnected()) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -557,8 +549,8 @@ export async function startHttpServer(
     });
 
     httpServer.listen(port, '127.0.0.1', async () => {
-      console.log(`[http] MCP Server 已启动: http://127.0.0.1:${port}`);
-      console.log(`[http] MCP endpoint: http://127.0.0.1:${port}/mcp (stateless mode)`);
+      logger.log(`[http] MCP Server 已启动: http://127.0.0.1:${port}`);
+      logger.log(`[http] MCP endpoint: http://127.0.0.1:${port}/mcp (stateless mode)`);
 
       // 自动连接所有配置的机器人
       await connectAllRobots();
@@ -572,7 +564,7 @@ export function stopHttpServer(): void {
   if (httpServer) {
     httpServer.close();
     httpServer = null;
-    console.log('[http] HTTP Server 已停止');
+    logger.log('[http] HTTP Server 已停止');
   }
 }
 
@@ -587,11 +579,11 @@ async function handleApprovalRequest(req: http.IncomingMessage, res: http.Server
 
     if (requestedRobotName) {
       robotName = requestedRobotName;
-      console.log(`[http] 审批路由: 请求指定 robotName=${robotName}`);
+      logger.log(`[http] 审批路由: 请求指定 robotName=${robotName}`);
     } else if (ccId) {
       robotName = getRobotByCcId(ccId);
       if (robotName) {
-        console.log(`[http] 审批路由: ccId=${ccId} → ${robotName}`);
+        logger.log(`[http] 审批路由: ccId=${ccId} → ${robotName}`);
       }
     }
     if (!robotName) {
@@ -599,7 +591,7 @@ async function handleApprovalRequest(req: http.IncomingMessage, res: http.Server
       const connectedRobot = states.find(s => s.connected);
       if (connectedRobot) {
         robotName = connectedRobot.robotName;
-        console.log(`[http] 审批路由: 回退到第一个已连接机器人 ${robotName}`);
+        logger.log(`[http] 审批路由: 回退到第一个已连接机器人 ${robotName}`);
       }
     }
 
@@ -631,7 +623,7 @@ async function handleApprovalRequest(req: http.IncomingMessage, res: http.Server
     const requestId = `hook_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const taskId = await client.sendApprovalRequest(title, description, requestId);
 
-    console.log(`[http] 审批请求已发送: ${taskId} (机器人: ${robotName})`);
+    logger.log(`[http] 审批请求已发送: ${taskId} (机器人: ${robotName})`);
 
     // 存储审批并启动超时计时器
     const entry: ApprovalEntry = {
@@ -649,7 +641,7 @@ async function handleApprovalRequest(req: http.IncomingMessage, res: http.Server
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ taskId, status: 'pending' }));
   } catch (err) {
-    console.error('[http] 审批请求处理失败:', err);
+    logger.error('[http] 审批请求处理失败:', err);
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: (err as Error).message }));
   }
@@ -797,14 +789,14 @@ async function handlePushNotification(req: http.IncomingMessage, res: http.Serve
         });
         sent++;
       } catch (err) {
-        console.error(`[http] 推送到 session ${sessionId} 失败:`, err);
+        logger.error(`[http] 推送到 session ${sessionId} 失败:`, err);
       }
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, method: method || 'notifications/message', sessions: sent }));
   } catch (err) {
-    console.error('[http] 推送通知失败:', err);
+    logger.error('[http] 推送通知失败:', err);
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: (err as Error).message }));
   }
@@ -865,5 +857,5 @@ function readRequestBody(req: http.IncomingMessage): Promise<string> {
 }
 
 export function cleanupPortFile(): void {
-  console.log('[http] 使用固定端口:', HTTP_PORT);
+  logger.log('[http] 使用固定端口:', HTTP_PORT);
 }

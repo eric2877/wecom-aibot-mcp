@@ -6,6 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { logger } from './logger.js';
 
 const CONFIG_DIR = path.join(process.env.HOME || '', '.wecom-aibot-mcp');
 const LOG_FILE = path.join(CONFIG_DIR, 'connection.log');
@@ -60,20 +61,20 @@ function writeLog(record: ConnectionRecord): void {
   const time = record.timestamp;
   switch (record.event) {
     case 'connected':
-      console.log(`[${time}] [conn] WebSocket 连接已建立`);
+      logger.log(`[${time}] [conn] WebSocket 连接已建立`);
       break;
     case 'authenticated':
-      console.log(`[${time}] [conn] 认证成功`);
+      logger.log(`[${time}] [conn] 认证成功`);
       break;
     case 'disconnected':
       const duration = record.connectionDuration ? ` (持续 ${record.connectionDuration}s)` : '';
-      console.log(`[${time}] [conn] 连接断开: ${record.reason || '未知'}${duration}`);
+      logger.log(`[${time}] [conn] 连接断开: ${record.reason || '未知'}${duration}`);
       break;
     case 'reconnecting':
-      console.log(`[${time}] [conn] 正在重连 (第 ${record.attempt} 次)`);
+      logger.log(`[${time}] [conn] 正在重连 (第 ${record.attempt} 次)`);
       break;
     case 'error':
-      console.error(`[${time}] [conn] 错误: ${record.errorMessage}`);
+      logger.error(`[${time}] [conn] 错误: ${record.errorMessage}`);
       break;
   }
 }
@@ -245,7 +246,7 @@ export function cleanupOldLogs(daysToKeep: number = 30): void {
   });
 
   fs.writeFileSync(LOG_FILE, recentLines.join('\n') + '\n', 'utf-8');
-  console.log(`[conn] 已清理 ${lines.length - recentLines.length} 条旧日志`);
+  logger.log(`[conn] 已清理 ${lines.length - recentLines.length} 条旧日志`);
 }
 
 // 导出日志文件路径

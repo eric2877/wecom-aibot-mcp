@@ -18,6 +18,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { WecomClient } from './client.js';
 import { listAllRobots } from './config-wizard.js';
+import { logger } from './logger.js';
 
 // 机器人配置
 interface RobotConfig {
@@ -94,21 +95,6 @@ function waitForConnection(client: WecomClient, timeoutMs: number): Promise<bool
 }
 
 /**
- * 检查机器人是否被占用（当前进程内）
- */
-export function isRobotOccupied(robotName: string): boolean {
-  return connectionPool.has(robotName);
-}
-
-/**
- * 获取占用机器人的智能体名称
- */
-export function getRobotOccupiedBy(robotName: string): string | undefined {
-  const state = connectionPool.get(robotName);
-  return state?.agentName;
-}
-
-/**
  * 连接到指定机器人
  * 注意：MCP Server 启动时已自动连接所有机器人
  * 此函数主要用于：
@@ -168,7 +154,7 @@ export async function connectRobot(
 
   connectionPool.set(robot.name, state);
 
-  console.log(`[connection] 已连接机器人: ${robot.name}`);
+  logger.log(`[connection] 已连接机器人: ${robot.name}`);
 
   return {
     success: true,
@@ -184,7 +170,7 @@ export function disconnectRobot(robotName: string): void {
   if (state) {
     state.client.disconnect();
     connectionPool.delete(robotName);
-    console.log(`[connection] 已断开机器人: ${robotName}`);
+    logger.log(`[connection] 已断开机器人: ${robotName}`);
   }
 }
 
@@ -206,16 +192,16 @@ export async function getClient(robotName: string): Promise<WecomClient | null> 
   // 断开了，尝试重连
   const robot = await findRobotConfig(state.robotName);
   if (robot) {
-    console.log(`[connection] 重连机器人: ${robot.name}`);
+    logger.log(`[connection] 重连机器人: ${robot.name}`);
     state.client = new WecomClient(robot.botId, robot.secret, robot.targetUserId, robot.name);
     state.client.connect();
 
     const connected = await waitForConnection(state.client, 5000);
     if (connected) {
-      console.log(`[connection] 重连成功: ${robot.name}`);
+      logger.log(`[connection] 重连成功: ${robot.name}`);
       return state.client;
     } else {
-      console.log(`[connection] 重连失败: ${robot.name}`);
+      logger.log(`[connection] 重连失败: ${robot.name}`);
       return null;
     }
   }
@@ -296,24 +282,24 @@ export async function connectAllRobots(): Promise<void> {
   const robots = listAllRobots();
 
   if (robots.length === 0) {
-    console.log('[connection] 未配置任何机器人');
+    logger.log('[connection] 未配置任何机器人');
     return;
   }
 
   // 多机器人场景：不自动连接，等待用户选择
   if (robots.length > 1) {
-    console.log(`[connection] 检测到 ${robots.length} 个机器人，等待用户选择`);
+    logger.log(`[connection] 检测到 ${robots.length} 个机器人，等待用户选择`);
     return;
   }
 
   // 单机器人场景：自动连接
-  console.log(`[connection] 自动连接机器人: ${robots[0].name}`);
+  logger.log(`[connection] 自动连接机器人: ${robots[0].name}`);
 
   const result = await connectRobot(robots[0].name);
 
   if (result.success) {
-    console.log(`[connection] ✅ ${robots[0].name} 已连接`);
+    logger.log(`[connection] ✅ ${robots[0].name} 已连接`);
   } else {
-    console.log(`[connection] ❌ ${robots[0].name} 连接失败: ${result.error}`);
+    logger.log(`[connection] ❌ ${robots[0].name} 连接失败: ${result.error}`);
   }
 }

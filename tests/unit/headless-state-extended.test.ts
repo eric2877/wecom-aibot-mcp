@@ -7,8 +7,7 @@
  * - HS-103: setAutoApprove
  * - HS-104: cleanupOrphanFiles
  * - HS-105: getAllHeadlessStates
- * - HS-106: checkRobotOccupied
- * - HS-107: clearAllProjectHooks
+ * - HS-106: clearAllProjectHooks
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -46,7 +45,6 @@ import {
   isHeadlessMode,
   setAutoApprove,
   getAllHeadlessStates,
-  checkRobotOccupied,
   clearAllProjectHooks,
   cleanupOrphanFiles,
 } from '../../src/headless-state';
@@ -245,46 +243,7 @@ describe('Headless State - 扩展覆盖', () => {
     });
   });
 
-  describe('HS-107: checkRobotOccupied', () => {
-    it('应该能检查机器人占用情况', () => {
-      mockFs.existsSync.mockReturnValue(true);
-      mockFs.readFileSync.mockImplementation((filePath: string) => {
-        if (filePath.includes('headless-index.json')) {
-          return JSON.stringify(['/test/project1']);
-        }
-        return JSON.stringify({
-          projectDir: '/test/project1',
-          timestamp: Date.now(),
-          robotName: 'robot-1',
-          agentName: 'agent-1',
-        });
-      });
-
-      const result = checkRobotOccupied('robot-1');
-
-      expect(result).toHaveProperty('occupied');
-    });
-
-    it('排除当前项目时应该返回未占用', () => {
-      mockFs.existsSync.mockReturnValue(true);
-      mockFs.readFileSync.mockImplementation((filePath: string) => {
-        if (filePath.includes('headless-index.json')) {
-          return JSON.stringify(['/test/project1']);
-        }
-        return JSON.stringify({
-          projectDir: '/test/project1',
-          timestamp: Date.now(),
-          robotName: 'robot-1',
-        });
-      });
-
-      const result = checkRobotOccupied('robot-1', '/test/project1');
-
-      expect(result.occupied).toBe(false);
-    });
-  });
-
-  describe('HS-108: clearAllProjectHooks', () => {
+  describe('HS-107: clearAllProjectHooks', () => {
     it('应该能清理所有 Hook 配置', () => {
       mockFs.existsSync.mockReturnValue(true);
       mockFs.readFileSync.mockImplementation((filePath: string) => {
@@ -303,7 +262,7 @@ describe('Headless State - 扩展覆盖', () => {
     });
   });
 
-  describe('HS-109: cleanupOrphanFiles', () => {
+  describe('HS-108: cleanupOrphanFiles', () => {
     it('应该能清理孤儿状态文件', () => {
       mockFs.existsSync.mockImplementation((filePath: string) => {
         // 状态文件存在
@@ -333,7 +292,7 @@ describe('Headless State - 扩展覆盖', () => {
     });
   });
 
-  describe('HS-110: getProjectHeadlessFile', () => {
+  describe('HS-109: getProjectHeadlessFile', () => {
     it('应该返回正确的路径', () => {
       const result = getProjectHeadlessFile('/test/project');
 
