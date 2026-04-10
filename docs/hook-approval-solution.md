@@ -66,39 +66,24 @@ if (!this.connected) {
 - 断线时审批记录已创建，Hook 轮询能找到
 - 重连后使用原始 taskId 发送审批卡片，结果能正确匹配
 
-### 2.2 超时处理：发送提醒而非拒绝
+### 2.2 超时处理：无限等待
 
-**修改文件**：`src/http-server.ts`
+**修改文件**：Hook 脚本（由 `src/config-wizard.ts` 生成）
 
-**修改前**：
-```typescript
-async function onApprovalTimeout(taskId: string): Promise<void> {
-  // ...
-  if (result === 'pending') {
-    entry.status = 'deny';  // ❌ 直接拒绝
-    await client.sendText(`【审批超时】已自动拒绝...`);
-  }
-  pendingApprovals.delete(taskId);
-}
-```
+**实现逻辑**：
 
-**修改后**：
-```typescript
-async function onApprovalTimeout(taskId: string): Promise<void> {
-  // ...
-  if (result === 'pending') {
-    // 发送提醒，不改变状态
-    await client.sendText(`【审批提醒】您有 ${waitTime} 分钟前的审批请求待处理...`);
-
-    // 重新设置超时计时器（再等 10 分钟）
-    entry.timer = setTimeout(() => onApprovalTimeout(taskId), APPROVAL_TIMEOUT_MS);
-  }
-}
+```bash
+# 轮询审批结果（无限等待）
+while true; do
+  sleep 2
+  # 检查审批结果...
+  # 用户点击后返回 allow/deny
+done
 ```
 
 **效果**：
-- 审批始终 pending，CC 持续阻塞等待
-- 每隔 10 分钟发送提醒，不会自动拒绝
+- Hook 无限阻塞等待用户响应
+- 用户必须点击审批按钮才能继续
 
 ### 2.3 Hook Debug 日志
 
