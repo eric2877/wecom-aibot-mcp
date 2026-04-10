@@ -1,5 +1,7 @@
 # @vrs-soft/wecom-aibot-mcp
 
+中文 | [English](README_EN.md)
+
 企业微信智能机器人 MCP 服务 - Claude Code 远程审批通道
 
 > 通过企业微信智能机器人实现 Claude Code 的远程审批和消息推送，离开电脑也能处理决策请求。
