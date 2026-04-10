@@ -142,6 +142,7 @@ npx @vrs-soft/wecom-aibot-mcp
 | `npx @vrs-soft/wecom-aibot-mcp --add` | 添加新机器人 |
 | `npx @vrs-soft/wecom-aibot-mcp --delete` | 删除机器人配置 |
 | `npx @vrs-soft/wecom-aibot-mcp --uninstall` | 完全卸载 |
+| `npx @vrs-soft/wecom-aibot-mcp --debug` | 前台启动（输出调试日志） |
 
 ### 添加新机器人
 
@@ -288,6 +289,36 @@ Claude：执行命令，发送结果到群聊
   "occupied": 0
 }
 ```
+
+### 超时审批配置
+
+在 `~/.wecom-aibot-mcp/config.json` 中可配置审批超时时间：
+
+```json
+{
+  "botId": "bot-xxx",
+  "secret": "sec-yyy",
+  "targetUserId": "user1",
+  "nameTag": "机器人1",
+  "autoApproveTimeout": 600
+}
+```
+
+- `autoApproveTimeout`: 审批超时时间（秒），默认 600 秒（10 分钟）
+- 超时后，项目目录内的操作会自动允许，项目外的操作会自动拒绝
+
+### 调试模式
+
+使用 `--debug` 启动可在终端查看 hook 脚本的调试日志：
+
+```bash
+npx @vrs-soft/wecom-aibot-mcp --debug
+```
+
+调试日志会输出到 stderr，包括：
+- 审批请求拦截信息
+- 超时时间配置
+- 操作类型判断详情
 
 ## 故障排查
 
