@@ -92,7 +92,7 @@ export function deleteConfig() {
       if (claudeConfig.mcpServers?.['wecom-aibot']) {
         delete claudeConfig.mcpServers['wecom-aibot'];
         fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
-        logger.log('[config] 已从 ~/.claude.json 删除 wecom-aibot 配置');
+        console.log('[config] 已从 ~/.claude.json 删除 wecom-aibot 配置');
       }
     }
   } catch (err) {
@@ -116,13 +116,13 @@ export function deleteHook() {
           delete settings.hooks['PermissionRequest'];
         }
         fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(settings, null, 2));
-        logger.log('[config] 已删除 PermissionRequest hook');
+        console.log('[config] 已删除 PermissionRequest hook');
       }
 
       // 删除 hook 脚本文件
       if (fs.existsSync(HOOK_SCRIPT_PATH)) {
         fs.unlinkSync(HOOK_SCRIPT_PATH);
-        logger.log('[config] 已删除 hook 脚本文件');
+        console.log('[config] 已删除 hook 脚本文件');
       }
     }
   } catch (err) {
@@ -136,7 +136,7 @@ export function deleteSkills() {
     const skillDir = path.join(os.homedir(), '.claude', 'skills', 'headless-mode');
     if (fs.existsSync(skillDir)) {
       fs.rmSync(skillDir, { recursive: true });
-      logger.log('[config] 已删除 skill 文件');
+      console.log('[config] 已删除 skill 文件');
     }
   } catch (err) {
     logger.error('[config] 删除 skill 失败:', err);
@@ -150,7 +150,7 @@ export function deleteRobotConfig(robotName: string): boolean {
     const robot = robots.find(r => r.name === robotName);
 
     if (!robot) {
-      logger.log(`[config] 机器人 "${robotName}" 不存在`);
+      console.log(`[config] 机器人 "${robotName}" 不存在`);
       return false;
     }
 
@@ -183,7 +183,7 @@ export function deleteRobotConfig(robotName: string): boolean {
     }
 
     if (!configFile) {
-      logger.log(`[config] 未找到机器人 "${robotName}" 的配置文件`);
+      console.log(`[config] 未找到机器人 "${robotName}" 的配置文件`);
       return false;
     }
 
@@ -200,18 +200,18 @@ export function deleteRobotConfig(robotName: string): boolean {
         const newDefaultConfig = JSON.parse(fs.readFileSync(newDefaultFile, 'utf-8'));
         fs.writeFileSync(BOT_CONFIG_FILE, JSON.stringify(newDefaultConfig, null, 2));
         fs.unlinkSync(newDefaultFile);
-        logger.log(`[config] 已将 "${newDefaultConfig.nameTag || otherRobotFiles[0]}" 提升为默认机器人`);
+        console.log(`[config] 已将 "${newDefaultConfig.nameTag || otherRobotFiles[0]}" 提升为默认机器人`);
       } else {
         // 没有其他机器人，直接删除默认配置
         fs.unlinkSync(BOT_CONFIG_FILE);
-        logger.log('[config] 已删除最后一个机器人配置');
+        console.log('[config] 已删除最后一个机器人配置');
       }
     } else {
       // 不是默认机器人，直接删除
       fs.unlinkSync(configFile);
     }
 
-    logger.log(`[config] 已删除机器人: ${robotName}`);
+    console.log(`[config] 已删除机器人: ${robotName}`);
     return true;
   } catch (err) {
     logger.error('[config] 删除机器人配置失败:', err);
@@ -223,7 +223,7 @@ export function deleteRobotConfig(robotName: string): boolean {
 export function deleteMcpConfig(instanceName: string): boolean {
   try {
     if (!fs.existsSync(CLAUDE_CONFIG_FILE)) {
-      logger.log('[config] ~/.claude.json 不存在');
+      console.log('[config] ~/.claude.json 不存在');
       return false;
     }
 
@@ -231,20 +231,20 @@ export function deleteMcpConfig(instanceName: string): boolean {
     const claudeConfig = JSON.parse(content);
 
     if (!claudeConfig.mcpServers?.[instanceName]) {
-      logger.log(`[config] 实例 "${instanceName}" 不存在`);
+      console.log(`[config] 实例 "${instanceName}" 不存在`);
       return false;
     }
 
     // 检查是否是 wecom-aibot 相关配置
     const serverConfig = claudeConfig.mcpServers[instanceName];
     if (!serverConfig?.env?.WECOM_BOT_ID) {
-      logger.log(`[config] "${instanceName}" 不是企业微信机器人配置`);
+      console.log(`[config] "${instanceName}" 不是企业微信机器人配置`);
       return false;
     }
 
     delete claudeConfig.mcpServers[instanceName];
     fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
-    logger.log(`[config] 已删除实例: ${instanceName}`);
+    console.log(`[config] 已删除实例: ${instanceName}`);
     return true;
   } catch (err) {
     logger.error('[config] 删除配置失败:', err);
@@ -257,24 +257,32 @@ export async function deleteRobotConfigInteractive(robotName?: string): Promise<
   const robots = listAllRobots();
 
   if (robots.length === 0) {
-    logger.log('[config] 没有找到任何企业微信机器人配置');
+    console.log('[config] 没有找到任何企业微信机器人配置');
     return;
   }
 
-  // 如果提供了机器人名称，直接删除
+  // 始终显示列表
+  console.log('\n企业微信机器人配置列表：\n');
+  robots.forEach((robot, idx) => {
+    const isDefault = idx === 0;
+    const defaultTag = isDefault ? ' [默认]' : '';
+    console.log(`  ${idx + 1}. ${robot.name}${defaultTag} (Bot ID: ${robot.botId.slice(0, 12)}..., 用户: ${robot.targetUserId})`);
+  });
+
+  // 如果提供了机器人名称，验证并删除
   if (robotName) {
+    const found = robots.find(r => r.name === robotName);
+    if (!found) {
+      console.log(`\n[config] 未找到名为 "${robotName}" 的机器人`);
+      return;
+    }
+    console.log(`\n[config] 将删除机器人: ${robotName}`);
     deleteRobotConfig(robotName);
     return;
   }
 
-  // 否则显示列表让用户选择
-  logger.log('\n企业微信机器人配置列表：\n');
-  robots.forEach((robot, idx) => {
-    const isDefault = idx === 0;
-    const defaultTag = isDefault ? ' [默认]' : '';
-    logger.log(`  ${idx + 1}. ${robot.name}${defaultTag} (Bot ID: ${robot.botId.slice(0, 12)}..., 用户: ${robot.targetUserId})`);
-  });
-  logger.log(`  0. 取消\n`);
+  // 没有提供名称，让用户选择
+  console.log(`  0. 取消\n`);
 
   const rl = createRL();
   try {
@@ -282,12 +290,12 @@ export async function deleteRobotConfigInteractive(robotName?: string): Promise<
     const choiceNum = parseInt(choice);
 
     if (choiceNum === 0) {
-      logger.log('[config] 已取消');
+      console.log('[config] 已取消');
       return;
     }
 
     if (choiceNum < 1 || choiceNum > robots.length) {
-      logger.log('[config] 无效选择');
+      console.log('[config] 无效选择');
       return;
     }
 
@@ -296,9 +304,9 @@ export async function deleteRobotConfigInteractive(robotName?: string): Promise<
 
     if (confirm.toLowerCase() === 'y') {
       deleteRobotConfig(selected.name);
-      logger.log(`[config] MCP 配置保留，其他机器人仍可正常使用\n`);
+      console.log(`[config] MCP 配置保留，其他机器人仍可正常使用\n`);
     } else {
-      logger.log('[config] 已取消');
+      console.log('[config] 已取消');
     }
   } finally {
     rl.close();
@@ -313,7 +321,7 @@ export async function deleteMcpConfigInteractive(instanceName?: string): Promise
 
 // 完全卸载（删除所有相关配置）
 export function uninstall() {
-  logger.log('\n[config] 开始卸载 wecom-aibot-mcp...\n');
+  console.log('\n[config] 开始卸载 wecom-aibot-mcp...\n');
 
   deleteConfig();  // 删除 ~/.claude.json 中的配置
   deleteHook();
@@ -324,7 +332,7 @@ export function uninstall() {
   if (fs.existsSync(headlessIndexFile)) {
     try {
       fs.unlinkSync(headlessIndexFile);
-      logger.log('[config] 已删除 headless 状态索引');
+      console.log('[config] 已删除 headless 状态索引');
     } catch (err) {
       logger.error('[config] 删除 headless 状态索引失败:', err);
     }
@@ -351,18 +359,18 @@ export function uninstall() {
       // 最后尝试删除目录本身
       try {
         fs.rmSync(CONFIG_DIR, { recursive: true, force: true });
-        logger.log('[config] 已删除配置目录');
+        console.log('[config] 已删除配置目录');
       } catch {
         // 目录可能被其他进程占用，下次启动时会清理
-        logger.log('[config] 配置目录已清空（部分文件可能被占用）');
+        console.log('[config] 配置目录已清空（部分文件可能被占用）');
       }
     } catch (err) {
       logger.error('[config] 删除配置目录失败:', err);
     }
   }
 
-  logger.log('\n[config] 卸载完成');
-  logger.log('[config] 如需重新安装，请运行: npx @vrs-soft/wecom-aibot-mcp\n');
+  console.log('\n[config] 卸载完成');
+  console.log('[config] 如需重新安装，请运行: npx @vrs-soft/wecom-aibot-mcp\n');
 }
 
 // 生成并写入 hook 脚本（HTTP Transport 版本）
@@ -587,7 +595,7 @@ fi
 
   ensureConfigDir();
   fs.writeFileSync(HOOK_SCRIPT_PATH, script, { mode: 0o755 });
-  logger.log(`[config] Hook 脚本已写入: ${HOOK_SCRIPT_PATH}`);
+  console.log(`[config] Hook 脚本已写入: ${HOOK_SCRIPT_PATH}`);
 }
 
 // 生成并写入 TaskCompleted hook 脚本
@@ -669,7 +677,7 @@ exit 2
 
   ensureConfigDir();
   fs.writeFileSync(TASK_COMPLETED_HOOK_SCRIPT_PATH, script, { mode: 0o755 });
-  logger.log(`[config] TaskCompleted Hook 脚本已写入: ${TASK_COMPLETED_HOOK_SCRIPT_PATH}`);
+  console.log(`[config] TaskCompleted Hook 脚本已写入: ${TASK_COMPLETED_HOOK_SCRIPT_PATH}`);
 }
 
 // 写入 MCP Server 配置到 ~/.claude.json
@@ -686,7 +694,7 @@ function writeMcpServerConfig(config: WecomConfig, instanceName?: string) {
       botConfig.nameTag = config.nameTag;
     }
     fs.writeFileSync(BOT_CONFIG_FILE, JSON.stringify(botConfig, null, 2));
-    logger.log('[config] 机器人配置已写入 ~/.wecom-aibot-mcp/config.json');
+    console.log('[config] 机器人配置已写入 ~/.wecom-aibot-mcp/config.json');
 
     // 2. 写入 MCP 配置到 ~/.claude.json（仅 URL）
     let claudeConfig: any = {};
@@ -706,21 +714,21 @@ function writeMcpServerConfig(config: WecomConfig, instanceName?: string) {
     };
 
     fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
-    logger.log(`[config] MCP 配置已写入 ~/.claude.json (实例名: ${name})`);
+    console.log(`[config] MCP 配置已写入 ~/.claude.json (实例名: ${name})`);
     return true;
   } catch (err) {
     logger.error('[config] 写入配置失败:', err);
-    logger.log('[config] ⚠️  请手动配置:');
-    logger.log('');
-    logger.log('~/.wecom-aibot-mcp/config.json:');
-    logger.log(JSON.stringify({
+    console.log('[config] ⚠️  请手动配置:');
+    console.log('');
+    console.log('~/.wecom-aibot-mcp/config.json:');
+    console.log(JSON.stringify({
       botId: config.botId,
       secret: config.secret,
       targetUserId: config.targetUserId,
     }, null, 2));
-    logger.log('');
-    logger.log('~/.claude.json:');
-    logger.log(JSON.stringify({
+    console.log('');
+    console.log('~/.claude.json:');
+    console.log(JSON.stringify({
       mcpServers: {
         'wecom-aibot': {
           type: 'http',
@@ -737,13 +745,13 @@ export async function addMcpConfig() {
   const rl = createRL();
 
   try {
-    logger.log('\n添加新的企业微信机器人配置\n');
-    logger.log('提示：多个机器人共享同一个 MCP 配置，只需添加机器人凭证即可\n');
+    console.log('\n添加新的企业微信机器人配置\n');
+    console.log('提示：多个机器人共享同一个 MCP 配置，只需添加机器人凭证即可\n');
 
     // 获取机器人名称（用于识别）
     const robotName = await question(rl, '机器人名称（如"张三的机器人"）: ');
     if (!robotName) {
-      logger.log('[config] 机器人名称不能为空');
+      console.log('[config] 机器人名称不能为空');
       rl.close();
       return;
     }
@@ -751,14 +759,14 @@ export async function addMcpConfig() {
     // 获取 Bot ID
     let botId = await question(rl, 'Bot ID: ');
     while (!botId) {
-      logger.log('Bot ID 不能为空');
+      console.log('Bot ID 不能为空');
       botId = await question(rl, 'Bot ID: ');
     }
 
     // 获取 Secret
     let secret = await question(rl, 'Secret: ');
     while (!secret) {
-      logger.log('Secret 不能为空');
+      console.log('Secret 不能为空');
       secret = await question(rl, 'Secret: ');
     }
 
@@ -769,21 +777,26 @@ export async function addMcpConfig() {
     const duplicate = existingRobots.find(r => r.botId === botId);
 
     if (duplicate) {
-      logger.log(`\n[config] ⚠️ 机器人已存在！`);
-      logger.log(`[config] 已配置的机器人: ${duplicate.name} (Bot ID: ${duplicate.botId.slice(0, 12)}...)`);
-      logger.log(`[config] 如需更新配置，请使用 --config 命令`);
+      console.log(`\n[config] ⚠️ 机器人已存在！`);
+      console.log(`[config] 已配置的机器人: ${duplicate.name} (Bot ID: ${duplicate.botId.slice(0, 12)}...)`);
+      console.log(`[config] 如需更新配置，请使用 --config 命令`);
       return;
     }
 
-    // 检查名称是否重复（仅提示，不阻止）
+    // 检查名称是否重复（阻止）
     const duplicateName = existingRobots.find(r => r.name === robotName);
     if (duplicateName) {
-      logger.log(`\n[config] ⚠️ 注意：名称 "${robotName}" 已被使用`);
-      logger.log(`[config] 建议使用不同的名称以方便识别`);
+      console.log(`\n[config] ❌ 名称 "${robotName}" 已被使用`);
+      console.log(`[config] 请使用不同的名称以方便识别`);
+      console.log(`[config] 当前已配置的机器人:`);
+      existingRobots.forEach((r, i) => {
+        console.log(`  ${i + 1}. ${r.name}`);
+      });
+      return;
     }
 
     // 先连接验证凭证
-    logger.log('\n[config] 正在连接企业微信...');
+    console.log('\n[config] 正在连接企业微信...');
     const { initClient } = await import('./client.js');
     const client = initClient(botId, secret, 'placeholder', 'config-validation');
 
@@ -802,9 +815,9 @@ export async function addMcpConfig() {
     });
 
     if (!connected) {
-      logger.log('\n[config] ❌ 连接失败，请检查 Bot ID 和 Secret 是否正确');
-      logger.log('[config] 新建机器人需要等待约 2 分钟同步时间');
-      logger.log('[config] 如需授权，请访问企业微信管理后台完成授权');
+      console.log('\n[config] ❌ 连接失败，请检查 Bot ID 和 Secret 是否正确');
+      console.log('[config] 新建机器人需要等待约 2 分钟同步时间');
+      console.log('[config] 如需授权，请访问企业微信管理后台完成授权');
       return;
     }
 
@@ -812,8 +825,8 @@ export async function addMcpConfig() {
     const targetUserId = await detectUserIdFromMessage(client, 180);
 
     if (!targetUserId) {
-      logger.log('\n[config] 未能在规定时间内识别用户 ID');
-      logger.log('[config] 请重新运行: npx @vrs-soft/wecom-aibot-mcp --add');
+      console.log('\n[config] 未能在规定时间内识别用户 ID');
+      console.log('[config] 请重新运行: npx @vrs-soft/wecom-aibot-mcp --add');
       return;
     }
 
@@ -835,23 +848,23 @@ export async function addMcpConfig() {
     if (!fs.existsSync(defaultConfigPath)) {
       // 第一个机器人作为默认
       fs.writeFileSync(defaultConfigPath, JSON.stringify(robotConfig, null, 2));
-      logger.log(`\n[config] ✅ 已设为默认机器人: ${robotName}`);
+      console.log(`\n[config] ✅ 已设为默认机器人: ${robotName}`);
     } else {
       // 后续机器人保存为独立文件
       fs.writeFileSync(robotConfigPath, JSON.stringify(robotConfig, null, 2));
-      logger.log(`\n[config] ✅ 已添加新机器人: ${robotName}`);
+      console.log(`\n[config] ✅ 已添加新机器人: ${robotName}`);
     }
 
-    logger.log(`[config] 用户 ID: ${targetUserId}`);
+    console.log(`[config] 用户 ID: ${targetUserId}`);
 
     // 列出所有机器人
     const robots = listAllRobots();
-    logger.log(`\n[config] 当前共 ${robots.length} 个机器人配置`);
+    console.log(`\n[config] 当前共 ${robots.length} 个机器人配置`);
     robots.forEach((r, i) => {
-      logger.log(`  ${i + 1}. ${r.name} (${r.targetUserId})`);
+      console.log(`  ${i + 1}. ${r.name} (${r.targetUserId})`);
     });
 
-    logger.log('\n[config] MCP 配置无需修改，多个机器人共享同一个 HTTP 服务');
+    console.log('\n[config] MCP 配置无需修改，多个机器人共享同一个 HTTP 服务');
 
   } catch (err) {
     logger.error('[config] 添加配置失败:', err);
@@ -930,10 +943,10 @@ function installSkills() {
 
     if (sourceFile) {
       fs.copyFileSync(sourceFile, skillFile);
-      logger.log(`[config] skill 文件已安装: ${skillFile}`);
+      console.log(`[config] skill 文件已安装: ${skillFile}`);
     } else {
-      logger.log('[config] ⚠️  skill 文件未找到，请手动创建 ~/.claude/skills/headless-mode/SKILL.md');
-      logger.log('[config]    查找路径:', possibleSources.join(', '));
+      console.log('[config] ⚠️  skill 文件未找到，请手动创建 ~/.claude/skills/headless-mode/SKILL.md');
+      console.log('[config]    查找路径:', possibleSources.join(', '));
     }
   } catch (err) {
     logger.error('[config] 安装 skill 文件失败:', err);
@@ -984,7 +997,7 @@ function writeMcpPermissions() {
     writeHookScript();
   } catch (err) {
     logger.error('[config] 写入配置失败:', err);
-    logger.log('[config] ⚠️  请手动配置，详见 README');
+    console.log('[config] ⚠️  请手动配置，详见 README');
   }
 }
 
@@ -1011,7 +1024,7 @@ export function ensureGlobalConfigs(): { upgraded: boolean; previousVersion?: st
   // 版本升级检测
   if (previousVersion !== VERSION) {
     upgraded = true;
-    logger.log(`[config] 版本升级: ${previousVersion || '未安装'} -> ${VERSION}`);
+    console.log(`[config] 版本升级: ${previousVersion || '未安装'} -> ${VERSION}`);
   }
 
   // 1. 强制写入 MCP 配置到 ~/.claude.json（覆盖）
@@ -1029,19 +1042,19 @@ export function ensureGlobalConfigs(): { upgraded: boolean; previousVersion?: st
     url: 'http://127.0.0.1:18963/mcp',
   };
   fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
-  logger.log('[config] 已写入 MCP 配置到 ~/.claude.json');
+  console.log('[config] 已写入 MCP 配置到 ~/.claude.json');
 
   // 2. 强制写入权限配置和 Hook
   writeMcpPermissions();
-  logger.log('[config] 已写入权限配置到 ~/.claude/settings.local.json');
+  console.log('[config] 已写入权限配置到 ~/.claude/settings.local.json');
 
   // 3. 强制安装 skill
   installSkills();
-  logger.log('[config] 已安装 skill 到 ~/.claude/skills/');
+  console.log('[config] 已安装 skill 到 ~/.claude/skills/');
 
   // 4. 写入版本号
   fs.writeFileSync(VERSION_FILE, JSON.stringify({ version: VERSION, installedAt: Date.now() }, null, 2));
-  logger.log(`[config] 已记录版本号: ${VERSION}`);
+  console.log(`[config] 已记录版本号: ${VERSION}`);
 
   return { upgraded, previousVersion };
 }
@@ -1077,13 +1090,13 @@ export function installSkill(projectDir: string): void {
 
   // 检查模板文件是否存在
   if (!fs.existsSync(SKILL_TEMPLATE_FILE)) {
-    logger.log('[config] Skill 模板文件不存在，跳过安装');
+    console.log('[config] Skill 模板文件不存在，跳过安装');
     return;
   }
 
   // 写入 skill 文件
   fs.copyFileSync(SKILL_TEMPLATE_FILE, skillFile);
-  logger.log(`[config] 已安装 skill 到 ${skillFile}`);
+  console.log(`[config] 已安装 skill 到 ${skillFile}`);
 }
 
 // 创建 readline 接口
@@ -1105,7 +1118,7 @@ function question(rl: readline.ReadLine, prompt: string): Promise<string> {
 
 // 获取用户列表（通过企业微信 API）
 async function fetchUserList(botId: string, secret: string): Promise<Array<{ userid: string; name: string }>> {
-  logger.log('[config] 正在获取用户列表...');
+  console.log('[config] 正在获取用户列表...');
 
   // 使用 WebSocket 获取用户列表
   // 注意：智能机器人 API 可能没有直接获取用户列表的接口
@@ -1119,10 +1132,10 @@ async function fetchUserList(botId: string, secret: string): Promise<Array<{ use
  * 运行配置向导
  */
 export async function runConfigWizard(): Promise<{ config: WecomConfig; instanceName: string }> {
-  logger.log('\n');
-  logger.log('╔════════════════════════════════════════════════════════════╗');
-  logger.log('║     企业微信智能机器人 MCP 服务 - 配置向导                  ║');
-  logger.log('╚════════════════════════════════════════════════════════════╝');
+  console.log('\n');
+  console.log('╔════════════════════════════════════════════════════════════╗');
+  console.log('║     企业微信智能机器人 MCP 服务 - 配置向导                  ║');
+  console.log('╚════════════════════════════════════════════════════════════╝');
 
   const rl = createRL();
 
@@ -1134,73 +1147,73 @@ export async function runConfigWizard(): Promise<{ config: WecomConfig; instance
 
     if (instances.length > 1) {
       // 多个机器人，让用户选择要修改哪个
-      logger.log('\n检测到多个机器人配置，请选择要修改的：\n');
+      console.log('\n检测到多个机器人配置，请选择要修改的：\n');
       instances.forEach((inst, idx) => {
-        logger.log(`  ${idx + 1}. ${inst.name} (Bot ID: ${inst.config.botId.slice(0, 12)}...)`);
+        console.log(`  ${idx + 1}. ${inst.name} (Bot ID: ${inst.config.botId.slice(0, 12)}...)`);
       });
-      logger.log(`  ${instances.length + 1}. 添加新机器人\n`);
+      console.log(`  ${instances.length + 1}. 添加新机器人\n`);
 
       const choice = await question(rl, '请输入序号: ');
       const choiceNum = parseInt(choice);
 
       if (choiceNum >= 1 && choiceNum <= instances.length) {
         instanceName = instances[choiceNum - 1].name;
-        logger.log(`\n已选择修改: ${instanceName}\n`);
+        console.log(`\n已选择修改: ${instanceName}\n`);
       } else if (choiceNum === instances.length + 1) {
         // 添加新机器人
         const newName = await question(rl, '请输入新机器人名称: ');
         if (!newName) {
-          logger.log('[config] 机器人名称不能为空');
+          console.log('[config] 机器人名称不能为空');
           process.exit(1);
         }
         robotName = newName;
-        logger.log(`\n将创建新机器人: ${robotName}\n`);
+        console.log(`\n将创建新机器人: ${robotName}\n`);
       } else {
-        logger.log('[config] 无效选择');
+        console.log('[config] 无效选择');
         process.exit(1);
       }
     } else if (instances.length === 1) {
       instanceName = instances[0].name;
-      logger.log(`\n将修改现有配置: ${instanceName}\n`);
+      console.log(`\n将修改现有配置: ${instanceName}\n`);
     } else {
       // 首次配置，要求输入机器人名称
-      logger.log('\n首次配置，请输入机器人信息：\n');
+      console.log('\n首次配置，请输入机器人信息：\n');
       const newName = await question(rl, '机器人名称（用于识别，如"工作机器人"）: ');
       if (!newName) {
-        logger.log('[config] 机器人名称不能为空');
+        console.log('[config] 机器人名称不能为空');
         process.exit(1);
       }
       robotName = newName;
-      logger.log(`\n将创建机器人: ${robotName}\n`);
+      console.log(`\n将创建机器人: ${robotName}\n`);
     }
 
     // 1. 获取 Bot ID
     let botId = await question(rl, 'Bot ID: ');
     while (!botId) {
-      logger.log('Bot ID 不能为空');
+      console.log('Bot ID 不能为空');
       botId = await question(rl, 'Bot ID: ');
     }
 
     // 2. 获取 Secret
     let secret = await question(rl, 'Secret: ');
     while (!secret) {
-      logger.log('Secret 不能为空');
+      console.log('Secret 不能为空');
       secret = await question(rl, 'Secret: ');
     }
 
     // 3. 目标用户 ID 稍后通过消息自动识别
-    logger.log('\n─────────────────────────────────────');
-    logger.log('配置确认：');
-    logger.log(`  机器人名称: ${robotName || instanceName}`);
-    logger.log(`  Bot ID:     ${botId}`);
-    logger.log(`  Secret:     ${secret.slice(0, 8)}...${secret.slice(-4)}`);
-    logger.log(`  目标用户:   （将通过消息自动识别）`);
-    logger.log('─────────────────────────────────────\n');
+    console.log('\n─────────────────────────────────────');
+    console.log('配置确认：');
+    console.log(`  机器人名称: ${robotName || instanceName}`);
+    console.log(`  Bot ID:     ${botId}`);
+    console.log(`  Secret:     ${secret.slice(0, 8)}...${secret.slice(-4)}`);
+    console.log(`  目标用户:   （将通过消息自动识别）`);
+    console.log('─────────────────────────────────────\n');
 
     const confirm = await question(rl, '确认配置？(Y/n): ');
 
     if (confirm.toLowerCase() === 'n') {
-      logger.log('[config] 配置已取消');
+      console.log('[config] 配置已取消');
       process.exit(0);
     }
 
@@ -1228,21 +1241,21 @@ export async function detectUserIdFromMessage(
 ): Promise<string | null> {
   return new Promise((resolve) => {
     if (!client.isConnected()) {
-      logger.log('\n[config] 客户端未连接');
+      console.log('\n[config] 客户端未连接');
       resolve(null);
       return;
     }
 
-    logger.log('\n[config] ✅ 连接成功！');
-    logger.log('\n╔════════════════════════════════════════════════════════╗');
-    logger.log('║  请让需要接收审批消息的人，在企业微信中给机器人发送      ║');
-    logger.log('║  一条消息（任意内容），系统将自动识别其用户 ID          ║');
-    logger.log('╚════════════════════════════════════════════════════════╝');
-    logger.log(`\n[config] 等待消息中...（${timeoutSeconds}秒内）`);
+    console.log('\n[config] ✅ 连接成功！');
+    console.log('\n╔════════════════════════════════════════════════════════╗');
+    console.log('║  请让需要接收审批消息的人，在企业微信中给机器人发送      ║');
+    console.log('║  一条消息（任意内容），系统将自动识别其用户 ID          ║');
+    console.log('╚════════════════════════════════════════════════════════╝');
+    console.log(`\n[config] 等待消息中...（${timeoutSeconds}秒内）`);
 
     // 设置超时
     const timeout = setTimeout(() => {
-      logger.log(`\n[config] 等待超时（${timeoutSeconds}秒），未收到用户消息`);
+      console.log(`\n[config] 等待超时（${timeoutSeconds}秒），未收到用户消息`);
       resolve(null);
     }, timeoutSeconds * 1000);
 
@@ -1256,15 +1269,15 @@ export async function detectUserIdFromMessage(
         const msg = messages[0];
         const userId = msg.from_userid;
 
-        logger.log(`\n[config] ✅ 收到消息！`);
-        logger.log(`[config] 识别到用户 ID: ${userId}`);
+        console.log(`\n[config] ✅ 收到消息！`);
+        console.log(`[config] 识别到用户 ID: ${userId}`);
 
         // 发送确认消息
         try {
           await client.sendText(`**机器人配置成功！**\n\n默认向用户 ID: \`${userId}\` 发送消息互动。\n\n您现在可以使用 Claude Code 审批功能了。`, userId);
-          logger.log(`[config] 已发送确认消息到 ${userId}`);
+          console.log(`[config] 已发送确认消息到 ${userId}`);
         } catch (err) {
-          logger.log(`[config] 发送确认消息失败: ${err}`);
+          console.log(`[config] 发送确认消息失败: ${err}`);
         }
 
         resolve(userId);
@@ -1288,7 +1301,7 @@ export async function getOrInitConfig(): Promise<WecomConfig> {
   const envTargetUser = process.env.WECOM_TARGET_USER;
 
   if (envBotId && envSecret && envTargetUser) {
-    logger.log(`[config] 使用环境变量配置: Bot ID=${envBotId}, 目标用户=${envTargetUser}`);
+    console.log(`[config] 使用环境变量配置: Bot ID=${envBotId}, 目标用户=${envTargetUser}`);
     return {
       botId: envBotId,
       secret: envSecret,
@@ -1298,15 +1311,15 @@ export async function getOrInitConfig(): Promise<WecomConfig> {
 
   // 部分环境变量存在时给出提示
   if (envBotId || envSecret || envTargetUser) {
-    logger.log('[config] 检测到部分环境变量，但配置不完整');
-    logger.log('[config] 需要同时设置: WECOM_BOT_ID, WECOM_SECRET, WECOM_TARGET_USER');
+    console.log('[config] 检测到部分环境变量，但配置不完整');
+    console.log('[config] 需要同时设置: WECOM_BOT_ID, WECOM_SECRET, WECOM_TARGET_USER');
   }
 
   // 2. 检查保存的配置文件
   const savedConfig = loadConfig();
 
   if (savedConfig && savedConfig.botId && savedConfig.secret && savedConfig.targetUserId) {
-    logger.log(`[config] 已加载配置: Bot ID=${savedConfig.botId}, 目标用户=${savedConfig.targetUserId}`);
+    console.log(`[config] 已加载配置: Bot ID=${savedConfig.botId}, 目标用户=${savedConfig.targetUserId}`);
     return savedConfig;
   }
 
@@ -1319,7 +1332,7 @@ export async function getOrInitConfig(): Promise<WecomConfig> {
   }
 
   // 4. TTY 模式下运行配置向导
-  logger.log('[config] 未找到有效配置，启动配置向导...\n');
+  console.log('[config] 未找到有效配置，启动配置向导...\n');
   const result = await runConfigWizard();
   return result.config;
 }
