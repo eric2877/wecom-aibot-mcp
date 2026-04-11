@@ -1,7 +1,8 @@
 # 功能测试方案
 
-> 版本：1.0
+> 版本：2.0
 > 创建日期：2026-04-06
+> 更新日期：2026-04-12
 > 目标覆盖率：85%
 
 ---
@@ -19,6 +20,66 @@
 | 保活监控 | `keepalive-monitor.ts` | ~80 | P2 |
 | 状态管理 | `headless-state.ts` | ~280 | P1 |
 | 连接日志 | `connection-log.ts` | ~220 | P2 |
+
+---
+
+## 二、v2.0 新增测试用例
+
+### 2.0.1 Channel/HTTP 模式测试
+
+| 用例ID | 场景 | 输入 | 预期输出 | 自动化 | 状态 |
+|--------|------|------|---------|--------|------|
+| MODE-001 | enter_headless_mode (mode=channel) | mode='channel' | message="无需轮询" | ✅ | ✅ 通过 |
+| MODE-002 | enter_headless_mode (mode=http) | mode='http' | message="需轮询" | ✅ | ✅ 通过 |
+| MODE-003 | enter_headless_mode (默认 mode) | 无 mode 参数 | 默认 http 模式 | ✅ | ✅ 通过 |
+| MODE-004 | ccId 注册带 mode | registerCcId(..., 'channel') | entry.mode='channel' | ✅ | ✅ 通过 |
+| MODE-005 | heartbeat_check 工具 | 调用 heartbeat_check | 返回提示继续轮询 | ✅ | ✅ 通过 |
+| MODE-006 | send_message 返回提示 | 发送消息成功 | 提示等待用户回复 | ✅ | ✅ 通过 |
+
+### 2.0.2 配置需求工具测试
+
+| 用例ID | 场景 | 输入 | 预期输出 | 自动化 | 状态 |
+|--------|------|------|---------|--------|------|
+| REQ-001 | get_setup_requirements 返回 | 调用工具 | 返回完整配置需求 | ✅ | ✅ 通过 |
+| REQ-002 | 权限列表完整 | 检查返回 | 包含所有 mcp__wecom-aibot__* | ✅ | ✅ 通过 |
+| REQ-003 | Hook 配置需求 | 检查返回 | 包含 PermissionRequest hook | ✅ | ✅ 通过 |
+| REQ-004 | Skill 安装需求 | 检查返回 | 包含 globalDir 和 projectDir | ✅ | ✅ 通过 |
+| REQ-005 | 运行模式说明 | 检查返回 | channel/http 两种模式 | ✅ | ✅ 通过 |
+
+### 2.0.3 消息推送模式测试
+
+| 用例ID | 场景 | 输入 | 预期输出 | 自动化 | 状态 |
+|--------|------|------|---------|--------|------|
+| PUSH-001 | Channel 模式 notification | mode='channel', 微信消息 | SSE notification 推送 | ✅ | 待测试 |
+| PUSH-002 | HTTP 模式队列存储 | mode='http', 微信消息 | 存入消息队列等待轮询 | ✅ | 待测试 |
+| PUSH-003 | 多 CC 消息路由 | 多 ccId, mode 不同 | 按 ccId + mode 分发 | ✅ | 待测试 |
+
+---
+
+## 三、v2.0 实现总结
+
+### 新增功能
+
+1. **双模式支持**：
+   - Channel 模式：SSE 推送，微信消息自动唤醒 Agent
+   - HTTP 模式：轮询 + heartbeat_check
+
+2. **配置需求工具**：
+   - `get_setup_requirements`：返回完整配置需求
+   - 支持远程 MCP 用户通过 skill 自动配置
+
+3. **heartbeat_check 工具**：
+   - HTTP 模式保持 Agent 活跃
+   - 提示继续轮询
+
+4. **skill 启动检查**：
+   - 连接 MCP 后自动检查配置
+   - 自动安装权限、Hook、skill
+
+### 删除功能
+
+- 删除 `src/channel.ts`（错误架构）
+- 删除 `--channel` 命令
 
 ---
 

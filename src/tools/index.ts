@@ -84,7 +84,29 @@ export function registerTools(server: McpServer) {
 
       const success = await client.sendText(content, target_user);
       return {
-        content: [{ type: 'text', text: success ? '消息已发送' : '发送失败，请检查连接状态' }],
+        content: [{
+          type: 'text',
+          text: success
+            ? '消息已发送。请等待用户回复，使用 get_pending_messages 轮询获取新消息（HTTP 模式）。'
+            : '发送失败，请检查连接状态',
+        }],
+      };
+    }
+  );
+
+  // ============================================
+  // 工具 2: 心跳检查（HTTP 模式）
+  // ============================================
+  server.tool(
+    'heartbeat_check',
+    '心跳检查，提示智能体继续轮询（仅 HTTP 模式使用）',
+    {},
+    async () => {
+      return {
+        content: [{
+          type: 'text',
+          text: '心跳检查：如有执行结果请发送，如果没有应继续轮询 get_pending_messages 接口！',
+        }],
       };
     }
   );
@@ -190,6 +212,72 @@ export function registerTools(server: McpServer) {
         content: [{
           type: 'text',
           text: JSON.stringify({ count: result.length, messages: formatMessages(result) }, null, 2),
+        }],
+      };
+    }
+  );
+
+  // ============================================
+  // 工具: 获取配置需求（供 skill 自动配置）
+  // ============================================
+  server.tool(
+    'get_setup_requirements',
+    '获取 MCP 配置需求，用于 skill 自动配置本地环境（权限、Hook、skill）。启动时调用检查配置是否完整。',
+    {},
+    async () => {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            version: '2.0.0',
+            requirements: {
+              // 权限配置需求
+              permissions: {
+                file: '~/.claude/settings.local.json',
+                allow: [
+                  'mcp__wecom-aibot__send_message',
+                  'mcp__wecom-aibot__heartbeat_check',
+                  'mcp__wecom-aibot__get_pending_messages',
+                  'mcp__wecom-aibot__check_connection',
+                  'mcp__wecom-aibot__list_robots',
+                  'mcp__wecom-aibot__enter_headless_mode',
+                  'mcp__wecom-aibot__exit_headless_mode',
+                  'mcp__wecom-aibot__get_connection_stats',
+                ],
+              },
+              // Hook 配置需求
+              hooks: {
+                file: '~/.claude/settings.local.json',
+                PermissionRequest: {
+                  script: '~/.wecom-aibot-mcp/permission-hook.sh',
+                  description: '审批请求通过微信发送',
+                },
+              },
+              // Skill 安装需求
+              skills: {
+                globalDir: '~/.claude/skills/headless-mode',
+                projectDir: '.claude/skills/headless-mode',
+                files: ['SKILL.md'],
+              },
+            },
+            // 检查命令（供 skill 验证）
+            checkCommands: {
+              permissions: '检查 ~/.claude/settings.local.json 是否包含 mcp__wecom-aibot__ 权限',
+              hook: '检查 ~/.claude/settings.local.json 是否包含 PermissionRequest hook',
+              skill: '检查 ~/.claude/skills/headless-mode/SKILL.md 是否存在',
+            },
+            // 模式说明
+            modes: {
+              channel: {
+                description: 'SSE 推送模式，微信消息自动唤醒 Agent',
+                capability: 'claude/channel',
+              },
+              http: {
+                description: '轮询模式，Agent 需调用 get_pending_messages 和 heartbeat_check',
+                capability: null,
+              },
+            },
+          }, null, 2),
         }],
       };
     }
@@ -313,10 +401,12 @@ npx @vrs-soft/wecom-aibot-mcp
       agent_name: z.string().describe('智能体名称'),
       robot_id: z.string().optional().describe('指定机器人名称或序号'),
       project_dir: z.string().optional().describe('项目目录路径（用于写入配置文件）'),
+      mode: z.enum(['channel', 'http']).optional().default('http')
+        .describe('运行模式：channel=SSE推送(推荐)，http=轮询(兼容)'),
       auto_approve: z.boolean().optional().default(true).describe('超时自动审批（默认 true）'),
       auto_approve_timeout: z.number().optional().default(600).describe('自动审批超时时间（秒，默认 600 即 10 分钟）'),
     },
-    async ({ agent_name, robot_id, project_dir, auto_approve, auto_approve_timeout }, extra) => {
+    async ({ agent_name, robot_id, project_dir, mode, auto_approve, auto_approve_timeout }, extra) => {
       const allRobots = listAllRobots();
 
       if (allRobots.length === 0) {
@@ -378,9 +468,9 @@ npx @vrs-soft/wecom-aibot-mcp
         };
       }
 
-      // 生成 ccId 并注册到 CC 注册表
+      // 生成 ccId 并注册到 CC 注册表（包含 mode）
       const ccId = generateCcId();
-      registerCcId(ccId, selectedRobot.name, agent_name);
+      registerCcId(ccId, selectedRobot.name, agent_name, mode);
 
       // 更新项目配置文件中的 wechatMode 为 true
       const projectDir = project_dir || process.cwd();
@@ -395,8 +485,9 @@ npx @vrs-soft/wecom-aibot-mcp
       // 添加 PermissionRequest hook 到项目 settings.json
       const hookResult = addPermissionHook(projectDir);
 
-      // 发送确认消息（包含 ccId 标识）
-      await result.client.sendText(`【${ccId}】已进入微信模式，使用机器人「${selectedRobot.name}」。`);
+      // 发送确认消息（根据 mode 显示不同内容）
+      const modeDesc = mode === 'channel' ? 'Channel模式，消息自动推送' : 'HTTP模式，请定期轮询获取消息';
+      await result.client.sendText(`【${ccId}】已进入微信模式(${modeDesc})，使用机器人「${selectedRobot.name}」。`);
 
       return {
         content: [{
@@ -406,8 +497,11 @@ npx @vrs-soft/wecom-aibot-mcp
             headless: true,
             robotName: selectedRobot.name,
             ccId,
+            mode,
             hook: hookResult,
-            message: '用户消息通过 SSE 实时推送，审批请求通过微信发送',
+            message: mode === 'channel'
+              ? '用户消息通过 SSE notification 自动推送，无需轮询'
+              : '用户消息需轮询 get_pending_messages 获取，使用 heartbeat_check 保持活跃',
           }),
         }],
       };

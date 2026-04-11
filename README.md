@@ -10,31 +10,71 @@
 
 - 🔐 **远程审批**：敏感操作通过微信卡片审批，支持"允许一次/拒绝"
 - 💬 **双向通信**：任务进度、完成通知实时推送到微信
-- 📱 **Headless 模式**：离开电脑时切换到微信交互，长轮询实时接收消息
+- 📱 **Channel 模式**：SSE 推送，微信消息自动唤醒 Agent（推荐）
+- 🔄 **HTTP 模式**：轮询模式，兼容不支持 Channel 的环境
 - 🤖 **多机器人支持**：支持配置多个机器人，团队场景下多人独立使用
-- 🌐 **HTTP Transport**：使用 HTTP 传输，支持多实例共享服务
 
 ## 架构
 
 ```
-┌─────────────────┐      MCP (HTTP)       ┌──────────────────┐
-│  Claude Code    │  ──────────────────▶  │  wecom-aibot-mcp │
-│  (MCP Client)   │  ◀──────────────────  │  MCP Server      │
-└─────────────────┘                       └──────────────────┘
-                                                   │
-                                           WebSocket 长连接
-                                                   ↓
-                                          ┌───────────────────┐
-                                          │  企业微信服务器     │
-                                          │  wss://openws...   │
-                                          └───────────────────┘
-                                                   │
-                                                   ↓
-                                          ┌───────────────────┐
-                                          │  用户企业微信客户端  │
-                                          │  (手机/桌面)        │
-                                          └───────────────────┘
+┌─────────────────────────────────────────────────────┐
+│  MCP Server (单进程)                                  │
+│  ┌───────────────────────────────────────────────┐  │
+│  │  消息总线 (RxJS Subject)                        │  │
+│  │  - 按 ccId + botId 路由                        │  │
+│  └───────────────────────────────────────────────┘  │
+│  ┌─────────────────┐     ┌─────────────────────┐   │
+│  │  Channel 模式   │     │  HTTP 模式           │   │
+│  │  - notification │     │  - 轮询              │   │
+│  │  - 微信唤醒     │     │  - heartbeat_check   │   │
+│  └─────────────────┘     └─────────────────────┘   │
+│  ┌───────────────────────────────────────────────┐  │
+│  │  WebSocket (单连接共享)                         │  │
+│  │  - @wecom/aibot-node-sdk                       │  │
+│  └───────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────┘
+         ↑ SSE 连接 (支持多 CC)
+         
+两种模式并存：
+  - Channel 模式：SSE 推送，微信消息自动唤醒 Agent
+  - HTTP 模式：轮询 + 心跳，兼容不支持 Channel 的环境
 ```
+
+### 两种运行模式
+
+#### Channel 模式（推荐）
+
+```
+微信消息 → MCP Server → notification 推送 → Agent 自动唤醒 → 处理任务
+                                                              ↓
+                                                      完成后回复结果 → 继续等待
+```
+
+特点：
+- SSE 推送，无需轮询
+- 微信消息自动唤醒 Agent
+- 实时响应，延迟低
+
+#### HTTP 模式（兼容）
+
+```
+微信消息 → MCP Server → 消息队列 → Agent 轮询 get_pending_messages
+                                              ↓
+                                      处理任务 → 回复结果 → 继续轮询
+```
+
+特点：
+- 需要轮询获取消息
+- 使用 heartbeat_check 保持活跃
+- 兼容不支持 Channel 的环境
+
+### 模式检测
+
+CC 启动时，skill 会检测运行环境：
+- 支持 Channel → 自动使用 Channel 模式
+- 不支持 Channel → 使用 HTTP 模式
+
+调用 `enter_headless_mode` 时传入 `mode` 参数告知 MCP Server。
 
 ### 审批流程
 
@@ -61,35 +101,46 @@ PermissionRequest Hook 拦截
               执行或拒绝操作
 ```
 
-### Headless 模式
+### 使用示例
+
+#### Channel 模式（推荐）
 
 ```
-用户：现在开始通过微信联系
-  ↓
-Claude → enter_headless_mode()
-  ↓
-  ├─ 连接 WebSocket
-  ├─ 写入 .claude/settings.json (PermissionRequest hook)
-  ├─ 发送微信确认消息
-  └─ 返回 { status: 'entered', headless: true }
-  ↓
-Claude 开始长轮询 get_pending_messages(timeout_ms=30000)
-  ↓
-┌─────────────────────────────────────────┐
-│  loop:                                  │
-│    1. 等待用户消息（30秒超时）            │
-│    2. 收到消息 → 理解意图 → 执行操作      │
-│    3. Hook 自动拦截审批 → 发送微信卡片    │
-│    4. 用户审批 → 操作完成 → 汇报结果      │
-│    5. 继续轮询                           │
-└─────────────────────────────────────────┘
-  ↓
-用户：我回来了
-  ↓
-Claude → exit_headless_mode()
-  ├─ 断开 WebSocket
-  ├─ 删除 .claude/settings.json hook
-  └─ 发送微信确认消息
+你：现在开始通过微信联系
+
+Claude：已进入微信模式(Channel)，消息将自动推送。
+微信收到：【cc-1】已进入微信模式，使用机器人「工作机器人」。
+
+[你发送微信消息：帮我检查服务器状态]
+
+微信收到 Claude 的回复：服务器运行正常，CPU 使用率 45%...
+
+[你继续发送消息，Claude 自动响应]
+
+你：我回来了
+
+Claude：已退出微信模式，恢复终端交互。
+```
+
+#### HTTP 模式（兼容）
+
+```
+你：现在开始通过微信联系
+
+Claude：已进入微信模式(HTTP)，请定期轮询获取消息。
+微信收到：【cc-1】已进入微信模式(HTTP)，使用机器人「工作机器人」。
+
+[Claude 使用 /loop 定期调用 heartbeat_check 保持活跃]
+
+[你发送微信消息：帮我检查服务器状态]
+
+[Claude 轮询到消息 → 处理 → 回复]
+
+微信收到：服务器运行正常，CPU 使用率 45%...
+
+你：我回来了
+
+Claude：已退出微信模式，恢复终端交互。
 ```
 
 ## 安装
@@ -192,67 +243,22 @@ npx @vrs-soft/wecom-aibot-mcp --start
 
 运行 `/mcp` 命令，选择「Reconnect」重新连接 MCP 服务。
 
-## 使用示例
-
-### Headless 模式（远程审批）
-
-```
-你：现在开始通过微信联系
-
-Claude：已进入微信模式，所有交互将通过企业微信进行。
-微信收到：【cc-1】已进入微信模式，使用机器人「工作机器人」。
-
-[你离开电脑，Claude 需要执行删除文件操作]
-
-微信收到审批卡片：
-┌─────────────────────────┐
-│ 【待审批】Bash           │
-│ 执行命令: rm -rf dist    │
-│ [允许一次] [拒绝]        │
-└─────────────────────────┘
-
-[你在手机点击"允许一次"]
-
-Claude 继续执行，发送结果到微信。
-
-你：我回来了
-
-Claude：已退出微信模式，恢复终端交互。
-```
-
-### 发送任务通知
-
-```
-你：帮我重构这个函数，完成后微信通知我
-
-Claude：[执行重构...]
-微信收到：【完成】函数重构完成！
-```
-
-### 群聊机器人
-
-将机器人拉入群聊：
-
-```
-群聊中：
-张三：@Claude助手 查看服务器日志
-
-Claude：执行命令，发送结果到群聊
-```
-
-## MCP 工具
+## 配置说明
 
 | 工具 | 说明 | 参数 |
 |------|------|------|
-| `send_message` | 发送消息到微信 | `content`, `target_user` |
-| `get_pending_messages` | 获取待处理消息（长轮询） | `clear`, `timeout_ms` |
-| `enter_headless_mode` | 进入微信模式 | `agent_name`, `robot_id` |
-| `exit_headless_mode` | 退出微信模式 | `agent_name` |
+| `send_message` | 发送消息到微信 | `content`, `target_user`, `cc_id` |
+| `get_pending_messages` | 获取待处理消息（HTTP 模式轮询） | `clear`, `timeout_ms`, `cc_id` |
+| `heartbeat_check` | 心跳检查（HTTP 模式保持活跃） | - |
+| `enter_headless_mode` | 进入微信模式 | `agent_name`, `robot_id`, `mode` |
+| `exit_headless_mode` | 退出微信模式 | `agent_name`, `cc_id` |
 | `check_connection` | 检查连接状态 | - |
 | `list_robots` | 列出所有机器人 | - |
 | `get_connection_stats` | 获取连接统计 | `recent_logs` |
-| `detect_user_from_message` | 从消息识别用户 | `timeout` |
-| `get_setup_guide` | 获取安装指南 | - |
+
+**mode 参数说明**：
+- `channel`：Channel 模式，SSE 推送，微信消息自动唤醒
+- `http`：HTTP 模式，轮询 + 心跳
 
 ## 配置说明
 

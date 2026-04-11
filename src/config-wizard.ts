@@ -29,7 +29,7 @@ const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.local.
 const HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.sh');
 
 // 版本号（与 package.json 同步）
-const VERSION = '1.4.2';
+const VERSION = '2.0.0';
 
 // Skill 模板路径（包内）- 使用 fileURLToPath 确保跨平台兼容
 const __filename = fileURLToPath(import.meta.url);
@@ -845,7 +845,7 @@ export function ensureGlobalConfigs(): { upgraded: boolean; previousVersion?: st
     console.log(`[config] 版本升级: ${previousVersion || '未安装'} -> ${VERSION}`);
   }
 
-  // 1. 强制写入 MCP 配置到 ~/.claude.json（覆盖）
+  // 1. 写入 MCP 配置到 ~/.claude.json（本地用户方便）
   let claudeConfig: any = {};
   if (fs.existsSync(CLAUDE_CONFIG_FILE)) {
     const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
@@ -854,25 +854,32 @@ export function ensureGlobalConfigs(): { upgraded: boolean; previousVersion?: st
 
   if (!claudeConfig.mcpServers) claudeConfig.mcpServers = {};
 
-  // 强制覆盖（不检查是否存在）
-  claudeConfig.mcpServers['wecom-aibot'] = {
-    type: 'http',
-    url: 'http://127.0.0.1:18963/mcp',
-  };
-  fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
-  console.log('[config] 已写入 MCP 配置到 ~/.claude.json');
+  // 写入 MCP 配置（不强制覆盖已存在的自定义配置）
+  if (!claudeConfig.mcpServers['wecom-aibot']) {
+    claudeConfig.mcpServers['wecom-aibot'] = {
+      type: 'http',
+      url: 'http://127.0.0.1:18963/mcp',
+    };
+    fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
+    console.log('[config] 已写入 MCP 配置到 ~/.claude.json');
+  } else {
+    console.log('[config] MCP 配置已存在，跳过写入');
+  }
 
-  // 2. 强制写入权限配置和 Hook
+  // 2. 写入权限配置和 Hook（本地用户方便）
   writeMcpPermissions();
   console.log('[config] 已写入权限配置到 ~/.claude/settings.local.json');
 
-  // 3. 强制安装 skill
+  // 3. 安装 skill（本地用户方便）
   installSkills();
   console.log('[config] 已安装 skill 到 ~/.claude/skills/');
 
   // 4. 写入版本号
   fs.writeFileSync(VERSION_FILE, JSON.stringify({ version: VERSION, installedAt: Date.now() }, null, 2));
   console.log(`[config] 已记录版本号: ${VERSION}`);
+
+  // 5. 提示远程用户
+  console.log('[config] 远程 MCP 用户请通过 get_setup_requirements 工具获取配置需求');
 
   return { upgraded, previousVersion };
 }

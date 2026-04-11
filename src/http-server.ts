@@ -99,19 +99,21 @@ export interface ApprovalRequest {
 }
 
 // ============================================
-// CC 注册表：ccId → { robotName, agentName }
+// CC 注册表：ccId → { robotName, agentName, mode }
 // ccId 是 CC 的唯一身份标识，与 SSE session 解耦
+// mode: 'channel' = SSE 推送，'http' = 轮询
 // ============================================
 interface CCRegistryEntry {
   robotName: string;
   agentName?: string;
+  mode?: 'channel' | 'http';  // 运行模式
 }
 
 const ccIdRegistry = new Map<string, CCRegistryEntry>();
 
-export function registerCcId(ccId: string, robotName: string, agentName?: string): void {
-  ccIdRegistry.set(ccId, { robotName, agentName });
-  console.log(`[ccid] 注册: ${ccId} → ${robotName} (${agentName || 'unknown'})`);
+export function registerCcId(ccId: string, robotName: string, agentName?: string, mode?: 'channel' | 'http'): void {
+  ccIdRegistry.set(ccId, { robotName, agentName, mode });
+  console.log(`[ccid] 注册: ${ccId} → ${robotName} (${agentName || 'unknown'}, mode: ${mode || 'http'})`);
 }
 
 export function unregisterCcId(ccId: string): void {
@@ -158,7 +160,7 @@ interface ApprovalEntry {
 // 使用 Map 存储多个待处理审批（按 taskId 索引）
 const pendingApprovals: Map<string, ApprovalEntry> = new Map();
 
-const VERSION = '1.2.0';
+const VERSION = '2.0.0';
 
 // Transport 和 Server 存储（每个 session 一个）
 interface TransportEntry {

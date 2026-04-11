@@ -36,12 +36,15 @@ import { getAllConnectionStates } from './connection-manager.js';
 import { loadStats, cleanupOldLogs } from './connection-log.js';
 import { startKeepaliveMonitor, stopKeepaliveMonitor } from './keepalive-monitor.js';
 
-const VERSION = '1.4.2';
+const VERSION = '2.0.0';
 const PID_FILE = path.join(os.homedir(), '.wecom-aibot-mcp', 'server.pid');
 
 function showHelp() {
   console.log(`
 企业微信智能机器人 MCP 服务 v${VERSION}
+
+架构:
+  Claude Code → Channel (stdio MCP) → RxJS Subject → WebSocket → 企业微信
 
 安装:
   npx @vrs-soft/wecom-aibot-mcp
@@ -52,34 +55,17 @@ function showHelp() {
 选项:
   --help, -h      显示帮助信息
   --version, -v   显示版本号
-  --upgrade       强制升级全局配置（覆盖 MCP 配置、权限、skill）
-  --reinstall     重新安装全局配置（删除后重新写入，保留机器人配置）
-  --start         启动 MCP Server（后台服务模式）
-  --stop          停止 MCP Server
-  --debug         前台启动 MCP Server（日志直接输出到终端，用于调试）
+  --start         启动 HTTP MCP Server
+  --stop          停止 HTTP MCP Server
+  --debug         前台启动 HTTP MCP Server（调试用）
   --status        显示服务状态和机器人配置
-  --config        重新配置默认机器人（修改 Bot ID / Secret / 目标用户）
-  --add           添加新的机器人配置（多机器人场景）
-  --list          列出所有已配置的机器人及其占用状态
-  --delete [名称] 删除指定的机器人配置（无参数则显示列表选择）
-  --uninstall     卸载并删除所有配置（包括 MCP 配置、hook、skill）
+  --config        重新配置默认机器人
+  --add           添加新的机器人配置
+  --list          列出所有已配置的机器人
+  --delete [名称] 删除指定的机器人配置
+  --uninstall     卸载并删除所有配置
 
-使用流程:
-  1. 首次安装: npx @vrs-soft/wecom-aibot-mcp
-     （进入配置向导，完成后自动后台启动服务）
-
-  2. 已有配置: npx @vrs-soft/wecom-aibot-mcp
-     （显示状态，提示使用 --start 启动）
-
-  3. 启动服务: npx @vrs-soft/wecom-aibot-mcp --start
-     （后台启动 MCP HTTP Server）
-
-  4. 停止服务: npx @vrs-soft/wecom-aibot-mcp --stop
-
-MCP 配置（HTTP Transport）:
-
-  编辑 ~/.claude.json：
-
+HTTP MCP 配置:
   {
     "mcpServers": {
       "wecom-aibot": {
