@@ -288,8 +288,8 @@ describe('MCP Tools', () => {
 
       const response = JSON.parse(result.content[0].text);
       expect(response.robots.length).toBe(2);
-      expect(response.robots).toContain('ClaudeCode');
-      expect(response.robots).toContain('module-studio');
+      expect(response.robots[0].name).toBe('ClaudeCode');
+      expect(response.robots[1].name).toBe('module-studio');
     });
   });
 

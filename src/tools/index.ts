@@ -39,7 +39,7 @@ import {
   exitHeadlessMode,
   isHeadlessMode,
 } from '../headless-state.js';
-import { subscribeWecomMessageByRobot, WecomMessage } from '../message-bus.js';
+import { subscribeWecomMessageByCcId, WecomMessage } from '../message-bus.js';
 import { updateWechatModeConfig, addPermissionHook, removePermissionHook, addTaskCompletedHook, removeTaskCompletedHook } from '../project-config.js';
 import { logger } from '../logger.js';
 
@@ -115,7 +115,7 @@ export function registerTools(server: McpServer) {
   // ============================================
   server.tool(
     'get_pending_messages',
-    '获取待处理的微信消息。支持长轮询：传入 timeout_ms 后阻塞等待，有消息立即返回，无消息等到超时。超时不是停止信号，必须立即重新调用继续轮询。',
+    '获取待处理的微信消息。支持长轮询：传入 timeout_ms 后阻塞等待，有消息立即返回，无消息等到超时。超时后继续轮询，不要停止。',
     {
       clear: z.boolean().optional().default(true).describe('是否清除已获取的消息'),
       timeout_ms: z.number().optional().default(30000).describe('长轮询超时（毫秒），默认 30000，最大 60000'),
@@ -178,14 +178,14 @@ export function registerTools(server: McpServer) {
         };
       }
 
-      // 长轮询：订阅消息总线，等待该机器人的消息
+      // 长轮询：订阅消息总线，等待该机器人且匹配 ccId 的消息
       const arrived = await new Promise<WecomMessage | null>(resolve => {
         const timer = setTimeout(() => {
           sub.unsubscribe();
           resolve(null);
         }, waitMs);
 
-        const sub = subscribeWecomMessageByRobot(robotName!, (msg) => {
+        const sub = subscribeWecomMessageByCcId(robotName!, cc_id, (msg) => {
           clearTimeout(timer);
           sub.unsubscribe();
           resolve(msg);
@@ -200,7 +200,7 @@ export function registerTools(server: McpServer) {
               count: 0,
               messages: [],
               timeout: true,
-              hint: '超时不是停止信号，必须立即重新调用 get_pending_messages 继续轮询。不需要 sleep 或等待。'
+              hint: '继续轮询，不要停止'
             }),
           }],
         };
@@ -292,16 +292,22 @@ npx @vrs-soft/wecom-aibot-mcp
   // ============================================
   server.tool(
     'list_robots',
-    '列出配置中的所有机器人名称。多 CC 可共享同一机器人，直接选择使用即可。',
+    '列出配置中的所有机器人。多 CC 可共享同一机器人，直接选择使用即可。',
     {},
     async () => {
       const allRobots = listAllRobots();
-      const names = allRobots.map(robot => robot.name);
+      // 返回完整信息，包括 botId 用于区分同名机器人
+      const robotList = allRobots.map((robot, index) => ({
+        index: index + 1,
+        name: robot.name,
+        botId: robot.botId?.slice(0, 12) + '...',  // 只显示前12位
+        targetUser: robot.targetUserId,
+      }));
 
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({ robots: names }, null, 2),
+          text: JSON.stringify({ robots: robotList }, null, 2),
         }],
       };
     }

@@ -21,8 +21,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { registerTools } from './tools/index.js';
 import { getClient, getConnectionState, getAllConnectionStates, connectAllRobots } from './connection-manager.js';
-import { subscribeWecomMessage, WecomMessage } from './message-bus.js';
-import { listAllRobots } from './config-wizard.js';
+import { subscribeWecomMessage, WecomMessage, getSubscriberCount } from './message-bus.js';
 import { logger } from './logger.js';
 
 // 固定端口
@@ -92,7 +91,7 @@ export interface ApprovalRequest {
 
 // ============================================
 // CC 注册表：ccId → { robotName, agentName }
-// ccId 是 CC 的唯一身份标识，与 SSE session 解耦
+// ccId 是 CC 的唯一身份标识，只通过 exit_headless_mode 工具清理
 // ============================================
 interface CCRegistryEntry {
   robotName: string;
@@ -181,80 +180,99 @@ function createMcpServerInstance(): McpServer {
   return server;
 }
 
+// 消息消费计数器（用于检测未被消费的消息）- 已移至 message-bus.ts
+
 // 处理微信消息（路由给对应的 Session）
-function handleWecomMessage(msg: WecomMessage): void {
+async function handleWecomMessage(msg: WecomMessage): Promise<void> {
   if (transports.size === 0) {
     logger.log('[http] 无活跃 MCP session，跳过消息处理');
     return;
   }
 
-  // 查找匹配的 CC（基于引用内容中的 ccId）
+  const subscriberCount = getSubscriberCount(msg.robotName);
+  logger.log(`[http] 机器人 ${msg.robotName} 订阅数: ${subscriberCount}`);
+
+  if (subscriberCount === 0) {
+    logger.log('[http] 无订阅者，跳过消息处理');
+    return;
+  }
+
+  if (subscriberCount === 1) {
+    // 只有一个订阅者，直接广播给它（无需 ccId 检查）
+    logger.log('[http] 单订阅者模式，直接广播');
+    for (const [sessionId, entry] of transports) {
+      try {
+        await entry.server.server.notification({
+          method: 'notifications/message',
+          params: {
+            level: 'info',
+            data: JSON.stringify({
+              type: 'wecom_message',
+              robotName: msg.robotName,
+              message: {
+                content: msg.content,
+                from: msg.from_userid,
+                chatid: msg.chatid,
+                chattype: msg.chattype,
+                time: new Date(msg.timestamp).toISOString(),
+                quoteContent: msg.quoteContent,
+              },
+            }),
+          },
+        });
+        logger.log(`[http] 已推送消息到 session ${sessionId}`);
+      } catch (err) {
+        logger.error(`[http] 推送失败 session ${sessionId}:`, err);
+      }
+    }
+    return;
+  }
+
+  // 多订阅者模式：检查 ccId 引用
   const targetCcId = extractCcIdFromQuote(msg.quoteContent);
+  logger.log(`[http] 多订阅者模式，目标 ccId: ${targetCcId || '无'}`);
 
   if (targetCcId) {
-    // 有引用，SSE 推送给对应的 CC
-    logger.log(`[http] 消息路由给 ${targetCcId}`);
-    pushMessageToSession(msg.robotName, {
-      msgid: msg.msgid,
-      content: msg.content,
-      from_userid: msg.from_userid,
-      chatid: msg.chatid,
-      chattype: msg.chattype,
-      timestamp: msg.timestamp,
-    });
-  } else if (getCCCount() === 1) {
-    // 只有一个 CC 在线，直接推送（无需引用）
-    logger.log(`[http] 单 CC 模式，直接推送`);
-    pushMessageToSession(msg.robotName, {
-      msgid: msg.msgid,
-      content: msg.content,
-      from_userid: msg.from_userid,
-      chatid: msg.chatid,
-      chattype: msg.chattype,
-      timestamp: msg.timestamp,
-    });
-  } else if (getCCCount() > 1) {
-    // 多 CC 在线但无引用：先尝试按 from_userid 匹配机器人的 targetUserId
-    const matchedCcId = findCcIdByTargetUserId(msg.from_userid);
-    if (matchedCcId) {
-      logger.log(`[http] 多 CC 模式，按 from_userid 路由给 ${matchedCcId}`);
-      pushMessageToSession(msg.robotName, {
-        msgid: msg.msgid,
-        content: msg.content,
-        from_userid: msg.from_userid,
-        chatid: msg.chatid,
-        chattype: msg.chattype,
-        timestamp: msg.timestamp,
-      });
-    } else {
-      // 无法确定目标 CC，发送引用提示
-      logger.log(`[http] 多 CC 模式，无引用，发送提示`);
-      sendNoReferencePrompt(msg);
+    // 有明确的 ccId 引用，广播给所有 session（订阅者会自己过滤）
+    logger.log(`[http] 引用匹配 ${targetCcId}，广播消息`);
+    for (const [sessionId, entry] of transports) {
+      try {
+        await entry.server.server.notification({
+          method: 'notifications/message',
+          params: {
+            level: 'info',
+            data: JSON.stringify({
+              type: 'wecom_message',
+              robotName: msg.robotName,
+              targetCcId,  // 标记目标 ccId
+              message: {
+                content: msg.content,
+                from: msg.from_userid,
+                chatid: msg.chatid,
+                chattype: msg.chattype,
+                time: new Date(msg.timestamp).toISOString(),
+                quoteContent: msg.quoteContent,
+              },
+            }),
+          },
+        });
+        logger.log(`[http] 已推送消息到 session ${sessionId} (目标: ${targetCcId})`);
+      } catch (err) {
+        logger.error(`[http] 推送失败 session ${sessionId}:`, err);
+      }
     }
+  } else {
+    // 无 ccId 引用，发送提示
+    logger.log('[http] 无引用匹配，发送提示');
+    await sendNoReferencePrompt(msg);
   }
 }
 
-// 从引用内容提取 ccId
+// 从引用内容提取 ccId（匹配任意格式）
 function extractCcIdFromQuote(quoteContent?: string): string | null {
   if (!quoteContent) return null;
-  // 匹配格式：【cc-1】或【cc-2】等
-  const match = quoteContent.match(/【(cc-\d+)】/);
-  if (match) {
-    return match[1]; // 返回 ccId（如 cc-1）
-  }
-  return null;
-}
-
-// 根据 from_userid 匹配 ccId（2v2 场景：每个用户对应一个 CC）
-function findCcIdByTargetUserId(fromUserId: string): string | null {
-  const allRobots = listAllRobots();
-  for (const [ccId, entry] of ccIdRegistry) {
-    const robot = allRobots.find(r => r.name === entry.robotName);
-    if (robot && robot.targetUserId === fromUserId) {
-      return ccId;
-    }
-  }
-  return null;
+  const match = quoteContent.match(/【([^】]+)】/);
+  return match ? match[1] : null;
 }
 
 // 无引用消息提示
@@ -262,14 +280,15 @@ async function sendNoReferencePrompt(msg: WecomMessage): Promise<void> {
   const client = await getClient(msg.robotName);
   if (!client) return;
 
-  const onlineList = getOnlineCcIds().map(id => `• ${id}`).join('\n');
+  const onlineList = getOnlineCcIds();
+  if (onlineList.length === 0) return;  // 没有 CC 在线，不发提示
 
   const reply = `检测到多个 Claude Code 会话在线，请引用回复指明接收者。
 
 当前在线：
-${onlineList}
+${onlineList.map(id => `• 【${id}】`).join('\n')}
 
-示例：引用【${getOnlineCcIds()[0]}】的消息后回复`;
+示例：引用【${onlineList[0]}】的消息后回复`;
 
   await client.sendText(reply);
 }
