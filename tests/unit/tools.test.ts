@@ -38,6 +38,7 @@ vi.mock('../../src/http-server.js', () => ({
   registerCcId: vi.fn(),
   unregisterCcId: vi.fn(),
   getRobotByCcId: vi.fn(),
+  generateCcId: vi.fn(),
 }));
 
 vi.mock('../../src/headless-state.js', () => ({
@@ -77,6 +78,7 @@ import {
   registerCcId,
   unregisterCcId,
   getRobotByCcId,
+  generateCcId,
 } from '../../src/http-server';
 
 describe('MCP Tools', () => {
@@ -102,8 +104,8 @@ describe('MCP Tools', () => {
 
   describe('registerTools', () => {
     it('应该注册正确数量的工具', () => {
-      // 当前注册的工具数量：10 个
-      expect(toolHandlers.size).toBe(10);
+      // 当前注册的工具数量：12 个（添加了 heartbeat_check 和 get_setup_requirements）
+      expect(toolHandlers.size).toBe(12);
     });
 
     it('应该注册 send_message 工具', () => {
@@ -189,7 +191,7 @@ describe('MCP Tools', () => {
       expect(response.robots.length).toBe(2);
     });
 
-    it('连接成功时应该注册 ccId（由智能体传入）', async () => {
+    it('连接成功时应该生成并注册 ccId（服务端生成）', async () => {
       vi.mocked(connectRobot).mockResolvedValueOnce({
         success: true,
         client: {
@@ -197,13 +199,17 @@ describe('MCP Tools', () => {
         },
       } as any);
 
+      // Mock generateCcId 返回固定值
+      vi.mocked(generateCcId).mockReturnValue('TestAgent-1');
+
       const handler = toolHandlers.get('enter_headless_mode')!.handler;
       const result = await handler(
-        { cc_id: 'my-project', agent_name: 'TestAgent', robot_id: '1', project_dir: '/path/to/test-project' }
+        { agent_name: 'TestAgent', robot_id: '1', project_dir: '/path/to/test-project', mode: 'http' }
       );
 
-      // ccId 由智能体传入
-      expect(registerCcId).toHaveBeenCalledWith('my-project', 'ClaudeCode', 'TestAgent');
+      // ccId 由服务端生成
+      expect(generateCcId).toHaveBeenCalledWith('TestAgent');
+      expect(registerCcId).toHaveBeenCalledWith('TestAgent-1', 'ClaudeCode', 'TestAgent', 'http');
     });
 
     it('连接失败时应该返回错误', async () => {
