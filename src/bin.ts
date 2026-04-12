@@ -36,7 +36,7 @@ import { loadStats, cleanupOldLogs } from './connection-log.js';
 import { startKeepaliveMonitor, stopKeepaliveMonitor } from './keepalive-monitor.js';
 import { logger } from './logger.js';
 
-const VERSION = '1.6.0';
+const VERSION = '2.0.0';
 const PID_FILE = path.join(os.homedir(), '.wecom-aibot-mcp', 'server.pid');
 
 function showHelp() {
@@ -477,14 +477,8 @@ async function main() {
     return; // 保持运行，不 exit
   }
 
-  // --debug：前台启动，日志直接输出到终端
-  if (args.includes('--debug')) {
-    console.log('[mcp] Debug 模式：前台运行，Ctrl+C 退出');
-    await startMcpServerForeground(true);
-    return;
-  }
-
   // --channel：启动 Channel MCP 代理（stdio）
+  // 注意：必须在 --debug 之前检查，否则 --channel --debug 会先触发 HTTP Server
   if (args.includes('--channel')) {
     // 检查 HTTP MCP 的 debug 标记文件
     const debugFile = path.join(os.homedir(), '.wecom-aibot-mcp', 'debug');
@@ -503,6 +497,13 @@ async function main() {
 
     // Channel MCP 退出时不删除 debug 文件（由 HTTP MCP 管理）
     return; // 保持运行，不 exit
+  }
+
+  // --debug：前台启动，日志直接输出到终端
+  if (args.includes('--debug')) {
+    console.log('[mcp] Debug 模式：前台运行，Ctrl+C 退出');
+    await startMcpServerForeground(true);
+    return;
   }
 
   // --http-only：仅启动 HTTP Server（远程部署场景）

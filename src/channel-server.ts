@@ -13,8 +13,32 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 const MCP_URL = process.env.MCP_URL || 'http://127.0.0.1:18963';
+
+// Channel 日志文件
+const CHANNEL_LOG_FILE = path.join(os.homedir(), '.wecom-aibot-mcp', 'channel.log');
+
+/**
+ * 写入 Channel 日志
+ */
+function logChannel(message: string, data?: any): void {
+  const timestamp = new Date().toISOString();
+  const logLine = `[${timestamp}] ${message}${data ? ` | ${JSON.stringify(data)}` : ''}\n`;
+
+  // 写入日志文件
+  try {
+    fs.appendFileSync(CHANNEL_LOG_FILE, logLine);
+  } catch (err) {
+    console.error(`[channel] 日志写入失败: ${err}`);
+  }
+
+  // 同时输出到 stderr
+  console.error(`[channel] ${message}${data ? ` | ${JSON.stringify(data).slice(0, 200)}` : ''}`);
+}
 
 // SSE 连接状态
 let sseConnected = false;
@@ -53,7 +77,7 @@ async function initHttpSession(): Promise<string | null> {
     const sessionId = res.headers.get('mcp-session-id');
     if (sessionId) {
       httpSessionId = sessionId;
-      console.error(`[channel] HTTP MCP session initialized: ${sessionId}`);
+      logChannel('HTTP MCP session initialized', { sessionId });
       return sessionId;
     }
 
@@ -62,14 +86,14 @@ async function initHttpSession(): Promise<string | null> {
     const match = text.match(/mcp-session-id:\s*(\S+)/i);
     if (match) {
       httpSessionId = match[1];
-      console.error(`[channel] HTTP MCP session from body: ${httpSessionId}`);
+      logChannel('HTTP MCP session from body', { sessionId: httpSessionId });
       return httpSessionId;
     }
 
-    console.error('[channel] Failed to get HTTP MCP session ID');
+    logChannel('Failed to get HTTP MCP session ID');
     return null;
   } catch (err) {
-    console.error(`[channel] HTTP MCP init error: ${err}`);
+    logChannel('HTTP MCP init error', { error: String(err) });
     return null;
   }
 }
@@ -78,9 +102,12 @@ async function initHttpSession(): Promise<string | null> {
  * 转发请求到 HTTP MCP
  */
 async function forwardToHttpMcp(toolName: string, params: Record<string, unknown>): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  logChannel('转发请求到 HTTP MCP', { toolName, params });
+
   // 确保已初始化 HTTP session
   const sessionId = await initHttpSession();
   if (!sessionId) {
+    logChannel('转发失败: HTTP MCP session 未初始化');
     return {
       content: [{
         type: 'text',
@@ -129,11 +156,12 @@ async function forwardToHttpMcp(toolName: string, params: Record<string, unknown
     try {
       data = JSON.parse(text);
     } catch (e) {
-      console.error(`[channel] Failed to parse response: ${text.slice(0, 100)}`);
+      logChannel('解析响应失败', { text: text.slice(0, 100) });
     }
   }
 
   if (data?.error) {
+    logChannel('HTTP MCP 返回错误', { error: data.error });
     return {
       content: [{
         type: 'text',
@@ -143,6 +171,7 @@ async function forwardToHttpMcp(toolName: string, params: Record<string, unknown
   }
 
   // HTTP MCP 返回的 result（包含 content 数组）
+  logChannel('转发成功', { result: data.result });
   return data.result || {
     content: [{
       type: 'text',
@@ -155,85 +184,115 @@ async function forwardToHttpMcp(toolName: string, params: Record<string, unknown
  * 建立 SSE 连接（enter_headless_mode 后调用）
  */
 function connectSSE(ccId?: string): void {
-  if (sseConnected) return;
+  if (sseConnected) {
+    logChannel('SSE already connected, skip');
+    return;
+  }
   sseConnected = true;
 
   const sseUrl = ccId ? `${MCP_URL}/sse/${ccId}` : `${MCP_URL}/sse`;
-  console.error(`[channel] Connecting to SSE: ${sseUrl}`);
+  logChannel('Connecting to SSE', { url: sseUrl, ccId, mcpServerReady: mcpServer ? 'yes' : 'no' });
 
   sseAbortController = new AbortController();
 
+  // SSE fetch 配置：添加 keep-alive headers 确保连接稳定
   fetch(sseUrl, {
     method: 'GET',
     signal: sseAbortController.signal,
+    headers: {
+      'Accept': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
   }).then(async (res) => {
     if (!res.ok) {
-      console.error(`[channel] SSE connect failed: ${res.status}`);
+      logChannel('SSE connect failed', { status: res.status });
       sseConnected = false;
       return;
     }
 
-    console.error('[channel] SSE connected');
+    logChannel('SSE connected, waiting for messages', { status: res.status });
+
     const reader = res.body?.getReader();
     if (!reader) {
-      console.error('[channel] No response body');
+      logChannel('No response body');
       sseConnected = false;
       return;
     }
 
     const decoder = new TextDecoder();
     let buffer = '';
+    let messageCount = 0;
+
+    // 添加心跳监控
+    const heartbeatInterval = setInterval(() => {
+      logChannel('SSE heartbeat', { connected: sseConnected, messages: messageCount });
+    }, 30000);
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) {
-        console.error('[channel] SSE stream ended');
+        logChannel('SSE stream ended');
+        clearInterval(heartbeatInterval);
         sseConnected = false;
         break;
       }
 
-      buffer += decoder.decode(value, { stream: true });
+      const chunk = decoder.decode(value, { stream: true });
+      logChannel('SSE chunk received', { bytes: chunk.length, preview: chunk.slice(0, 100) });
+      buffer += chunk;
 
       // 解析 SSE 事件
       const lines = buffer.split('\n');
       buffer = '';
 
       for (const line of lines) {
+        logChannel('SSE line', { line: line.slice(0, 80) });
+
         if (line.startsWith('data: ')) {
           const data = line.slice(6);
+          logChannel('📩 SSE MESSAGE RECEIVED', { data: data.slice(0, 100) });
           try {
             const msg = JSON.parse(data);
-            console.error(`[channel] SSE message received: ${JSON.stringify(msg).slice(0, 100)}`);
+            messageCount++;
+            logChannel('✅ 消息解析成功', { messageNumber: messageCount, msg });
 
-            // 推送 notifications/claude/channel
+            // 推送 notifications/message (标准 MCP 格式)
             if (mcpServer) {
-              console.error('[channel] Sending notification: notifications/claude/channel');
-              mcpServer.server.notification({
-                method: 'notifications/claude/channel',
+              const notification = {
+                method: 'notifications/message',
                 params: {
-                  content: JSON.stringify(msg),
+                  level: 'info',
+                  data: JSON.stringify(msg),
                 },
-              });
-              console.error('[channel] Notification sent');
+              };
+              logChannel('📤 发送 notification', { notification });
+
+              try {
+                mcpServer.server.notification(notification);
+                logChannel('✅ NOTIFICATION 发送成功', { notification });
+              } catch (notifyErr) {
+                logChannel('❌ NOTIFICATION 发送失败', { error: String(notifyErr) });
+              }
             } else {
-              console.error('[channel] ERROR: mcpServer is null, cannot send notification');
+              logChannel('❌ ERROR: mcpServer is null');
             }
           } catch (e) {
-            console.error(`[channel] JSON parse error: ${e}`);
+            logChannel('JSON parse error', { error: String(e), data: data.slice(0, 50) });
           }
         } else if (line.startsWith('event: ')) {
-          // 事件类型行，记录事件类型
-          console.error(`[channel] SSE event type: ${line.slice(7)}`);
+          logChannel('SSE event type', { type: line.slice(7) });
         } else if (line === '') {
           // 事件分隔符，忽略
         } else {
-          // 其他内容，可能是未完成的行
           buffer = line;
         }
       }
     }
+
+    clearInterval(heartbeatInterval);
   }).catch((err) => {
-    console.error(`[channel] SSE error: ${err}`);
+    logChannel('SSE error', { error: String(err) });
     sseConnected = false;
   });
 }
@@ -391,7 +450,7 @@ function registerChannelTools(server: McpServer) {
           try {
             const parsed = JSON.parse(content[0].text);
             if (parsed.ccId) {
-              console.error(`[channel] Got ccId: ${parsed.ccId}, connecting SSE...`);
+              logChannel('Got ccId, connecting SSE', { ccId: parsed.ccId, mode });
               connectSSE(parsed.ccId);
 
               // Channel 模式：过滤 heartbeat 信息，简化消息
@@ -399,10 +458,11 @@ function registerChannelTools(server: McpServer) {
                 delete parsed.heartbeat;  // Channel 模式不需要 heartbeat loop
                 parsed.message = `已进入微信模式(Channel)，消息将通过 SSE 自动推送`;
                 content[0].text = JSON.stringify(parsed);
+                logChannel('enter_headless_mode 响应已处理', { parsed });
               }
             }
           } catch (e) {
-            // JSON 解析失败，忽略
+            logChannel('JSON 解析失败', { error: String(e) });
           }
         }
       }
@@ -427,7 +487,7 @@ function registerChannelTools(server: McpServer) {
         sseAbortController.abort();
         sseAbortController = null;
         sseConnected = false;
-        console.error('[channel] SSE disconnected');
+        logChannel('SSE disconnected', { cc_id });
       }
 
       return forwardToHttpMcp('exit_headless_mode', { cc_id, project_dir });
@@ -489,14 +549,14 @@ function registerChannelTools(server: McpServer) {
     }
   );
 
-  console.error('[channel] Registered 13 tools');
+  logChannel('Registered 13 tools');
 }
 
 /**
  * 启动 Channel MCP Server
  */
 export async function startChannelServer(): Promise<void> {
-  console.error('[channel] Starting Channel MCP Proxy...');
+  logChannel('Starting Channel MCP Proxy');
 
   // 创建 MCP Server
   mcpServer = new McpServer({
@@ -505,17 +565,17 @@ export async function startChannelServer(): Promise<void> {
   }, {
     capabilities: {
       tools: {},
-      experimental: { 'claude/channel': {} },  // 声明 channel 能力
     },
   });
 
   // 注册工具
   registerChannelTools(mcpServer);
+  logChannel('Registered 13 tools');
 
   // 连接 stdio transport
   const transport = new StdioServerTransport();
   await mcpServer.connect(transport);
 
-  console.error('[channel] Connected to CC via stdio');
-  console.error('[channel] Channel MCP Proxy ready');
+  logChannel('Connected to CC via stdio');
+  logChannel('Channel MCP Proxy ready');
 }

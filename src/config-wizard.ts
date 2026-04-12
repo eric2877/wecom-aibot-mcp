@@ -1039,23 +1039,26 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
       console.log('[config] 请设置环境变量: MCP_URL=http://远程IP:18963');
       return { upgraded: false, previousVersion };
     }
+    // Channel MCP 配置：硬编码本地路径
     claudeConfig.mcpServers['wecom-aibot-channel'] = {
-      command: 'npx',
-      args: ['@vrs-soft/wecom-aibot-mcp', '--channel'],
+      command: 'node',
+      args: ['/Volumes/Mac_Data/VScode/wecom-aibot-mcp/dist/bin.js', '--channel'],
       env: { MCP_URL: mcpUrl },
     };
-    console.log(`[config] Channel-only 模式：写入 Channel MCP 配置 (wecom-aibot-channel)，连接到 ${mcpUrl}`);
+    console.log(`[config] Channel-only 模式：Channel MCP 使用本地路径`);
   } else {
     // full 模式：同时写入 HTTP MCP 和 Channel MCP 配置
     claudeConfig.mcpServers['wecom-aibot'] = {
       type: 'http',
       url: 'http://127.0.0.1:18963/mcp',
     };
+    // Channel MCP 配置：硬编码本地路径
     claudeConfig.mcpServers['wecom-aibot-channel'] = {
-      command: 'npx',
-      args: ['@vrs-soft/wecom-aibot-mcp', '--channel'],
+      command: 'node',
+      args: ['/Volumes/Mac_Data/VScode/wecom-aibot-mcp/dist/bin.js', '--channel'],
       env: { MCP_URL: 'http://127.0.0.1:18963' },
     };
+    console.log(`[config] full 模式：Channel MCP 使用本地路径`);
   }
   fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
   console.log('[config] 已写入 MCP 配置到 ~/.claude.json');

@@ -293,10 +293,20 @@ async function handleWecomMessage(msg: WecomMessage): Promise<void> {
     }
   }
 
-  // 检查是否有匹配 robotName 的 SSE 客户端（无需精准 ccId）
+  // 检查 SSE 客户端数量（按 robotName）
+  const matchingSseClients: Array<{ clientId: string; ccId: string }> = [];
   for (const [clientId, client] of sseClients) {
     if (client.robotName === msg.robotName) {
-      logger.log(`[http] 发现 SSE 客户端 ${clientId}，robotName=${client.robotName}`);
+      matchingSseClients.push({ clientId, ccId: client.ccId });
+    }
+  }
+
+  if (matchingSseClients.length > 0) {
+    // 有 SSE 客户端连接
+    if (matchingSseClients.length === 1) {
+      // 单个 SSE 客户端，直接推送
+      const { clientId, ccId } = matchingSseClients[0];
+      logger.log(`[http] 单 SSE 客户端 ${clientId}，直接推送`);
       await pushMessageToSSEClient(msg.robotName, {
         msgid: msg.msgid,
         content: msg.content,
@@ -304,9 +314,50 @@ async function handleWecomMessage(msg: WecomMessage): Promise<void> {
         chatid: msg.chatid,
         chattype: msg.chattype,
         timestamp: msg.timestamp,
-      }, client.ccId);
+      }, ccId);
       return;
     }
+
+    // 多个 SSE 客户端，需要引用路由
+    if (targetCcId) {
+      // 有引用，精准推送
+      const matched = matchingSseClients.find(c => c.ccId === targetCcId);
+      if (matched) {
+        logger.log(`[http] 多 SSE 客户端，引用匹配 ${targetCcId}，精准推送`);
+        await pushMessageToSSEClient(msg.robotName, {
+          msgid: msg.msgid,
+          content: msg.content,
+          from_userid: msg.from_userid,
+          chatid: msg.chatid,
+          chattype: msg.chattype,
+          timestamp: msg.timestamp,
+        }, targetCcId);
+        return;
+      }
+    }
+
+    // 无引用，尝试按 from_userid 匹配（2v2 场景）
+    const matchedCcId = findCcIdByTargetUserId(msg.from_userid);
+    if (matchedCcId) {
+      const matched = matchingSseClients.find(c => c.ccId === matchedCcId);
+      if (matched) {
+        logger.log(`[http] 多 SSE 客户端，按 from_userid 路由给 ${matchedCcId}`);
+        await pushMessageToSSEClient(msg.robotName, {
+          msgid: msg.msgid,
+          content: msg.content,
+          from_userid: msg.from_userid,
+          chatid: msg.chatid,
+          chattype: msg.chattype,
+          timestamp: msg.timestamp,
+        }, matchedCcId);
+        return;
+      }
+    }
+
+    // 无法确定目标 CC，发送引用提示
+    logger.log('[http] 多 SSE 客户端，无引用匹配，发送提示');
+    await sendNoReferencePrompt(msg);
+    return;
   }
 
   // 无 SSE 客户端，走 HTTP 模式 notification 推送
@@ -692,6 +743,35 @@ export async function startHttpServer(
         return;
       }
 
+      // 调试端点：模拟发送微信消息（测试 SSE 推送）
+      if (req.method === 'POST' && url === '/debug/test_message') {
+        const body = await readRequestBody(req);
+        const params = JSON.parse(body);
+        const robotName = params.robotName || 'CC';
+        const content = params.content || '测试消息';
+        const ccId = params.ccId;
+
+        // 模拟微信消息
+        const testMsg: WecomMessage = {
+          robotName,
+          msgid: `test_${Date.now()}`,
+          content,
+          from_userid: 'TestUser',
+          chatid: 'TestUser',
+          chattype: 'single',
+          timestamp: Date.now(),
+          quoteContent: ccId ? `【${ccId}】` : undefined,  // 模拟引用指定 ccId
+        };
+
+        // 发布到消息总线
+        logger.log(`[http] [DEBUG] 模拟发送微信消息: robotName=${robotName}, content=${content}, ccId=${ccId}`);
+        handleWecomMessage(testMsg);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'sent', message: '测试消息已发送', ccId }));
+        return;
+      }
+
       // 调试端点：模拟断开指定机器人的连接（不删除状态，保留待发送队列）
       if (req.method === 'POST' && url.startsWith('/debug/disconnect/')) {
         const robotName = decodeURIComponent(url.replace('/debug/disconnect/', ''));
@@ -981,8 +1061,16 @@ function handleSSEConnect(req: http.IncomingMessage, res: http.ServerResponse, u
   // 发送连接确认
   res.write(`event: connected\ndata: {"clientId":"${clientId}","ccId":"${ccId}"}\n\n`);
 
+  // 心跳机制：每 15 秒发送注释行保持连接活跃
+  const heartbeatInterval = setInterval(() => {
+    // SSE 注释行（以冒号开头）会被客户端忽略，但保持连接
+    res.write(': heartbeat\n\n');
+    logger.log(`[http] SSE 心跳发送: clientId=${clientId}`);
+  }, 15000);
+
   // 处理客户端断开
   req.on('close', () => {
+    clearInterval(heartbeatInterval);
     sseClients.delete(clientId);
     logger.log(`[http] SSE 客户端断开: clientId=${clientId}`);
   });
