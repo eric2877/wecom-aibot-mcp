@@ -22,7 +22,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { listAllRobots } from '../config-wizard.js';
+import { listAllRobots, installSkill } from '../config-wizard.js';
 import {
   connectRobot,
   disconnectRobot,
@@ -87,7 +87,7 @@ export function registerTools(server: McpServer) {
         content: [{
           type: 'text',
           text: success
-            ? '消息已发送。Channel 模式下消息自动推送，HTTP 模式下请使用 get_pending_messages 获取回复。'
+            ? '✅ 消息已发送，继续轮询，继续等待'
             : '发送失败，请检查连接状态',
         }],
       };
@@ -222,8 +222,8 @@ export function registerTools(server: McpServer) {
             text: JSON.stringify({
               count: 0,
               messages: [],
-              timeout: true,
-              hint: '继续轮询，不要停止'
+              waiting: true,
+              hint: '继续等待，继续轮询'
             }),
           }],
         };
@@ -312,6 +312,7 @@ npx @vrs-soft/wecom-aibot-mcp
                   'mcp__wecom-aibot__exit_headless_mode',
                   'mcp__wecom-aibot__get_connection_stats',
                   'mcp__wecom-aibot__get_setup_requirements',
+                  'mcp__wecom-aibot__get_skill',
                 ],
               },
               // Hook 配置需求
@@ -324,9 +325,9 @@ npx @vrs-soft/wecom-aibot-mcp
               },
               // Skill 安装需求
               skills: {
-                globalDir: '~/.claude/skills/headless-mode',
                 projectDir: '.claude/skills/headless-mode',
                 files: ['SKILL.md'],
+                skillUrl: `${process.env.MCP_URL || 'http://127.0.0.1:18963'}/skill`,  // 远程部署下载 URL
               },
             },
             // 检查命令（供 skill 验证）
@@ -488,20 +489,38 @@ npx @vrs-soft/wecom-aibot-mcp
         };
       }
 
-      // 服务端生成 ccId（方案 A：基于 agentName 自动生成带序号的唯一标识）
-      const generatedCcId = generateCcId(effectiveAgentName);
+      // 如果用户传入 cc_id，直接使用；否则自动生成
+      const finalCcId = cc_id || generateCcId(effectiveAgentName);
 
-      // 注册 ccId 到 CC 注册表（服务端生成，无需重复检查）
-      registerCcId(generatedCcId, selectedRobot.name, effectiveAgentName, mode);
+      // 注册 ccId 到 CC 注册表（检测冲突）
+      const registerResult = registerCcId(finalCcId, selectedRobot.name, effectiveAgentName, mode);
+
+      // 如果 ccId 冲突，返回错误提示 agent 改名
+      if (!registerResult.success && registerResult.conflict) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              status: 'ccid_conflict',
+              message: `会话名称「${finalCcId}」已被使用，请选择其他名称`,
+              onlineCcIds: registerResult.onlineCcIds,
+              hint: '请重新调用 enter_headless_mode 并传入不同的 cc_id',
+            }, null, 2),
+          }],
+        };
+      }
 
       // 更新项目配置文件中的 wechatMode 为 true
       updateWechatModeConfig(projectDir, {
         wechatMode: true,
         robotName: selectedRobot.name,
-        ccId: generatedCcId,
+        ccId: finalCcId,
         autoApprove: auto_approve,
         autoApproveTimeout: auto_approve_timeout,
       });
+
+      // 安装 skill 到项目本地（支持远程部署 MCP）
+      const skillResult = installSkill(projectDir);
 
       // 添加 PermissionRequest hook 到项目 settings.json
       const hookResult = addPermissionHook(projectDir);
@@ -511,7 +530,7 @@ npx @vrs-soft/wecom-aibot-mcp
 
       // 发送确认消息（头部标注来源 ccId 和 mode）
       const modeDesc = mode === 'channel' ? 'Channel模式，消息自动推送' : 'HTTP模式，请定期轮询获取消息';
-      await result.client.sendText(`【${generatedCcId}】已进入微信模式(${modeDesc})，使用机器人「${selectedRobot.name}」。`);
+      await result.client.sendText(`【${finalCcId}】已进入微信模式(${modeDesc})，使用机器人「${selectedRobot.name}」。`);
 
       return {
         content: [{
@@ -520,15 +539,16 @@ npx @vrs-soft/wecom-aibot-mcp
             status: 'entered',
             headless: true,
             robotName: selectedRobot.name,
-            ccId: generatedCcId,
+            ccId: finalCcId,
             agentName: effectiveAgentName,  // 返回使用的 agentName
             mode,
             hook: hookResult,
             taskCompletedHook: taskCompletedHookResult,
-            sseEndpoint: mode === 'channel' ? `http://127.0.0.1:18963/sse/${generatedCcId}` : undefined,
+            skill: skillResult,  // skill 安装结果（如果 success=false，包含 skillUrl）
+            sseEndpoint: mode === 'channel' ? `http://127.0.0.1:18963/sse/${finalCcId}` : undefined,
             message: mode === 'channel'
-              ? `连接 SSE endpoint: http://127.0.0.1:18963/sse/${generatedCcId} 接收推送消息`
-              : '用户消息需轮询 get_pending_messages 获取，使用 heartbeat_check 保持活跃',
+              ? `连接 SSE endpoint: http://127.0.0.1:18963/sse/${finalCcId} 接收推送消息`
+              : '已进入微信模式(HTTP)',
           }),
         }],
       };
@@ -670,5 +690,49 @@ npx @vrs-soft/wecom-aibot-mcp
     }
   );
 
-  logger.log('[mcp] 已注册 11 个工具');
+  // ============================================
+  // 工具 14: 获取 skill 文件内容
+  // ============================================
+  server.tool(
+    'get_skill',
+    '获取 headless-mode skill 文件内容，用于写入本地项目目录。远程部署 HTTP MCP 时使用此工具获取 skill 文件。',
+    {},
+    async () => {
+      const { fileURLToPath } = await import('url');
+      const fs = await import('fs');
+      const path = await import('path');
+
+      const __filename = fileURLToPath(import.meta.url);
+      const __dirname = path.dirname(__filename);
+      const skillPath = path.join(__dirname, '..', '..', 'skills', 'headless-mode', 'SKILL.md');
+
+      if (!fs.existsSync(skillPath)) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              success: false,
+              error: 'Skill 文件不存在',
+              skillUrl: `${process.env.MCP_URL || 'http://127.0.0.1:18963'}/skill`,
+            }),
+          }],
+        };
+      }
+
+      const content = fs.readFileSync(skillPath, 'utf-8');
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: true,
+            content,
+            filename: 'SKILL.md',
+            installPath: '.claude/skills/headless-mode/SKILL.md',
+          }),
+        }],
+      };
+    }
+  );
+
+  logger.log('[mcp] 已注册 14 个工具');
 }

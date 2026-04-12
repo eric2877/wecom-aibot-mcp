@@ -16,6 +16,8 @@
 import * as http from 'http';
 import * as path from 'path';
 import * as os from 'os';
+import * as fs from 'fs';
+import { fileURLToPath } from 'url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
@@ -25,6 +27,10 @@ import { subscribeWecomMessage, WecomMessage, getSubscriberCount } from './messa
 import { listAllRobots } from './config-wizard.js';
 import { logger } from './logger.js';
 
+// ESM 兼容的 __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 // 固定端口
 export const HTTP_PORT = 18963;
 
@@ -33,9 +39,6 @@ export const HOOK_SCRIPT_PATH = path.join(os.homedir(), '.wecom-aibot-mcp', 'per
 
 let httpServer: http.Server | null = null;
 let startTime: number = 0;
-
-// ccId 序号计数器（按 agentName 分组）
-const ccIdIndexByAgent = new Map<string, number>();
 
 // Session ID 生成器（MCP SSE 使用）
 function generateSessionId(): string {
@@ -48,12 +51,10 @@ function sanitizeAgentName(agentName: string): string {
   return agentName.replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]/g, '').slice(0, 20);
 }
 
-// ccId 生成器（基于 agentName）- 供调试和内部使用
+// ccId 生成器（基于 agentName）- 不自动编号
 export function generateCcId(agentName?: string): string {
   const name = agentName ? sanitizeAgentName(agentName) : 'cc';
-  const index = (ccIdIndexByAgent.get(name) || 0) + 1;
-  ccIdIndexByAgent.set(name, index);
-  return `${name}-${index}`;
+  return name;  // 直接返回名称，不添加编号
 }
 
 // 推送微信消息到 MCP 客户端（通过 SSE notification）
@@ -167,17 +168,17 @@ interface CCRegistryEntry {
 
 const ccIdRegistry = new Map<string, CCRegistryEntry>();
 
-export function registerCcId(ccId: string, robotName: string, agentName?: string, mode?: 'channel' | 'http'): string {
-  // 如果 ccId 已存在，生成新的
+// 注册结果：{ success, ccId, conflict?, onlineCcIds? }
+export function registerCcId(ccId: string, robotName: string, agentName?: string, mode?: 'channel' | 'http'): { success: boolean; ccId: string; conflict?: boolean; onlineCcIds?: string[] } {
+  // 如果 ccId 已存在，返回冲突错误（不自动编号）
   if (ccIdRegistry.has(ccId)) {
-    const newCcId = generateCcId(agentName || ccId);
-    ccIdRegistry.set(newCcId, { robotName, agentName, mode });
-    logger.log(`[ccid] 重复，生成新ID: ${ccId} → ${newCcId} → ${robotName}`);
-    return newCcId;
+    const onlineCcIds = Array.from(ccIdRegistry.keys());
+    logger.log(`[ccid] 冲突: ${ccId} 已被使用，在线: ${onlineCcIds.join(', ')}`);
+    return { success: false, ccId, conflict: true, onlineCcIds };
   }
   ccIdRegistry.set(ccId, { robotName, agentName, mode });
   logger.log(`[ccid] 注册: ${ccId} → ${robotName} (${agentName || 'unknown'}, mode: ${mode || 'http'})`);
-  return ccId;
+  return { success: true, ccId };
 }
 
 export function unregisterCcId(ccId: string): void {
@@ -273,23 +274,42 @@ function createMcpServerInstance(): McpServer {
 async function handleWecomMessage(msg: WecomMessage): Promise<void> {
   // 查找匹配的 CC（基于引用内容中的 ccId）
   const targetCcId = extractCcIdFromQuote(msg.quoteContent);
-  const entry = targetCcId ? getCCRegistryEntry(targetCcId) : null;
 
-  // Channel 模式：通过 SSE endpoint 推送
-  if (entry?.mode === 'channel' && targetCcId) {
-    logger.log(`[http] Channel 模式，SSE 推送给 ${targetCcId}`);
-    await pushMessageToSSEClient(msg.robotName, {
-      msgid: msg.msgid,
-      content: msg.content,
-      from_userid: msg.from_userid,
-      chatid: msg.chatid,
-      chattype: msg.chattype,
-      timestamp: msg.timestamp,
-    }, targetCcId);
-    return;
+  // 优先检查 SSE 客户端（Channel 模式）
+  // 先尝试精准匹配（有 targetCcId）
+  if (targetCcId) {
+    const entry = getCCRegistryEntry(targetCcId);
+    if (entry?.mode === 'channel') {
+      logger.log(`[http] Channel 模式精准匹配，SSE 推送给 ${targetCcId}`);
+      await pushMessageToSSEClient(msg.robotName, {
+        msgid: msg.msgid,
+        content: msg.content,
+        from_userid: msg.from_userid,
+        chatid: msg.chatid,
+        chattype: msg.chattype,
+        timestamp: msg.timestamp,
+      }, targetCcId);
+      return;
+    }
   }
 
-  // HTTP 模式或无明确 ccId：通过 MCP notification 推送
+  // 检查是否有匹配 robotName 的 SSE 客户端（无需精准 ccId）
+  for (const [clientId, client] of sseClients) {
+    if (client.robotName === msg.robotName) {
+      logger.log(`[http] 发现 SSE 客户端 ${clientId}，robotName=${client.robotName}`);
+      await pushMessageToSSEClient(msg.robotName, {
+        msgid: msg.msgid,
+        content: msg.content,
+        from_userid: msg.from_userid,
+        chatid: msg.chatid,
+        chattype: msg.chattype,
+        timestamp: msg.timestamp,
+      }, client.ccId);
+      return;
+    }
+  }
+
+  // 无 SSE 客户端，走 HTTP 模式 notification 推送
   if (transports.size === 0) {
     logger.log('[http] 无活跃 MCP session，跳过消息处理');
     return;
@@ -304,8 +324,8 @@ async function handleWecomMessage(msg: WecomMessage): Promise<void> {
   }
 
   if (subscriberCount === 1) {
-    // 只有一个订阅者，直接广播给它（无需 ccId 检查）
-    logger.log('[http] 单订阅者模式，直接广播');
+    // 只有一个订阅者，直接广播（SSE 检查已在前面完成）
+    logger.log('[http] 单订阅者 HTTP 模式，直接广播');
     for (const [sessionId, sessEntry] of transports) {
       try {
         await sessEntry.server.server.notification({
@@ -647,6 +667,22 @@ export async function startHttpServer(
         return;
       }
 
+      // Skill 文件下载 endpoint（支持远程部署）
+      if (req.method === 'GET' && url === '/skill') {
+        const skillPath = path.join(__dirname, '..', 'skills', 'headless-mode', 'SKILL.md');
+        if (fs.existsSync(skillPath)) {
+          const content = fs.readFileSync(skillPath, 'utf-8');
+          res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+          res.end(content);
+          logger.log(`[http] Skill 文件已下载`);
+        } else {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Skill 文件不存在' }));
+          logger.error(`[http] Skill 文件不存在: ${skillPath}`);
+        }
+        return;
+      }
+
       // 临时调试端点：退出 headless 模式
       if (req.method === 'POST' && url === '/debug/exit_headless') {
         ccIdRegistry.clear();
@@ -909,6 +945,7 @@ function handleHealthCheck(_req: http.IncomingMessage, res: http.ServerResponse)
     websocket: { connected: state.connected, robotName: state.robotName },
     headless: hasActiveSession ? { mode: 'HEADLESS' } : { mode: 'NORMAL' },
     sseClients: sseClients.size,  // Channel 模式客户端数
+    ccIds: getOnlineCcIds(),  // 当前注册的 ccId
   }, null, 2));
 }
 

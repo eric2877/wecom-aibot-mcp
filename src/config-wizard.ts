@@ -683,8 +683,9 @@ exit 2
 // 写入 MCP Server 配置到 ~/.claude.json
 function writeMcpServerConfig(config: WecomConfig, instanceName?: string) {
   try {
-    // 1. 写入机器人配置到 ~/.wecom-aibot-mcp/config.json
     ensureConfigDir();
+
+    // 构建机器人配置对象
     const botConfig: any = {
       botId: config.botId,
       secret: config.secret,
@@ -693,8 +694,34 @@ function writeMcpServerConfig(config: WecomConfig, instanceName?: string) {
     if (config.nameTag) {
       botConfig.nameTag = config.nameTag;
     }
-    fs.writeFileSync(BOT_CONFIG_FILE, JSON.stringify(botConfig, null, 2));
-    console.log('[config] 机器人配置已写入 ~/.wecom-aibot-mcp/config.json');
+
+    // 检查名称唯一性（如果设置了新名称）
+    if (config.nameTag && isRobotNameExists(config.nameTag, config.botId)) {
+      console.log(`[config] ❌ 机器人名称 "${config.nameTag}" 已被其他机器人使用`);
+      console.log('[config] 请使用不同的名称');
+      return false;
+    }
+
+    // 按 botId 查找现有配置文件
+    const existingConfigFile = findRobotConfigFileByBotId(config.botId);
+
+    if (existingConfigFile) {
+      // 更新现有配置文件
+      fs.writeFileSync(existingConfigFile, JSON.stringify(botConfig, null, 2));
+      console.log(`[config] 已更新机器人配置: ${existingConfigFile}`);
+    } else {
+      // 新配置：检查是否有默认配置文件
+      if (fs.existsSync(BOT_CONFIG_FILE)) {
+        // 有默认配置，创建新的 robot-*.json 文件
+        const newConfigPath = path.join(CONFIG_DIR, `robot-${Date.now()}.json`);
+        fs.writeFileSync(newConfigPath, JSON.stringify(botConfig, null, 2));
+        console.log(`[config] 已添加新机器人配置: ${newConfigPath}`);
+      } else {
+        // 没有默认配置，写入 config.json
+        fs.writeFileSync(BOT_CONFIG_FILE, JSON.stringify(botConfig, null, 2));
+        console.log('[config] 已写入机器人配置 ~/.wecom-aibot-mcp/config.json');
+      }
+    }
 
     // 2. 写入 MCP 配置到 ~/.claude.json（仅 URL）
     let claudeConfig: any = {};
@@ -912,47 +939,6 @@ export function listAllRobots(): Array<{ name: string; botId: string; targetUser
   return robots;
 }
 
-// 安装 skill 文件到 ~/.claude/skills/
-function installSkills() {
-  try {
-    const claudeSkillsDir = path.join(os.homedir(), '.claude', 'skills', 'headless-mode');
-    const skillFile = path.join(claudeSkillsDir, 'SKILL.md');
-
-    // 确保目录存在
-    if (!fs.existsSync(claudeSkillsDir)) {
-      fs.mkdirSync(claudeSkillsDir, { recursive: true });
-    }
-
-    // 尝试多个可能的源路径（支持 npm 安装和开发模式）
-    const possibleSources = [
-      // 1. 包内路径（npm 安装后的位置）
-      SKILL_TEMPLATE_FILE,
-      // 2. 开发模式路径
-      path.join(process.cwd(), 'skills', 'headless-mode', 'SKILL.md'),
-      // 3. 相对于 dist 目录的路径
-      path.join(__dirname, '..', 'skills', 'headless-mode', 'SKILL.md'),
-    ];
-
-    let sourceFile: string | null = null;
-    for (const src of possibleSources) {
-      if (fs.existsSync(src)) {
-        sourceFile = src;
-        break;
-      }
-    }
-
-    if (sourceFile) {
-      fs.copyFileSync(sourceFile, skillFile);
-      console.log(`[config] skill 文件已安装: ${skillFile}`);
-    } else {
-      console.log('[config] ⚠️  skill 文件未找到，请手动创建 ~/.claude/skills/headless-mode/SKILL.md');
-      console.log('[config]    查找路径:', possibleSources.join(', '));
-    }
-  } catch (err) {
-    logger.error('[config] 安装 skill 文件失败:', err);
-  }
-}
-
 // 写入 MCP 工具权限 + 注册 PermissionRequest hook 到 Claude settings
 function writeMcpPermissions() {
   try {
@@ -1004,12 +990,11 @@ function writeMcpPermissions() {
 // 确保 hook 已安装（幂等，可多次调用）
 export function ensureHookInstalled() {
   writeMcpPermissions();
-  installSkills();
   writeTaskCompletedHookScript();
 }
 
 // 确保所有全局配置已写入（强制覆盖，不依赖智能体）
-export function ensureGlobalConfigs(): { upgraded: boolean; previousVersion?: string } {
+export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' = 'full'): { upgraded: boolean; previousVersion?: string } {
   ensureConfigDir();
 
   // 读取已安装版本
@@ -1027,7 +1012,17 @@ export function ensureGlobalConfigs(): { upgraded: boolean; previousVersion?: st
     console.log(`[config] 版本升级: ${previousVersion || '未安装'} -> ${VERSION}`);
   }
 
-  // 1. 强制写入 MCP 配置到 ~/.claude.json（覆盖）
+  // http-only 模式：不写入 MCP 配置（远程部署场景）
+  if (mode === 'http-only') {
+    console.log('[config] HTTP-only 模式：跳过 MCP 配置写入');
+    // 只写权限配置和 Hook（可选，用于本地调试）
+    writeMcpPermissions();
+    console.log('[config] 已写入权限配置到 ~/.claude/settings.local.json');
+    fs.writeFileSync(VERSION_FILE, JSON.stringify({ version: VERSION, installedAt: Date.now() }, null, 2));
+    return { upgraded, previousVersion };
+  }
+
+  // 1. 强制写入 MCP 配置到 ~/.claude.json
   let claudeConfig: any = {};
   if (fs.existsSync(CLAUDE_CONFIG_FILE)) {
     const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
@@ -1036,11 +1031,32 @@ export function ensureGlobalConfigs(): { upgraded: boolean; previousVersion?: st
 
   if (!claudeConfig.mcpServers) claudeConfig.mcpServers = {};
 
-  // 强制覆盖（不检查是否存在）
-  claudeConfig.mcpServers['wecom-aibot'] = {
-    type: 'http',
-    url: 'http://127.0.0.1:18963/mcp',
-  };
+  if (mode === 'channel-only') {
+    // Channel-only 模式：必须通过 MCP_URL 指定远程地址
+    const mcpUrl = process.env.MCP_URL;
+    if (!mcpUrl) {
+      console.log('[config] ❌ Channel-only 模式需要指定 MCP_URL');
+      console.log('[config] 请设置环境变量: MCP_URL=http://远程IP:18963');
+      return { upgraded: false, previousVersion };
+    }
+    claudeConfig.mcpServers['wecom-aibot-channel'] = {
+      command: 'npx',
+      args: ['@vrs-soft/wecom-aibot-mcp', '--channel'],
+      env: { MCP_URL: mcpUrl },
+    };
+    console.log(`[config] Channel-only 模式：写入 Channel MCP 配置 (wecom-aibot-channel)，连接到 ${mcpUrl}`);
+  } else {
+    // full 模式：同时写入 HTTP MCP 和 Channel MCP 配置
+    claudeConfig.mcpServers['wecom-aibot'] = {
+      type: 'http',
+      url: 'http://127.0.0.1:18963/mcp',
+    };
+    claudeConfig.mcpServers['wecom-aibot-channel'] = {
+      command: 'npx',
+      args: ['@vrs-soft/wecom-aibot-mcp', '--channel'],
+      env: { MCP_URL: 'http://127.0.0.1:18963' },
+    };
+  }
   fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
   console.log('[config] 已写入 MCP 配置到 ~/.claude.json');
 
@@ -1048,11 +1064,7 @@ export function ensureGlobalConfigs(): { upgraded: boolean; previousVersion?: st
   writeMcpPermissions();
   console.log('[config] 已写入权限配置到 ~/.claude/settings.local.json');
 
-  // 3. 强制安装 skill
-  installSkills();
-  console.log('[config] 已安装 skill 到 ~/.claude/skills/');
-
-  // 4. 写入版本号
+  // 3. 写入版本号
   fs.writeFileSync(VERSION_FILE, JSON.stringify({ version: VERSION, installedAt: Date.now() }, null, 2));
   console.log(`[config] 已记录版本号: ${VERSION}`);
 
@@ -1060,26 +1072,29 @@ export function ensureGlobalConfigs(): { upgraded: boolean; previousVersion?: st
 }
 
 // 保存配置（直接写入 ~/.claude.json）
-export function saveConfig(config: WecomConfig, instanceName?: string) {
+export function saveConfig(config: WecomConfig, instanceName?: string): boolean {
   ensureConfigDir();  // 确保运行时文件目录存在
 
   // 写入 MCP Server 配置到 ~/.claude.json
-  writeMcpServerConfig(config, instanceName);
+  const success = writeMcpServerConfig(config, instanceName);
+  if (!success) {
+    return false;
+  }
 
   // 写入 MCP 工具权限和 Hook 到 ~/.claude/settings.local.json
   writeMcpPermissions();
 
-  // 安装 skill 到全局 ~/.claude/skills/（用户级别）
-  installSkills();
-
-  // 安装 skill 到项目目录（项目级别）
+  // 安装 skill 到项目目录（项目级别，支持远程部署）
   installSkill(process.cwd());
+
+  return true;
 }
 
 /**
  * 安装 headless-mode skill 到项目目录
+ * 返回：{ success, skillUrl? } - 如果模板不存在，返回 HTTP endpoint URL
  */
-export function installSkill(projectDir: string): void {
+export function installSkill(projectDir: string): { success: boolean; skillUrl?: string; message?: string } {
   const skillDir = path.join(projectDir, '.claude', 'skills', 'headless-mode');
   const skillFile = path.join(skillDir, 'SKILL.md');
 
@@ -1090,13 +1105,19 @@ export function installSkill(projectDir: string): void {
 
   // 检查模板文件是否存在
   if (!fs.existsSync(SKILL_TEMPLATE_FILE)) {
-    console.log('[config] Skill 模板文件不存在，跳过安装');
-    return;
+    console.log('[config] Skill 模板文件不存在，返回 HTTP endpoint URL');
+    // 返回 HTTP endpoint URL，让 agent 通过 WebFetch 下载
+    return {
+      success: false,
+      skillUrl: `${process.env.MCP_URL || 'http://127.0.0.1:18963'}/skill`,
+      message: '请通过 skillUrl 下载 skill 文件并写入本地',
+    };
   }
 
   // 写入 skill 文件
   fs.copyFileSync(SKILL_TEMPLATE_FILE, skillFile);
   console.log(`[config] 已安装 skill 到 ${skillFile}`);
+  return { success: true };
 }
 
 // 创建 readline 接口
@@ -1140,71 +1161,98 @@ export async function runConfigWizard(): Promise<{ config: WecomConfig; instance
   const rl = createRL();
 
   try {
-    // 检查是否有多个机器人配置
-    const instances = listAllMcpInstances();
-    let instanceName = 'wecom-aibot';
-    let robotName = '';
+    const robots = listAllRobots();
+    let targetRobot: { name: string; botId: string; targetUserId: string } | null = null;
+    let isNewRobot = false;
 
-    if (instances.length > 1) {
-      // 多个机器人，让用户选择要修改哪个
-      console.log('\n检测到多个机器人配置，请选择要修改的：\n');
-      instances.forEach((inst, idx) => {
-        console.log(`  ${idx + 1}. ${inst.name} (Bot ID: ${inst.config.botId.slice(0, 12)}...)`);
+    // 第一步：选择要修改的机器人
+    if (robots.length === 0) {
+      console.log('\n首次配置，将创建新机器人\n');
+      isNewRobot = true;
+    } else {
+      console.log('\n请选择要操作的机器人：\n');
+      robots.forEach((robot, idx) => {
+        console.log(`  ${idx + 1}. ${robot.name} (Bot ID: ${robot.botId.slice(0, 12)}...)`);
       });
-      console.log(`  ${instances.length + 1}. 添加新机器人\n`);
+      console.log(`  ${robots.length + 1}. 添加新机器人\n`);
 
       const choice = await question(rl, '请输入序号: ');
       const choiceNum = parseInt(choice);
 
-      if (choiceNum >= 1 && choiceNum <= instances.length) {
-        instanceName = instances[choiceNum - 1].name;
-        console.log(`\n已选择修改: ${instanceName}\n`);
-      } else if (choiceNum === instances.length + 1) {
-        // 添加新机器人
-        const newName = await question(rl, '请输入新机器人名称: ');
-        if (!newName) {
-          console.log('[config] 机器人名称不能为空');
-          process.exit(1);
-        }
-        robotName = newName;
-        console.log(`\n将创建新机器人: ${robotName}\n`);
+      if (choiceNum >= 1 && choiceNum <= robots.length) {
+        targetRobot = robots[choiceNum - 1];
+        console.log(`\n已选择修改: ${targetRobot.name}\n`);
+      } else if (choiceNum === robots.length + 1) {
+        isNewRobot = true;
+        console.log('\n将创建新机器人\n');
       } else {
         console.log('[config] 无效选择');
         process.exit(1);
       }
-    } else if (instances.length === 1) {
-      instanceName = instances[0].name;
-      console.log(`\n将修改现有配置: ${instanceName}\n`);
-    } else {
-      // 首次配置，要求输入机器人名称
-      console.log('\n首次配置，请输入机器人信息：\n');
-      const newName = await question(rl, '机器人名称（用于识别，如"工作机器人"）: ');
-      if (!newName) {
+    }
+
+    // 第二步：输入机器人名称
+    let robotName = await question(rl, `机器人名称（${targetRobot ? `当前: ${targetRobot.name}` : '用于识别'}）: `);
+    if (!robotName) {
+      if (targetRobot) {
+        robotName = targetRobot.name;  // 保持原名称
+        console.log(`[config] 保持原名称: ${robotName}`);
+      } else {
         console.log('[config] 机器人名称不能为空');
         process.exit(1);
       }
-      robotName = newName;
-      console.log(`\n将创建机器人: ${robotName}\n`);
     }
 
-    // 1. 获取 Bot ID
-    let botId = await question(rl, 'Bot ID: ');
-    while (!botId) {
-      console.log('Bot ID 不能为空');
-      botId = await question(rl, 'Bot ID: ');
+    // 检查名称是否与其他机器人重复
+    if (isNewRobot || (targetRobot && robotName !== targetRobot.name)) {
+      const duplicateName = robots.find(r => r.name === robotName && r !== targetRobot);
+      if (duplicateName) {
+        console.log(`[config] ❌ 名称 "${robotName}" 已被使用`);
+        process.exit(1);
+      }
     }
 
-    // 2. 获取 Secret
-    let secret = await question(rl, 'Secret: ');
-    while (!secret) {
-      console.log('Secret 不能为空');
-      secret = await question(rl, 'Secret: ');
+    // 第三步：输入 Bot ID
+    let botId = await question(rl, `Bot ID（${targetRobot ? `当前: ${targetRobot.botId.slice(0, 12)}...` : '必填'}）: `);
+    if (!botId) {
+      if (targetRobot) {
+        botId = targetRobot.botId;  // 保持原 Bot ID
+        console.log(`[config] 保持原 Bot ID`);
+      } else {
+        console.log('Bot ID 不能为空');
+        botId = await question(rl, 'Bot ID: ');
+        if (!botId) {
+          console.log('[config] Bot ID 不能为空');
+          process.exit(1);
+        }
+      }
     }
 
-    // 3. 目标用户 ID 稍后通过消息自动识别
+    // 第四步：输入 Secret
+    let secret = await question(rl, `Secret（${targetRobot ? `当前: ${targetRobot.botId.slice(0, 8)}...` : '必填'}）: `);
+    if (!secret) {
+      if (targetRobot) {
+        // 读取原 Secret
+        const configFile = findRobotConfigFile(targetRobot.name);
+        if (configFile) {
+          const config = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+          secret = config.secret;
+          console.log(`[config] 保持原 Secret`);
+        }
+      } else {
+        console.log('Secret 不能为空');
+        secret = await question(rl, 'Secret: ');
+        if (!secret) {
+          console.log('[config] Secret 不能为空');
+          process.exit(1);
+        }
+      }
+    }
+
+    // 第五步：目标用户（稍后通过消息自动识别）
     console.log('\n─────────────────────────────────────');
     console.log('配置确认：');
-    console.log(`  机器人名称: ${robotName || instanceName}`);
+    console.log(`  机器人名称: ${robotName}`);
     console.log(`  Bot ID:     ${botId}`);
     console.log(`  Secret:     ${secret.slice(0, 8)}...${secret.slice(-4)}`);
     console.log(`  目标用户:   （将通过消息自动识别）`);
@@ -1222,14 +1270,80 @@ export async function runConfigWizard(): Promise<{ config: WecomConfig; instance
       botId,
       secret,
       targetUserId: '',  // 稍后通过消息识别
-      nameTag: robotName || undefined,
+      nameTag: robotName,
     };
+
+    // 如果是修改现有机器人，返回其 instanceName（用于删除旧配置）
+    const instanceName = targetRobot ? targetRobot.name : 'wecom-aibot';
 
     return { config, instanceName };
 
   } finally {
     rl.close();
   }
+}
+
+// 查找机器人配置文件路径（按名称）
+export function findRobotConfigFile(robotName: string): string | null {
+  // 检查默认配置文件
+  if (fs.existsSync(BOT_CONFIG_FILE)) {
+    const config = JSON.parse(fs.readFileSync(BOT_CONFIG_FILE, 'utf-8'));
+    const name = config.nameTag || `机器人-${config.botId?.slice(0, 8) || 'unknown'}`;
+    if (name === robotName) {
+      return BOT_CONFIG_FILE;
+    }
+  }
+
+  // 检查其他机器人配置文件
+  if (fs.existsSync(CONFIG_DIR)) {
+    const files = fs.readdirSync(CONFIG_DIR).filter(f => f.startsWith('robot-') && f.endsWith('.json'));
+    for (const file of files) {
+      const filePath = path.join(CONFIG_DIR, file);
+      const config = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      const name = config.nameTag || file.replace('.json', '');
+      if (name === robotName) {
+        return filePath;
+      }
+    }
+  }
+
+  return null;
+}
+
+// 查找机器人配置文件路径（按 botId）
+export function findRobotConfigFileByBotId(botId: string): string | null {
+  // 检查默认配置文件
+  if (fs.existsSync(BOT_CONFIG_FILE)) {
+    const config = JSON.parse(fs.readFileSync(BOT_CONFIG_FILE, 'utf-8'));
+    if (config.botId === botId) {
+      return BOT_CONFIG_FILE;
+    }
+  }
+
+  // 检查其他机器人配置文件
+  if (fs.existsSync(CONFIG_DIR)) {
+    const files = fs.readdirSync(CONFIG_DIR).filter(f => f.startsWith('robot-') && f.endsWith('.json'));
+    for (const file of files) {
+      const filePath = path.join(CONFIG_DIR, file);
+      const config = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      if (config.botId === botId) {
+        return filePath;
+      }
+    }
+  }
+
+  return null;
+}
+
+// 检查机器人名称是否已存在（排除指定 botId）
+export function isRobotNameExists(name: string, excludeBotId?: string): boolean {
+  const robots = listAllRobots();
+  for (const robot of robots) {
+    if (robot.name === name && robot.botId !== excludeBotId) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

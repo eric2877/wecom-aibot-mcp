@@ -18,7 +18,6 @@ import {
   runConfigWizard,
   loadConfig,
   saveConfig,
-  deleteConfig,
   deleteRobotConfigInteractive,
   uninstall,
   addMcpConfig,
@@ -58,9 +57,13 @@ function showHelp() {
   --start         启动 MCP Server（后台服务模式）
   --stop          停止 MCP Server
   --debug         前台启动 MCP Server（日志直接输出到终端，用于调试）
+  --channel       启动 Channel MCP Proxy（stdio 代理 + SSE 唤醒）
+  --http-only     仅启动 HTTP Server（远程部署场景，不安装 Channel MCP 配置）
+  --channel-only  仅配置 Channel MCP（本地连接远程 HTTP Server）
   --status        显示服务状态和机器人配置
   --config        重新配置默认机器人（修改 Bot ID / Secret / 目标用户）
   --add           添加新的机器人配置（多机器人场景）
+  --rename [名称] 重命名机器人（可选参数：旧名称，交互式输入新名称）
   --list          列出所有已配置的机器人及其占用状态
   --delete [名称] 删除指定的机器人配置（保留 MCP 配置）
   --uninstall     卸载并删除所有配置（包括 MCP 配置、hook、skill）
@@ -77,18 +80,33 @@ function showHelp() {
 
   4. 停止服务: npx @vrs-soft/wecom-aibot-mcp --stop
 
-MCP 配置（HTTP Transport）:
+拆分部署（远程 HTTP + 本地 Channel）:
 
-  编辑 ~/.claude.json：
+  远程服务器:
+    npx @vrs-soft/wecom-aibot-mcp --http-only --start
+    # 只启动 HTTP Server，不写入本地 MCP 配置
 
-  {
-    "mcpServers": {
-      "wecom-aibot": {
-        "type": "http",
-        "url": "http://127.0.0.1:18963/mcp"
-      }
+  本地机器:
+    MCP_URL=http://远程IP:18963 npx @vrs-soft/wecom-aibot-mcp --channel-only
+    # 必须通过 MCP_URL 指定远程 HTTP MCP 地址
+    # 只配置 Channel MCP，连接远程 HTTP Server
+
+MCP 配置（默认安装同时配置两种模式）:
+
+  HTTP Transport（轮询模式）:
+    "wecom-aibot": {
+      "type": "http",
+      "url": "http://127.0.0.1:18963/mcp"
     }
-  }
+
+  Channel Transport（SSE 推送模式）:
+    "wecom-aibot-channel": {
+      "command": "npx",
+      "args": ["@vrs-soft/wecom-aibot-mcp", "--channel"]
+    }
+
+  Channel 模式优势：微信消息自动唤醒 agent，无需主动轮询
+  启动 Channel 模式：claude --channels server:wecom-aibot-channel
 
 更多信息: https://github.com/eric2877/wecom-aibot-mcp
 `);
@@ -125,11 +143,11 @@ function showStatus() {
     const usage = robotUsage.get(robot.name);
     const statusTag = usage ? ` [使用中]` : '';
 
-    console.log(`  ${robot.name}${statusTag}`);
-    console.log(`    Bot ID:     ${robot.botId}`);
-    console.log(`    目标用户:   ${robot.targetUserId}`);
+    console.log(`    Bot名称：  ${robot.name}${statusTag}`);
+    console.log(`    Bot ID：   ${robot.botId}`);
+    console.log(`    目标用户：${robot.targetUserId}`);
     if (usage) {
-      console.log(`    使用者:     ${usage.agentName}`);
+      console.log(`    使用者：  ${usage.agentName}`);
     }
     console.log('');
   }
@@ -212,7 +230,7 @@ async function waitForConnection(client: WecomClient, timeoutMs = 10000): Promis
 }
 
 // 启动 MCP Server（前台运行，供 --start 使用）
-async function startMcpServerForeground(): Promise<void> {
+async function startMcpServerForeground(isDebug: boolean = false): Promise<void> {
   const savedConfig = loadConfig();
   if (!savedConfig || !savedConfig.botId || !savedConfig.secret || !savedConfig.targetUserId) {
     logger.error('[mcp] 未找到配置，请先运行: npx @vrs-soft/wecom-aibot-mcp');
@@ -221,6 +239,13 @@ async function startMcpServerForeground(): Promise<void> {
 
   // 写入 PID 文件
   fs.writeFileSync(PID_FILE, String(process.pid));
+
+  // Debug 模式：创建 debug 标记文件
+  if (isDebug) {
+    const debugFile = path.join(os.homedir(), '.wecom-aibot-mcp', 'debug');
+    fs.writeFileSync(debugFile, 'true');
+    console.log('[mcp] Debug 标记文件已创建');
+  }
 
   // 确保 hook 已安装
   ensureHookInstalled();
@@ -264,6 +289,14 @@ async function startMcpServerForeground(): Promise<void> {
     if (fs.existsSync(PID_FILE)) {
       fs.unlinkSync(PID_FILE);
     }
+    // Debug 模式：删除 debug 标记文件
+    if (isDebug) {
+      const debugFile = path.join(os.homedir(), '.wecom-aibot-mcp', 'debug');
+      if (fs.existsSync(debugFile)) {
+        fs.unlinkSync(debugFile);
+        console.log('[mcp] Debug 标记文件已删除');
+      }
+    }
     process.exit(0);
   };
 
@@ -306,10 +339,16 @@ function startMcpServerBackground(): void {
 async function main() {
   const args = process.argv.slice(2);
 
+  // 确定安装模式
+  const installMode: 'full' | 'http-only' | 'channel-only' =
+    args.includes('--http-only') ? 'http-only' :
+    args.includes('--channel-only') ? 'channel-only' : 'full';
+
   // --reinstall 命令需要先删除再安装，跳过开头的 ensureGlobalConfigs
-  if (!args.includes('--reinstall')) {
+  // --http-only 模式不需要写 MCP 配置
+  if (!args.includes('--reinstall') && !args.includes('--http-only')) {
     // 强制覆盖所有全局配置（不依赖智能体）
-    ensureGlobalConfigs();
+    ensureGlobalConfigs(installMode);
   }
 
   // 解析命令行参数
@@ -329,7 +368,6 @@ async function main() {
     console.log('[mcp] 配置位置:');
     console.log('  - ~/.claude.json (MCP Server 配置)');
     console.log('  - ~/.claude/settings.local.json (权限和 Hook)');
-    console.log('  - ~/.claude/skills/headless-mode/ (Skill)');
     console.log('  - ~/.wecom-aibot-mcp/version.json (版本记录)');
     console.log('\n[mcp] 请重启 Claude Code 以加载最新配置');
     process.exit(0);
@@ -342,7 +380,6 @@ async function main() {
 
     const CLAUDE_CONFIG_FILE = path.join(os.homedir(), '.claude.json');
     const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.local.json');
-    const SKILL_DIR = path.join(os.homedir(), '.claude', 'skills', 'headless-mode');
     const VERSION_FILE = path.join(os.homedir(), '.wecom-aibot-mcp', 'version.json');
     const HOOK_SCRIPT = path.join(os.homedir(), '.wecom-aibot-mcp', 'permission-hook.sh');
 
@@ -379,25 +416,19 @@ async function main() {
       fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(config, null, 2));
     }
 
-    // 3. 删除 skill 目录
-    if (fs.existsSync(SKILL_DIR)) {
-      fs.rmSync(SKILL_DIR, { recursive: true });
-      console.log('[mcp] 已删除 ~/.claude/skills/headless-mode/');
-    }
-
-    // 4. 删除版本文件
+    // 3. 删除版本文件
     if (fs.existsSync(VERSION_FILE)) {
       fs.unlinkSync(VERSION_FILE);
       console.log('[mcp] 已删除 ~/.wecom-aibot-mcp/version.json');
     }
 
-    // 5. 删除 hook 脚本
+    // 4. 删除 hook 脚本
     if (fs.existsSync(HOOK_SCRIPT)) {
       fs.unlinkSync(HOOK_SCRIPT);
       console.log('[mcp] 已删除 ~/.wecom-aibot-mcp/permission-hook.sh');
     }
 
-    // 6. 重新安装全局配置
+    // 5. 重新安装全局配置
     logger.log('\n[mcp] 正在重新安装...');
     ensureGlobalConfigs();
 
@@ -449,13 +480,53 @@ async function main() {
   // --debug：前台启动，日志直接输出到终端
   if (args.includes('--debug')) {
     console.log('[mcp] Debug 模式：前台运行，Ctrl+C 退出');
-    // 写入 debug 标记文件，hook 脚本检测后日志输出到 stderr
-    const debugFile = path.join(os.homedir(), '.wecom-aibot-mcp', 'debug');
-    fs.writeFileSync(debugFile, 'true');
-    await startMcpServerForeground();
-    // 退出时删除标记文件
-    fs.unlinkSync(debugFile);
+    await startMcpServerForeground(true);
     return;
+  }
+
+  // --channel：启动 Channel MCP 代理（stdio）
+  if (args.includes('--channel')) {
+    // 检查 HTTP MCP 的 debug 标记文件
+    const debugFile = path.join(os.homedir(), '.wecom-aibot-mcp', 'debug');
+    const isDebug = fs.existsSync(debugFile) || args.includes('--debug');
+
+    if (isDebug) {
+      console.log('[channel] Debug 模式：日志输出到 stderr（跟随 HTTP MCP debug）');
+      if (!fs.existsSync(debugFile)) {
+        fs.writeFileSync(debugFile, 'true');
+      }
+    }
+
+    console.log('[channel] Starting Channel MCP Proxy...');
+    const { startChannelServer } = await import('./channel-server.js');
+    await startChannelServer();
+
+    // Channel MCP 退出时不删除 debug 文件（由 HTTP MCP 管理）
+    return; // 保持运行，不 exit
+  }
+
+  // --http-only：仅启动 HTTP Server（远程部署场景）
+  if (args.includes('--http-only') && !args.includes('--start')) {
+    console.log('[mcp] HTTP-only 模式：仅启动 HTTP Server');
+    console.log('[mcp] 不写入 MCP 配置（远程部署场景）');
+    console.log('[mcp] 使用 --http-only --start 启动服务');
+    process.exit(0);
+  }
+
+  // --channel-only：仅配置 Channel MCP（本地连接远程 HTTP Server）
+  if (args.includes('--channel-only')) {
+    const mcpUrl = process.env.MCP_URL;
+    if (!mcpUrl) {
+      console.log('[mcp] ❌ Channel-only 模式需要指定远程 HTTP MCP 地址');
+      console.log('[mcp] 请设置环境变量 MCP_URL:');
+      console.log('[mcp]   MCP_URL=http://远程IP:18963 npx @vrs-soft/wecom-aibot-mcp --channel-only');
+      process.exit(1);
+    }
+    console.log(`[mcp] Channel-only 模式：Channel MCP 已配置`);
+    console.log(`[mcp] 连接地址: ${mcpUrl}`);
+    console.log('[mcp] 请确保远程 HTTP Server 已启动');
+    console.log('[mcp] 启动 Channel: npx @vrs-soft/wecom-aibot-mcp --channel');
+    process.exit(0);
   }
 
   // --start：后台启动
@@ -521,43 +592,39 @@ async function main() {
     const connected = await waitForConnection(tempClient, 10000);
 
     if (!connected) {
-      console.log('[mcp] 连接失败，可能是配置错误或机器人未授权');
-      console.log('[mcp] 请检查上面的错误提示，修复后重新配置');
-
-      // 删除无效配置，让用户重新输入
-      deleteConfig();
-
-      logger.log('\n请检查：');
-      logger.log('  1. Bot ID 和 Secret 是否正确');
-      logger.log('  2. 新建机器人需等待约 2 分钟同步');
-      logger.log('  3. 是否已完成授权（机器人详情 → 可使用权限 → 授权）');
-      logger.log('\n修复后重新运行: npx @vrs-soft/wecom-aibot-mcp --config');
+      console.log('[mcp] ❌ 连接失败，请检查：');
+      console.log('  1. Bot ID 和 Secret 是否正确');
+      console.log('  2. 新建机器人需等待约 2 分钟同步');
+      console.log('  3. 是否已完成授权（机器人详情 → 可使用权限 → 授权）');
+      console.log('\n修复后重新运行: npx @vrs-soft/wecom-aibot-mcp --config');
 
       tempClient.disconnect();
       process.exit(1);
     }
 
     // 连接成功
-    logger.log('\n[mcp] ✅ 机器人连接成功！');
+    logger.log('\n[mcp] ✅ 机器人凭证验证成功！');
 
-    // 提示用户发送消息来识别用户 ID
-    const userId = await detectUserIdFromMessage(tempClient, 180);
+    // 保存配置（使用原用户 ID 或等待识别）
+    if (!config.targetUserId || config.targetUserId === 'placeholder' || config.targetUserId === '') {
+      // 新机器人，需要识别用户 ID
+      const userId = await detectUserIdFromMessage(tempClient, 180);
 
-    if (!userId) {
-      logger.log('\n[mcp] 未能在规定时间内识别用户 ID');
-      console.log('[mcp] 请重新运行配置：npx @vrs-soft/wecom-aibot-mcp --config');
-      tempClient.disconnect();
-      process.exit(1);
+      if (!userId) {
+        logger.log('\n[mcp] 未能在规定时间内识别用户 ID');
+        console.log('[mcp] 请重新运行配置：npx @vrs-soft/wecom-aibot-mcp --config');
+        tempClient.disconnect();
+        process.exit(1);
+      }
+
+      config.targetUserId = userId;
     }
-
-    // 更新配置中的用户 ID
-    config.targetUserId = userId;
 
     // 保存最终配置
     saveConfig(config, instanceName);
 
     logger.log('\n[mcp] ✅ 配置完成！');
-    logger.log(`[mcp] 用户 ID: ${userId}`);
+    logger.log(`[mcp] 用户 ID: ${config.targetUserId}`);
 
     // 配置完成后断开连接
     tempClient.disconnect();
