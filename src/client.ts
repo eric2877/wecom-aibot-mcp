@@ -672,9 +672,12 @@ class WecomClient extends EventEmitter {
   // 清理过期消息
   cleanupMessages(maxAgeMs = 300000) {
     const cutoff = Date.now() - maxAgeMs;
+    // 未解决的审批保留 15 分钟，防止用户在超时前点击时记录已被清理导致按钮失效
+    const pendingCutoff = Date.now() - 15 * 60 * 1000;
     this.messages = this.messages.filter(m => m.timestamp > cutoff);
     this.approvals.forEach((a, k) => {
-      if (a.timestamp < cutoff) this.approvals.delete(k);
+      const threshold = a.resolved ? cutoff : pendingCutoff;
+      if (a.timestamp < threshold) this.approvals.delete(k);
     });
     // 清理过期的待发送消息
     this.pendingMessages = this.pendingMessages.filter(m => m.timestamp > cutoff);
