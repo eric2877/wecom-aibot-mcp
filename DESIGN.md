@@ -286,6 +286,62 @@ ccId 自动编号（cc-1, cc-2）不符合用户预期。
 
 ---
 
+## v2.2 - 2026-04-13
+
+---
+
+## 11. CC 注册表重连优化
+
+### 问题
+
+异常断线的 CC 永远留在内存注册表中，同一个 agent 再次调用 `enter_headless_mode` 时被误判为冲突，
+导致 SKILL 不断递增编号（材料-1、材料-2...），实际上都是同一个 agent 在重连。
+
+### 设计原则
+
+**`wecom-aibot.json` 的存在即所有权证明。**
+
+同一项目目录下的 agent 始终拥有对应 ccId 的使用权，无需冲突检测。
+
+### 新注册流程
+
+```
+enter_headless_mode(cc_id, project_dir)
+        ↓
+检查 project_dir/.claude/wecom-aibot.json 是否存在且 ccId 匹配
+        ↓
+  ┌─────┴──────┐
+  │  匹配（重连）│  不匹配（首次注册）
+  │            │
+  └─→ 直接覆盖  └─→ 清理 lastOnline 超时的条目
+      更新         再注册新 ccId
+      lastOnline
+```
+
+### 注册表结构
+
+```typescript
+interface CCRegistryEntry {
+  robotName: string;
+  agentName?: string;
+  mode?: 'channel' | 'http';
+  projectDir?: string;
+  lastOnline: number;  // 新增：Unix 毫秒时间戳
+}
+```
+
+### 超时清理
+
+- 阈值：`CCID_STALE_TIMEOUT = 30 分钟`
+- 时机：首次注册新 ccId 时，顺带清理所有 `lastOnline` 超时的条目
+- 重连场景不触发清理（直接覆盖）
+
+### 移除冲突检测
+
+不再返回 `status: ccid_conflict`。`enter_headless_mode` 始终成功，冲突场景通过超时自然解决。
+
+---
+
 ## 文件变更汇总
 
 | 文件 | 变更内容 |
@@ -300,9 +356,140 @@ ccId 自动编号（cc-1, cc-2）不符合用户预期。
 
 ---
 
+## v2.3 - 2026-04-13
+
+---
+
+## 12. Channel 模式修复
+
+### 问题
+
+Channel 模式始终无法唤醒 Claude agent，表现为微信消息到达、SSE 收到消息、notification 显示"发送成功"，但 Claude 不响应。
+
+### 根本原因
+
+三个问题叠加：
+
+**问题 1：缺少 `experimental['claude/channel']` capability 声明**
+
+最根本的问题。未声明此 capability 时，Claude Code 不会注册 notification listener，所有 `notifications/claude/channel` 通知被无声丢弃。
+
+```typescript
+// 错误（之前）
+capabilities: { tools: {} }
+
+// 正确
+capabilities: {
+  experimental: { 'claude/channel': {} },
+  tools: {},
+}
+```
+
+**问题 2：notification params 格式错误**
+
+MCP Channels 规范要求 `{ content: string, meta: Record<string, string> }`，之前使用了 `{ level, data }` 非标准格式。
+
+```typescript
+// 错误（之前）
+params: { level: 'info', data: JSON.stringify(msg) }
+
+// 正确：content 成为 <channel> 标签正文，meta 成为标签属性
+params: {
+  content: message.content,
+  meta: { from, chatid, chattype, cc_id }
+}
+```
+
+Claude 收到的事件格式：
+```
+<channel source="wecom-aibot-channel" from="LiuYang" chatid="wr0Q..." chattype="group" cc_id="知识库">
+消息内容
+</channel>
+```
+
+**问题 3：SSE buffer 累积 bug**
+
+SSE 注释行（`: heartbeat`）未被跳过，不断写入 buffer 导致积累。修复：加 `line.startsWith(':')` 判断跳过注释行。
+
+### 解决方案
+
+1. 在 `McpServer` 构造器中声明 `experimental: { 'claude/channel': {} }`
+2. 修正 notification params 为 `{ content, meta }` 格式
+3. 跳过 SSE `: comment` 行，不写回 buffer
+4. 添加 `instructions` 字段告知 Claude 如何处理 `<channel>` 标签
+
+---
+
+## 13. Channel 模式工具前缀路由
+
+### 问题
+
+agent 调用 `mcp__wecom-aibot__enter_headless_mode`（HTTP MCP 直接）而非 `mcp__wecom-aibot-channel__enter_headless_mode`（Channel MCP 版本），导致 channel server 从未拦截到调用，SSE 连接未建立，订阅数 = 0。
+
+### 原因
+
+两个 MCP server 注册了同名工具，agent 默认选择 HTTP MCP 版本。旧 SKILL.md 未区分 Channel 模式下应使用哪个前缀。
+
+### 解决方案
+
+SKILL.md 明确规定：
+
+- **Channel 模式**：使用 `mcp__wecom-aibot-channel__enter_headless_mode`，channel server 拦截后建立 SSE
+- **HTTP 模式**：使用 `mcp__wecom-aibot__enter_headless_mode`
+
+---
+
+## 14. heartbeatJobId 持久化（MCP 工具方案）
+
+### 问题
+
+HTTP 模式下，`/loop` 创建的心跳 job ID 需要持久化到 `.claude/wecom-aibot.json`，以便退出时能正确停止定时任务。本地场景可以直接写文件，但远程部署时 agent 无法访问远程服务器的文件系统。
+
+### 解决方案
+
+新增 MCP 工具 `update_heartbeat_job_id(cc_id, job_id)`：
+
+- HTTP MCP 服务端执行，通过 `cc_id` 从注册表查找 `projectDir`
+- 调用 `updateWechatModeConfig(projectDir, { heartbeatJobId: job_id })`
+- 同时适用本地和远程部署场景
+
+`CCRegistryEntry` 增加 `projectDir?: string` 字段，在 `enter_headless_mode` 时写入。
+
+---
+
+## 15. 群聊消息回复路由
+
+### 问题
+
+收到群聊消息后，`send_message` 未指定 `target_user` 时默认发给配置的 `targetUserId`（单聊），而不是发回群聊。
+
+### 解决方案
+
+`get_pending_messages` 返回的每条消息包含 `chatid`（单聊=用户ID，群聊=群ID，如 `wr0Q...`）。
+
+SKILL.md 明确要求：**回复时必须将 `chatid` 作为 `target_user` 传入**。
+
+```
+send_message(cc_id, content, target_user=msg.chatid)
+```
+
+---
+
+## 16. CC 注册表 lastOnline 更新时机
+
+### 问题
+
+注册表 `lastOnline` 只在首次注册时写入，长期在线的 CC 实际 lastOnline 不更新，导致超时清理误判。
+
+### 解决方案（待实现）
+
+每次收到消息时（`pushMessageToSubscribers`）更新对应 ccId 的 `lastOnline`。
+
+---
+
 ## 版本信息
 
-- 版本号: v2.1
-- 发布日期: 2026-04-12
+- 版本号: v2.3
+- 发布日期: 2026-04-13
 - MCP Server 名称: wecom-aibot-channel v2.0.0
 - 工具数量: HTTP MCP 14 个、Channel MCP 13 个

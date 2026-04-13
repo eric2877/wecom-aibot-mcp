@@ -30,12 +30,12 @@ const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.local.
 const HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.sh');
 const TASK_COMPLETED_HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'task-completed-hook.sh');
 
-// 版本号（与 package.json 同步）
-const VERSION = '1.6.0';
-
 // Skill 模板路径（包内）- 使用 fileURLToPath 确保跨平台兼容
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// 版本号（从 package.json 读取）
+const VERSION: string = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8')).version;
 const SKILL_TEMPLATE_DIR = path.join(__dirname, '..', 'skills', 'headless-mode');
 const SKILL_TEMPLATE_FILE = path.join(SKILL_TEMPLATE_DIR, 'SKILL.md');
 

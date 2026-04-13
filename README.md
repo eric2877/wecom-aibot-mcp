@@ -10,31 +10,48 @@
 
 - 🔐 **远程审批**：敏感操作通过微信卡片审批，支持"允许一次/拒绝"
 - 💬 **双向通信**：任务进度、完成通知实时推送到微信
-- 📱 **Headless 模式**：离开电脑时切换到微信交互，长轮询实时接收消息
+- 📱 **Headless 模式**：离开电脑时切换到微信交互，支持 HTTP 轮询和 Channel 推送两种模式
+- 🚀 **Channel 模式**：微信消息自动唤醒 Claude agent，无需心跳轮询（需 claude.ai 直连账号）
 - 🤖 **多机器人支持**：支持配置多个机器人，团队场景下多人独立使用
-- 🌐 **HTTP Transport**：使用 HTTP 传输，支持多实例共享服务
+- 👥 **群聊支持**：支持群聊 @机器人，自动回复到正确的群聊会话
+- 🌐 **双传输模式**：HTTP Transport（轮询）+ Channel MCP（SSE 推送）
 
 ## 架构
 
 ```
-┌─────────────────┐      MCP (HTTP)       ┌──────────────────┐
-│  Claude Code    │  ──────────────────▶  │  wecom-aibot-mcp │
-│  (MCP Client)   │  ◀──────────────────  │  MCP Server      │
-└─────────────────┘                       └──────────────────┘
-                                                   │
-                                           WebSocket 长连接
-                                                   ↓
-                                          ┌───────────────────┐
-                                          │  企业微信服务器     │
-                                          │  wss://openws...   │
-                                          └───────────────────┘
-                                                   │
-                                                   ↓
-                                          ┌───────────────────┐
-                                          │  用户企业微信客户端  │
-                                          │  (手机/桌面)        │
-                                          └───────────────────┘
+┌─────────────────┐    MCP (HTTP)     ┌──────────────────────┐
+│  Claude Code    │ ───────────────▶  │  wecom-aibot-mcp     │
+│  (HTTP MCP)     │ ◀───────────────  │  HTTP Server :18963  │
+└─────────────────┘                   └──────────────────────┘
+                                               │  ▲
+                                          SSE  │  │ 消息推送
+                                               ▼  │
+┌─────────────────┐    stdio          ┌──────────────────────┐
+│  Claude Code    │ ◀────────────▶    │  wecom-aibot-channel │
+│  (Channel MCP)  │  notifications/   │  Channel Proxy       │
+└─────────────────┘  claude/channel   └──────────────────────┘
+                                               │
+                                       WebSocket 长连接
+                                               ↓
+                                      ┌───────────────────┐
+                                      │  企业微信服务器     │
+                                      └───────────────────┘
+                                               │
+                                               ↓
+                                      ┌───────────────────┐
+                                      │  用户企业微信客户端  │
+                                      │  (手机/桌面)        │
+                                      └───────────────────┘
 ```
+
+### 运行模式对比
+
+| 特性 | Channel 模式 | HTTP 模式 |
+|------|-------------|----------|
+| 消息接收 | SSE 推送，自动唤醒 | `/loop` 心跳轮询 |
+| 响应延迟 | 即时 | ≤1 分钟 |
+| 账号要求 | claude.ai 直连登录 | API Key / 中转均可 |
+| 启动方式 | `--dangerously-load-development-channels` | 普通启动 |
 
 ### 审批流程
 
@@ -45,7 +62,6 @@ PermissionRequest Hook 拦截
               ↓
      ┌────────────────────────┐
      │ 检查 headless 模式状态  │
-     │ (检查 .claude/headless.json)
      └────────────────────────┘
               │
       ┌───────┴───────┐
@@ -59,37 +75,6 @@ PermissionRequest Hook 拦截
               通过 HTTP /approval_status
                       ↓
               执行或拒绝操作
-```
-
-### Headless 模式
-
-```
-用户：现在开始通过微信联系
-  ↓
-Claude → enter_headless_mode()
-  ↓
-  ├─ 连接 WebSocket
-  ├─ 写入 .claude/settings.json (PermissionRequest hook)
-  ├─ 发送微信确认消息
-  └─ 返回 { status: 'entered', headless: true }
-  ↓
-Claude 开始长轮询 get_pending_messages(timeout_ms=30000)
-  ↓
-┌─────────────────────────────────────────┐
-│  loop:                                  │
-│    1. 等待用户消息（30秒超时）            │
-│    2. 收到消息 → 理解意图 → 执行操作      │
-│    3. Hook 自动拦截审批 → 发送微信卡片    │
-│    4. 用户审批 → 操作完成 → 汇报结果      │
-│    5. 继续轮询                           │
-└─────────────────────────────────────────┘
-  ↓
-用户：我回来了
-  ↓
-Claude → exit_headless_mode()
-  ├─ 断开 WebSocket
-  ├─ 删除 .claude/settings.json hook
-  └─ 发送微信确认消息
 ```
 
 ## 安装
@@ -127,9 +112,9 @@ npx @vrs-soft/wecom-aibot-mcp
 
 配置完成后会自动：
 - 写入机器人配置到 `~/.wecom-aibot-mcp/config.json`
-- 写入 MCP 配置到 `~/.claude.json`
+- 写入双 MCP 配置到 `~/.claude.json`（HTTP + Channel）
 - 注册 PermissionRequest hook 到 `~/.claude/settings.local.json`
-- 安装 headless-mode skill 到 `~/.claude/skills/`
+- 安装 headless-mode skill
 - 后台启动 MCP 服务
 
 ## 常用命令
@@ -143,25 +128,15 @@ npx @vrs-soft/wecom-aibot-mcp
 | `npx @vrs-soft/wecom-aibot-mcp --config` | 修改配置 |
 | `npx @vrs-soft/wecom-aibot-mcp --add` | 添加新机器人 |
 | `npx @vrs-soft/wecom-aibot-mcp --delete` | 删除机器人配置 |
-| `npx @vrs-soft/wecom-aibot-mcp --uninstall` | 完全卸载 |
+| `npx @vrs-soft/wecom-aibot-mcp --clean-cache` | 清空 CC 注册表缓存 |
 | `npx @vrs-soft/wecom-aibot-mcp --debug` | 前台启动（输出调试日志） |
-
-### 添加新机器人
-
-适用于团队多人场景：
-
-```bash
-npx @vrs-soft/wecom-aibot-mcp --add
-# 输入机器人名称（如"张三的机器人"）
-# 输入 Bot ID 和 Secret
-# 发送消息识别用户
-```
+| `npx @vrs-soft/wecom-aibot-mcp --uninstall` | 完全卸载 |
 
 ## 快速开始
 
-### 配置 Claude Code
+### MCP 配置
 
-配置向导会自动写入 `~/.claude.json`：
+配置向导自动写入 `~/.claude.json`（同时配置两种模式）：
 
 ```json
 {
@@ -169,90 +144,108 @@ npx @vrs-soft/wecom-aibot-mcp --add
     "wecom-aibot": {
       "type": "http",
       "url": "http://127.0.0.1:18963/mcp"
+    },
+    "wecom-aibot-channel": {
+      "command": "npx",
+      "args": ["@vrs-soft/wecom-aibot-mcp", "--channel"]
     }
   }
 }
 ```
 
-### 启动服务
+### 启动 HTTP MCP 服务
 
 ```bash
 npx @vrs-soft/wecom-aibot-mcp --start
 ```
 
-输出：
-```
-[mcp] MCP Server 已在后台启动
-[mcp] HTTP endpoint: http://127.0.0.1:18963/mcp
-[mcp] 健康检查: curl http://127.0.0.1:18963/health
-[mcp] 停止服务: npx @vrs-soft/wecom-aibot-mcp --stop
+### 启动 Channel 模式（研究预览）
+
+Channel 模式需要 claude.ai 直连账号，启动时加参数：
+
+```bash
+claude --dangerously-load-development-channels server:wecom-aibot-channel
 ```
 
-### 重启 Claude Code
-
-运行 `/mcp` 命令，选择「Reconnect」重新连接 MCP 服务。
+> **注意**：使用 API Key 或 API 中转服务时，Channel 模式不可用，请使用 HTTP 模式。
 
 ## 使用示例
 
-### Headless 模式（远程审批）
+### HTTP 模式（通用）
 
 ```
 你：现在开始通过微信联系
 
-Claude：已进入微信模式，所有交互将通过企业微信进行。
-微信收到：【cc-1】已进入微信模式，使用机器人「工作机器人」。
+Claude：已进入微信模式（HTTP），开始心跳轮询，等待消息中。
+微信收到：【进度】已进入微信模式...
 
-[你离开电脑，Claude 需要执行删除文件操作]
+[你离开电脑，在微信发送消息]
+
+微信发送：帮我查看一下服务器日志
+
+Claude：收到，开始处理...
+[执行操作，需要审批时发送微信卡片]
 
 微信收到审批卡片：
 ┌─────────────────────────┐
 │ 【待审批】Bash           │
-│ 执行命令: rm -rf dist    │
+│ 执行命令: tail -100 app.log│
 │ [允许一次] [拒绝]        │
 └─────────────────────────┘
 
-[你在手机点击"允许一次"]
-
-Claude 继续执行，发送结果到微信。
-
-你：我回来了
-
-Claude：已退出微信模式，恢复终端交互。
+Claude：微信收到结果通知
 ```
 
-### 发送任务通知
+### Channel 模式（自动唤醒）
 
-```
-你：帮我重构这个函数，完成后微信通知我
-
-Claude：[执行重构...]
-微信收到：【完成】函数重构完成！
+```bash
+# 以 Channel 模式启动
+claude --dangerously-load-development-channels server:wecom-aibot-channel
 ```
 
-### 群聊机器人
+```
+你：现在开始通过微信联系（Channel 模式）
 
-将机器人拉入群聊：
+Claude：已进入微信模式（Channel），消息将通过 SSE 自动推送。
+
+[发送微信消息后，Claude 自动被唤醒，无需轮询等待]
+```
+
+### 群聊支持
+
+将机器人拉入群聊，在群中 @机器人：
 
 ```
 群聊中：
-张三：@Claude助手 查看服务器日志
+张三：@Claude助手 查看最新代码提交
 
-Claude：执行命令，发送结果到群聊
+Claude：[自动识别群聊 ID，回复到同一群聊]
+收到，查看最新提交...
 ```
 
 ## MCP 工具
 
+### HTTP MCP（wecom-aibot）
+
 | 工具 | 说明 | 参数 |
 |------|------|------|
-| `send_message` | 发送消息到微信 | `content`, `target_user` |
-| `get_pending_messages` | 获取待处理消息（长轮询） | `clear`, `timeout_ms` |
-| `enter_headless_mode` | 进入微信模式 | `agent_name`, `robot_id` |
-| `exit_headless_mode` | 退出微信模式 | `agent_name` |
+| `enter_headless_mode` | 进入微信模式 | `cc_id`, `robot_id`, `mode`, `project_dir` |
+| `exit_headless_mode` | 退出微信模式 | `cc_id`, `project_dir` |
+| `send_message` | 发送消息到微信 | `cc_id`, `content`, `target_user` |
+| `get_pending_messages` | 获取待处理消息（长轮询） | `cc_id`, `timeout_ms` |
+| `heartbeat_check` | 心跳检查（HTTP 模式） | - |
+| `update_heartbeat_job_id` | 保存心跳 job ID | `cc_id`, `job_id` |
 | `check_connection` | 检查连接状态 | - |
 | `list_robots` | 列出所有机器人 | - |
 | `get_connection_stats` | 获取连接统计 | `recent_logs` |
 | `detect_user_from_message` | 从消息识别用户 | `timeout` |
+| `get_setup_requirements` | 获取配置需求 | - |
 | `get_setup_guide` | 获取安装指南 | - |
+| `add_robot_config` | 添加机器人配置 | `name`, `bot_id`, `secret` |
+
+### Channel MCP（wecom-aibot-channel）
+
+同 HTTP MCP 工具列表，所有调用转发到 HTTP MCP，另额外建立 SSE 连接实现推送唤醒。
 
 ## 配置说明
 
@@ -261,7 +254,7 @@ Claude：执行命令，发送结果到群聊
 支持多个机器人独立使用：
 
 ```json
-// ~/.wecom-aibot-mcp/config.json
+// ~/.wecom-aibot-mcp/config.json（默认机器人）
 {
   "botId": "bot-xxx",
   "secret": "sec-yyy",
@@ -269,7 +262,7 @@ Claude：执行命令，发送结果到群聊
   "nameTag": "机器人1"
 }
 
-// ~/.wecom-aibot-mcp/robot-1234567890.json
+// ~/.wecom-aibot-mcp/robot-1234567890.json（额外机器人）
 {
   "botId": "bot-zzz",
   "secret": "sec-www",
@@ -278,51 +271,42 @@ Claude：执行命令，发送结果到群聊
 }
 ```
 
-使用 `list_robots` 查看所有机器人状态：
-
-```json
-{
-  "robots": [
-    {"name": "机器人1", "status": "connected"},
-    {"name": "机器人2", "status": "available"}
-  ],
-  "total": 2,
-  "connected": 1,
-  "occupied": 0
-}
-```
-
 ### 超时审批配置
 
-在 `~/.wecom-aibot-mcp/config.json` 中可配置审批超时时间：
+在机器人配置文件中可配置审批超时时间：
 
 ```json
 {
-  "botId": "bot-xxx",
-  "secret": "sec-yyy",
-  "targetUserId": "user1",
-  "nameTag": "机器人1",
   "autoApproveTimeout": 600
 }
 ```
 
-- `autoApproveTimeout`: 审批超时时间（秒），默认 600 秒（10 分钟）
-- 超时后，项目目录内的操作会自动允许，项目外的操作会自动拒绝
+- `autoApproveTimeout`: 审批超时（秒），默认 600 秒（10 分钟）
+- 超时后，项目目录内的操作自动允许，项目外自动拒绝
 
-### 调试模式
+### 拆分部署（远程 HTTP + 本地 Channel）
 
-使用 `--debug` 启动可在终端查看 hook 脚本的调试日志：
+HTTP MCP 运行在远程服务器，Channel MCP 代理运行在本地：
 
 ```bash
-npx @vrs-soft/wecom-aibot-mcp --debug
+# 远程服务器
+npx @vrs-soft/wecom-aibot-mcp --http-only --start
+
+# 本地机器
+MCP_URL=http://远程IP:18963 npx @vrs-soft/wecom-aibot-mcp --channel-only
 ```
 
-调试日志会输出到 stderr，包括：
-- 审批请求拦截信息
-- 超时时间配置
-- 操作类型判断详情
-
 ## 故障排查
+
+### Channels 不可用
+
+```
+Channels are not currently available
+```
+
+原因：使用 API Key 或 API 中转服务，不支持 Channel 模式。
+
+解决：切换到 claude.ai 直连账号，或使用 HTTP 模式（功能等价）。
 
 ### 认证失败（错误码 40058）
 
@@ -336,8 +320,11 @@ npx @vrs-soft/wecom-aibot-mcp --debug
 # 检查服务状态
 curl http://127.0.0.1:18963/health
 
-# 查看日志
-tail -f ~/.wecom-aibot-mcp/connection.log
+# 清空 CC 注册表缓存（断线残留）
+npx @vrs-soft/wecom-aibot-mcp --clean-cache
+
+# 查看调试日志
+npx @vrs-soft/wecom-aibot-mcp --debug
 
 # 重启服务
 npx @vrs-soft/wecom-aibot-mcp --stop
@@ -359,21 +346,10 @@ npx @vrs-soft/wecom-aibot-mcp --uninstall
 ## 开发
 
 ```bash
-# 克隆仓库
 git clone https://github.com/eric2877/wecom-aibot-mcp.git
 cd wecom-aibot-mcp
-
-# 安装依赖
 npm install
-
-# 开发模式
-npm run dev
-
-# 构建
 npm run build
-
-# 测试
-npm test
 ```
 
 ## License
@@ -383,5 +359,5 @@ MIT
 ## 相关链接
 
 - [企业微信智能机器人文档](https://developer.work.weixin.qq.com/document/path/101039)
-- [Claude Code 文档](https://docs.anthropic.com/claude-code)
+- [Claude Code Channels 文档](https://code.claude.com/docs/en/channels-reference)
 - [MCP 协议规范](https://modelcontextprotocol.io)

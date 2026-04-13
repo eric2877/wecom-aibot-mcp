@@ -257,13 +257,20 @@ function connectSSE(ccId?: string): void {
             messageCount++;
             logChannel('✅ 消息解析成功', { messageNumber: messageCount, msg });
 
-            // 推送 notifications/message (标准 MCP 格式)
+            // 推送 notifications/claude/channel 唤醒 Claude agent
             if (mcpServer) {
+              // content 成为 <channel> 标签正文，meta 成为标签属性（只允许字母/数字/下划线）
+              const message = msg.message || {};
               const notification = {
-                method: 'notifications/message',
+                method: 'notifications/claude/channel',
                 params: {
-                  level: 'info',
-                  data: JSON.stringify(msg),
+                  content: message.content || JSON.stringify(msg),
+                  meta: {
+                    from: message.from || '',
+                    chatid: message.chatid || '',
+                    chattype: message.chattype || 'single',
+                    cc_id: msg.ccId || '',
+                  } as Record<string, string>,
                 },
               };
               logChannel('📤 发送 notification', { notification });
@@ -284,7 +291,10 @@ function connectSSE(ccId?: string): void {
           logChannel('SSE event type', { type: line.slice(7) });
         } else if (line === '') {
           // 事件分隔符，忽略
+        } else if (line.startsWith(':')) {
+          // SSE 注释（如 ": heartbeat"），忽略，不要写回 buffer
         } else {
+          // 可能是跨行 JSON 的一部分
           buffer = line;
         }
       }
@@ -335,7 +345,22 @@ function registerChannelTools(server: McpServer) {
   );
 
   // ============================================
-  // 工具 3: 检查连接状态
+  // 工具 3: 保存心跳 job ID（HTTP 模式）
+  // ============================================
+  server.tool(
+    'update_heartbeat_job_id',
+    '保存心跳定时任务 job ID 到配置文件（HTTP 模式用，/loop 创建后调用）',
+    {
+      cc_id: z.string().describe('CC 唯一标识'),
+      job_id: z.string().describe('由 /loop 命令返回的 job ID'),
+    },
+    async ({ cc_id, job_id }) => {
+      return forwardToHttpMcp('update_heartbeat_job_id', { cc_id, job_id });
+    }
+  );
+
+  // ============================================
+  // 工具 4: 检查连接状态
   // ============================================
   server.tool(
     'check_connection',
@@ -564,8 +589,12 @@ export async function startChannelServer(): Promise<void> {
     version: '2.0.0',
   }, {
     capabilities: {
+      // 必须声明 experimental['claude/channel']，Claude Code 才会注册 notification listener
+      experimental: { 'claude/channel': {} },
       tools: {},
     },
+    // 告知 Claude 如何处理 channel 事件
+    instructions: '企业微信消息通过 <channel> 标签推送。属性说明：from=发送者userid, chatid=会话ID(单聊=用户ID,群聊=群ID), chattype=single|group, cc_id=当前会话标识。收到消息后：1) 发送确认 send_message(cc_id, "收到...", target_user=chatid)；2) 处理任务；3) 发送结果 send_message(cc_id, "【完成】...", target_user=chatid)。',
   });
 
   // 注册工具

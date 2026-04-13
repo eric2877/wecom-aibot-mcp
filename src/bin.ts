@@ -67,6 +67,7 @@ function showHelp() {
   --list          列出所有已配置的机器人及其占用状态
   --delete [名称] 删除指定的机器人配置（保留 MCP 配置）
   --uninstall     卸载并删除所有配置（包括 MCP 配置、hook、skill）
+  --clean-cache   清空 CC 注册表缓存（清理异常断线残留的 ccId）
 
 使用流程:
   1. 首次安装: npx @vrs-soft/wecom-aibot-mcp
@@ -106,7 +107,8 @@ MCP 配置（默认安装同时配置两种模式）:
     }
 
   Channel 模式优势：微信消息自动唤醒 agent，无需主动轮询
-  启动 Channel 模式：claude --channels server:wecom-aibot-channel
+  启动 Channel 模式（研究预览）：
+    claude --dangerously-load-development-channels server:wecom-aibot-channel
 
 更多信息: https://github.com/eric2877/wecom-aibot-mcp
 `);
@@ -445,6 +447,27 @@ async function main() {
   // --stop 命令：停止服务
   if (args.includes('--stop')) {
     stopServer();
+    process.exit(0);
+  }
+
+  // --clean-cache 命令：清空 CC 注册表缓存
+  if (args.includes('--clean-cache')) {
+    if (!isServerRunning()) {
+      console.log('[mcp] 服务未运行，无需清理缓存');
+      process.exit(0);
+    }
+    try {
+      const res = await fetch(`http://127.0.0.1:${HTTP_PORT}/admin/clean-cache`, { method: 'POST' });
+      const data = await res.json() as { ok: boolean; cleared: number; entries: string[] };
+      if (data.ok) {
+        console.log(`[mcp] 已清空 CC 注册表，共清理 ${data.cleared} 条`);
+        if (data.entries.length > 0) {
+          console.log(`[mcp] 已清理: ${data.entries.join(', ')}`);
+        }
+      }
+    } catch (err) {
+      console.error('[mcp] 清理失败:', err);
+    }
     process.exit(0);
   }
 

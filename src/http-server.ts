@@ -156,7 +156,7 @@ export interface ApprovalRequest {
 }
 
 // ============================================
-// CC 注册表：ccId → { robotName, agentName, mode }
+// CC 注册表：ccId → { robotName, agentName, mode, projectDir, lastOnline }
 // ccId 是 CC 的唯一身份标识，与 SSE session 解耦
 // mode: 'channel' = SSE 推送，'http' = 轮询
 // ============================================
@@ -164,20 +164,38 @@ interface CCRegistryEntry {
   robotName: string;
   agentName?: string;
   mode?: 'channel' | 'http';  // 运行模式
+  projectDir?: string;  // 项目目录路径（用于写入配置文件）
+  lastOnline: number;   // 最后在线时间戳（ms），用于超时清理
 }
 
 const ccIdRegistry = new Map<string, CCRegistryEntry>();
 
-// 注册结果：{ success, ccId, conflict?, onlineCcIds? }
-export function registerCcId(ccId: string, robotName: string, agentName?: string, mode?: 'channel' | 'http'): { success: boolean; ccId: string; conflict?: boolean; onlineCcIds?: string[] } {
-  // 如果 ccId 已存在，返回冲突错误（不自动编号）
-  if (ccIdRegistry.has(ccId)) {
-    const onlineCcIds = Array.from(ccIdRegistry.keys());
-    logger.log(`[ccid] 冲突: ${ccId} 已被使用，在线: ${onlineCcIds.join(', ')}`);
-    return { success: false, ccId, conflict: true, onlineCcIds };
+// 超时阈值：30 分钟未活跃的 ccId 视为离线
+const CCID_STALE_TIMEOUT = 30 * 60 * 1000;
+
+// 清理超时的 ccId 条目
+function cleanStaleCcIds(): void {
+  const now = Date.now();
+  for (const [id, entry] of ccIdRegistry) {
+    if (now - entry.lastOnline > CCID_STALE_TIMEOUT) {
+      ccIdRegistry.delete(id);
+      logger.log(`[ccid] 清理超时条目: ${id} (离线 ${Math.round((now - entry.lastOnline) / 60000)} 分钟)`);
+    }
   }
-  ccIdRegistry.set(ccId, { robotName, agentName, mode });
-  logger.log(`[ccid] 注册: ${ccId} → ${robotName} (${agentName || 'unknown'}, mode: ${mode || 'http'})`);
+}
+
+// 注册 ccId。重连场景（config 文件已存在）直接覆盖更新；
+// 首次注册时先清理超时条目。始终返回 success=true，不做冲突拦截。
+export function registerCcId(ccId: string, robotName: string, agentName?: string, mode?: 'channel' | 'http', projectDir?: string, isReconnect?: boolean): { success: boolean; ccId: string } {
+  if (isReconnect || ccIdRegistry.has(ccId)) {
+    // 重连：直接覆盖，更新 lastOnline
+    logger.log(`[ccid] 重连: ${ccId} → ${robotName}`);
+  } else {
+    // 首次注册：先清理超时条目
+    cleanStaleCcIds();
+    logger.log(`[ccid] 注册: ${ccId} → ${robotName} (${agentName || 'unknown'}, mode: ${mode || 'http'})`);
+  }
+  ccIdRegistry.set(ccId, { robotName, agentName, mode, projectDir, lastOnline: Date.now() });
   return { success: true, ccId };
 }
 
@@ -186,8 +204,19 @@ export function unregisterCcId(ccId: string): void {
   logger.log(`[ccid] 注销: ${ccId}`);
 }
 
+export function clearCcIdRegistry(): { cleared: number; entries: string[] } {
+  const entries = Array.from(ccIdRegistry.keys());
+  ccIdRegistry.clear();
+  logger.log(`[ccid] 清空注册表: 共清理 ${entries.length} 条 (${entries.join(', ')})`);
+  return { cleared: entries.length, entries };
+}
+
 export function getRobotByCcId(ccId: string): string | null {
   return ccIdRegistry.get(ccId)?.robotName || null;
+}
+
+export function getProjectDirByCcId(ccId: string): string | null {
+  return ccIdRegistry.get(ccId)?.projectDir || null;
 }
 
 export function getCCRegistryEntry(ccId: string): CCRegistryEntry | null {
@@ -704,6 +733,13 @@ export async function startHttpServer(
         return;
       }
 
+      if (req.method === 'POST' && url === '/admin/clean-cache') {
+        const result = clearCcIdRegistry();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...result }));
+        return;
+      }
+
       // 临时调试端点：手动进入 headless 模式
       if (req.method === 'POST' && url === '/debug/enter_headless') {
         const ccId = `debug-${Date.now()}`;
@@ -1031,7 +1067,7 @@ function handleHealthCheck(_req: http.IncomingMessage, res: http.ServerResponse)
 
 // SSE 连接处理（Channel 模式）
 function handleSSEConnect(req: http.IncomingMessage, res: http.ServerResponse, url: string): void {
-  const ccId = url.replace('/sse/', '');
+  const ccId = decodeURIComponent(url.replace('/sse/', ''));
   const entry = getCCRegistryEntry(ccId);
 
   if (!entry) {

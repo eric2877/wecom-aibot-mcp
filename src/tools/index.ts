@@ -33,6 +33,7 @@ import {
   registerCcId,
   unregisterCcId,
   getRobotByCcId,
+  getProjectDirByCcId,
   generateCcId,
 } from '../http-server.js';
 import {
@@ -41,7 +42,7 @@ import {
   isHeadlessMode,
 } from '../headless-state.js';
 import { subscribeWecomMessageByCcId, WecomMessage } from '../message-bus.js';
-import { updateWechatModeConfig, addPermissionHook, removePermissionHook, addTaskCompletedHook, removeTaskCompletedHook } from '../project-config.js';
+import { updateWechatModeConfig, loadWechatModeConfig, addPermissionHook, removePermissionHook, addTaskCompletedHook, removeTaskCompletedHook } from '../project-config.js';
 import { logger } from '../logger.js';
 
 // 辅助函数：从 ccId 获取客户端
@@ -112,7 +113,29 @@ export function registerTools(server: McpServer) {
   );
 
   // ============================================
-  // 工具 3: 检查连接状态
+  // 工具 3: 保存心跳 job ID（HTTP 模式）
+  // ============================================
+  server.tool(
+    'update_heartbeat_job_id',
+    '保存心跳定时任务 job ID 到配置文件（HTTP 模式用，/loop 创建后调用）',
+    {
+      cc_id: z.string().describe('CC 唯一标识'),
+      job_id: z.string().describe('由 /loop 命令返回的 job ID'),
+    },
+    async ({ cc_id, job_id }) => {
+      const projectDir = getProjectDirByCcId(cc_id) || process.cwd();
+      updateWechatModeConfig(projectDir, { heartbeatJobId: job_id });
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ success: true, projectDir, job_id }),
+        }],
+      };
+    }
+  );
+
+  // ============================================
+  // 工具 4: 检查连接状态
   // ============================================
   server.tool(
     'check_connection',
@@ -313,6 +336,7 @@ npx @vrs-soft/wecom-aibot-mcp
                   'mcp__wecom-aibot__get_connection_stats',
                   'mcp__wecom-aibot__get_setup_requirements',
                   'mcp__wecom-aibot__get_skill',
+                  'mcp__wecom-aibot__update_heartbeat_job_id',
                 ],
               },
               // Hook 配置需求
@@ -492,23 +516,12 @@ npx @vrs-soft/wecom-aibot-mcp
       // 如果用户传入 cc_id，直接使用；否则自动生成
       const finalCcId = cc_id || generateCcId(effectiveAgentName);
 
-      // 注册 ccId 到 CC 注册表（检测冲突）
-      const registerResult = registerCcId(finalCcId, selectedRobot.name, effectiveAgentName, mode);
+      // 检查 wecom-aibot.json 是否已有匹配的 ccId（重连场景）
+      const existingConfig = loadWechatModeConfig(projectDir);
+      const isReconnect = existingConfig?.ccId === finalCcId;
 
-      // 如果 ccId 冲突，返回错误提示 agent 改名
-      if (!registerResult.success && registerResult.conflict) {
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              status: 'ccid_conflict',
-              message: `会话名称「${finalCcId}」已被使用，请选择其他名称`,
-              onlineCcIds: registerResult.onlineCcIds,
-              hint: '请重新调用 enter_headless_mode 并传入不同的 cc_id',
-            }, null, 2),
-          }],
-        };
-      }
+      // 注册 ccId 到 CC 注册表（重连直接覆盖，首次注册清理超时条目）
+      registerCcId(finalCcId, selectedRobot.name, effectiveAgentName, mode, projectDir, isReconnect);
 
       // 更新项目配置文件中的 wechatMode 为 true
       updateWechatModeConfig(projectDir, {
