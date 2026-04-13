@@ -487,6 +487,31 @@ send_message(cc_id, content, target_user=msg.chatid)
 
 ---
 
+## 17. SKILL.md 流程：先选模式再操作
+
+### 问题
+
+原流程先调用 `mcp__wecom-aibot__list_robots`（HTTP MCP），再询问用户选 Channel 还是 HTTP 模式。用户选 Channel 后，`enter_headless_mode` 虽然改用了 `mcp__wecom-aibot-channel__` 前缀，但 `list_robots` 已经用了 HTTP 前缀，整体 MCP 不一致。
+
+更深的问题：如果 agent 在选模式前就用了 HTTP MCP 的工具，可能误导 agent 后续也用 HTTP 前缀调用 `enter_headless_mode`，导致 channel server 无法拦截。
+
+### 解决方案
+
+**模式决定 MCP 前缀，必须先确定模式。**
+
+新流程：
+```
+1. 先选模式（Channel / HTTP）→ 确定 MCP 前缀
+2. ${MCP}list_robots（用已确定的前缀）
+3. ${MCP}enter_headless_mode（同一前缀）
+4. 后续所有工具调用保持同一前缀
+```
+
+- Channel 模式 → 全程 `mcp__wecom-aibot-channel__`
+- HTTP 模式 → 全程 `mcp__wecom-aibot__`
+
+---
+
 ## 版本信息
 
 - 版本号: v2.3
