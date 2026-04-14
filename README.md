@@ -87,29 +87,36 @@ npx @vrs-soft/wecom-aibot-mcp --clean-cache
 
 ## 拆分部署
 
-HTTP MCP 跑在远程服务器，Channel 代理跑在本地：
+HTTP MCP Server 和 Channel MCP 分开安装在不同机器：
 
 ```bash
-# 远程服务器（设置 Auth Token）
+# 远程服务器（只安装 HTTP MCP Server）
 npx @vrs-soft/wecom-aibot-mcp --set-token your-secret-token
 npx @vrs-soft/wecom-aibot-mcp --http-only --start
 
-# 本地（首次运行选择"远程服务器"，输入 URL 和 Token）
+# 本地（只安装 Channel MCP）
 npx @vrs-soft/wecom-aibot-mcp
-# → 选择 2：HTTP + Channel（推荐）
+# → 选择 2：远程服务器（连接远程 HTTP MCP）
+# → 选择 2：Channel MCP（推荐）
 # → 输入服务器 URL：https://your-server:18963
 # → 输入 Auth Token：your-secret-token
+
+# 启动 Channel MCP
+claude --dangerously-load-development-channels server:wecom-aibot-channel
 ```
 
-**安装模式说明**：
-- **HTTP + Channel**：本地安装 Channel MCP，连接远程 HTTP Server（推荐）
-- **仅 HTTP**：本地不安装 Channel，使用 HTTP 模式轮询（最简单）
+**安装模式对比**：
+
+| 模式 | 本地安装内容 | Auth Token |
+|------|-------------|-----------|
+| 本地安装（选项 1） | HTTP Server + Channel MCP | 不需要 |
+| 远程服务器 → 仅 HTTP | 无（用 HTTP 模式轮询） | 必填 |
+| 远程服务器 → Channel | Channel MCP | 必填 |
 
 **Auth Token 说明**：
-- 仅在拆分部署场景需要（server 和 channel 分开安装）
-- 本地安装（server + channel 同一台机器）无需配置
+- 仅在拆分部署场景需要（HTTP Server 和 Channel 分开安装）
 - `/health` 端点豁免校验（供负载均衡探测）
-- Token 同时写入服务端 `server.json` 和客户端 MCP 配置
+- Token 同时写入服务端 `server.json` 和客户端 MCP 配置的 `env.MCP_AUTH_TOKEN`
 
 ## License
 
