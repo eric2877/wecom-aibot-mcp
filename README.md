@@ -96,7 +96,14 @@ npx @vrs-soft/wecom-aibot-mcp --http-only --start
 
 # 本地（首次运行选择"远程服务器"，输入 URL 和 Token）
 npx @vrs-soft/wecom-aibot-mcp
+# → 选择 2：HTTP + Channel（推荐）
+# → 输入服务器 URL：https://your-server:18963
+# → 输入 Auth Token：your-secret-token
 ```
+
+**安装模式说明**：
+- **HTTP + Channel**：本地安装 Channel MCP，连接远程 HTTP Server（推荐）
+- **仅 HTTP**：本地不安装 Channel，使用 HTTP 模式轮询（最简单）
 
 **Auth Token 说明**：
 - 仅在拆分部署场景需要（server 和 channel 分开安装）
