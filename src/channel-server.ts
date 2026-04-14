@@ -270,6 +270,7 @@ function connectSSE(ccId?: string): void {
                     chatid: message.chatid || '',
                     chattype: message.chattype || 'single',
                     cc_id: msg.ccId || '',
+                    quote_content: message.quoteContent || '',
                   } as Record<string, string>,
                 },
               };
@@ -462,7 +463,7 @@ function registerChannelTools(server: McpServer) {
         agent_name,
         cc_id,
         robot_id,
-        project_dir,
+        project_dir: project_dir || process.cwd(),
         mode,
         auto_approve,
         auto_approve_timeout,
@@ -515,7 +516,7 @@ function registerChannelTools(server: McpServer) {
         logChannel('SSE disconnected', { cc_id });
       }
 
-      return forwardToHttpMcp('exit_headless_mode', { cc_id, project_dir });
+      return forwardToHttpMcp('exit_headless_mode', { cc_id, project_dir: project_dir || process.cwd() });
     }
   );
 

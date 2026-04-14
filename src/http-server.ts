@@ -107,6 +107,7 @@ export async function pushMessageToSSEClient(robotName: string, message: {
   chatid: string;
   chattype: 'single' | 'group';
   timestamp: number;
+  quoteContent?: string;
 }, targetCcId?: string): Promise<void> {
   // 推送给匹配的 SSE 客户端
   if (sseClients.size === 0) {
@@ -135,6 +136,7 @@ export async function pushMessageToSSEClient(robotName: string, message: {
           chatid: message.chatid,
           chattype: message.chattype,
           time: new Date(message.timestamp).toISOString(),
+          quoteContent: message.quoteContent,
         },
       });
       client.res.write(`event: message\ndata: ${data}\n\n`);
@@ -317,6 +319,7 @@ async function handleWecomMessage(msg: WecomMessage): Promise<void> {
         chatid: msg.chatid,
         chattype: msg.chattype,
         timestamp: msg.timestamp,
+        quoteContent: msg.quoteContent,
       }, targetCcId);
       return;
     }
@@ -343,6 +346,7 @@ async function handleWecomMessage(msg: WecomMessage): Promise<void> {
         chatid: msg.chatid,
         chattype: msg.chattype,
         timestamp: msg.timestamp,
+        quoteContent: msg.quoteContent,
       }, ccId);
       return;
     }
@@ -360,6 +364,7 @@ async function handleWecomMessage(msg: WecomMessage): Promise<void> {
           chatid: msg.chatid,
           chattype: msg.chattype,
           timestamp: msg.timestamp,
+          quoteContent: msg.quoteContent,
         }, targetCcId);
         return;
       }
@@ -378,6 +383,7 @@ async function handleWecomMessage(msg: WecomMessage): Promise<void> {
           chatid: msg.chatid,
           chattype: msg.chattype,
           timestamp: msg.timestamp,
+          quoteContent: msg.quoteContent,
         }, matchedCcId);
         return;
       }
@@ -481,6 +487,7 @@ async function handleWecomMessage(msg: WecomMessage): Promise<void> {
           chatid: msg.chatid,
           chattype: msg.chattype,
           timestamp: msg.timestamp,
+          quoteContent: msg.quoteContent,
         }, matchedCcId);
       } else {
         // HTTP 模式：notification 推送
