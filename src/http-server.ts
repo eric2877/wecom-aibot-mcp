@@ -24,7 +24,7 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { registerTools } from './tools/index.js';
 import { getClient, getConnectionState, getAllConnectionStates, connectAllRobots } from './connection-manager.js';
 import { subscribeWecomMessage, WecomMessage, getSubscriberCount } from './message-bus.js';
-import { listAllRobots } from './config-wizard.js';
+import { listAllRobots, VERSION, getAuthToken } from './config-wizard.js';
 import { logger } from './logger.js';
 
 // ESM 兼容的 __dirname
@@ -256,7 +256,6 @@ interface ApprovalEntry {
 // 使用 Map 存储多个待处理审批（按 taskId 索引）
 const pendingApprovals: Map<string, ApprovalEntry> = new Map();
 
-const VERSION = '2.0.0';
 
 // Transport 和 Server 存储（每个 session 一个）
 interface TransportEntry {
@@ -586,6 +585,17 @@ export async function startHttpServer(
       }
 
       const url = req.url || '/';
+
+      // Auth token 校验（排除 /health）
+      const authToken = getAuthToken();
+      if (authToken && url !== '/health') {
+        const authHeader = req.headers['authorization'];
+        if (authHeader !== `Bearer ${authToken}`) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+      }
 
       // MCP endpoint - 每个客户端一个独立的 server 和 transport
       // POST /mcp: 初始化或调用工具

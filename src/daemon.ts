@@ -68,23 +68,7 @@ class ConnectionDaemon {
   loadAllRobots(): RobotConfig[] {
     const robots: RobotConfig[] = [];
 
-    // 主配置文件
-    const mainConfigPath = path.join(CONFIG_DIR, 'config.json');
-    if (fs.existsSync(mainConfigPath)) {
-      try {
-        const config = JSON.parse(fs.readFileSync(mainConfigPath, 'utf-8'));
-        robots.push({
-          name: config.nameTag || 'default',
-          botId: config.botId,
-          secret: config.secret,
-          targetUserId: config.targetUserId,
-        });
-      } catch (err) {
-        this.log(`加载主配置失败: ${err}`);
-      }
-    }
-
-    // 机器人配置文件 (robot-*.json)
+    // 所有机器人配置（统一 robot-*.json 格式）
     const files = fs.readdirSync(CONFIG_DIR).filter(f => f.startsWith('robot-') && f.endsWith('.json'));
     for (const file of files) {
       try {

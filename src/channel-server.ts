@@ -16,8 +16,19 @@ import { z } from 'zod';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { VERSION } from './config-wizard.js';
 
 const MCP_URL = process.env.MCP_URL || 'http://127.0.0.1:18963';
+const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
+
+// 构建带 auth 的 fetch headers
+function getAuthHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (MCP_AUTH_TOKEN) {
+    headers['Authorization'] = `Bearer ${MCP_AUTH_TOKEN}`;
+  }
+  return headers;
+}
 
 // Channel 日志文件
 const CHANNEL_LOG_FILE = path.join(os.homedir(), '.wecom-aibot-mcp', 'channel.log');
@@ -61,6 +72,7 @@ async function initHttpSession(): Promise<string | null> {
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json, text/event-stream',
+        ...getAuthHeaders(),
       },
       body: JSON.stringify({
         jsonrpc: '2.0',
@@ -123,6 +135,7 @@ async function forwardToHttpMcp(toolName: string, params: Record<string, unknown
       'Content-Type': 'application/json',
       'Accept': 'application/json, text/event-stream',
       'mcp-session-id': sessionId,
+      ...getAuthHeaders(),
     },
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -205,6 +218,7 @@ function connectSSE(ccId?: string): void {
       'Accept': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
+      ...getAuthHeaders(),
     },
   }).then(async (res) => {
     if (!res.ok) {
@@ -570,7 +584,9 @@ function registerChannelTools(server: McpServer) {
     {},
     async () => {
       // 直接请求 HTTP MCP 的 /skill 端点
-      const res = await fetch(`${MCP_URL}/skill`);
+      const res = await fetch(`${MCP_URL}/skill`, {
+        headers: getAuthHeaders(),
+      });
       if (!res.ok) {
         return {
           content: [{
@@ -693,7 +709,7 @@ export async function startChannelServer(): Promise<void> {
   // 创建 MCP Server
   mcpServer = new McpServer({
     name: 'wecom-aibot-channel',
-    version: '2.0.0',
+    version: VERSION,
   }, {
     capabilities: {
       // 必须声明 experimental['claude/channel']，Claude Code 才会注册 notification listener

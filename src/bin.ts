@@ -25,7 +25,12 @@ import {
   ensureHookInstalled,
   listAllRobots,
   ensureGlobalConfigs,
+  getAuthToken,
+  setAuthToken,
+  updateMcpAuthHeaders,
+  runRemoteInstallWizard,
   WecomConfig,
+  VERSION,
 } from './config-wizard.js';
 import { initClient, WecomClient } from './client.js';
 import { registerTools } from './tools/index.js';
@@ -36,7 +41,6 @@ import { loadStats, cleanupOldLogs } from './connection-log.js';
 import { startKeepaliveMonitor, stopKeepaliveMonitor } from './keepalive-monitor.js';
 import { logger } from './logger.js';
 
-const VERSION = '2.0.0';
 const PID_FILE = path.join(os.homedir(), '.wecom-aibot-mcp', 'server.pid');
 
 function showHelp() {
@@ -67,6 +71,7 @@ function showHelp() {
   --list          列出所有已配置的机器人及其占用状态
   --delete [名称] 删除指定的机器人配置（保留 MCP 配置）
   --uninstall     卸载并删除所有配置（包括 MCP 配置、hook、skill）
+  --set-token [token]  设置/清除 Auth Token（远程部署用，--set-token --clear 清除）
   --clean-cache   清空 CC 注册表缓存（清理异常断线残留的 ccId）
 
 使用流程:
@@ -121,10 +126,22 @@ function showVersion() {
 function showStatus() {
   const allRobots = listAllRobots();
   const connections = getAllConnectionStates();
+  const authToken = getAuthToken();
 
   // 检查服务是否运行
   const serverRunning = isServerRunning();
-  console.log(`\n服务状态: ${serverRunning ? '✅ 运行中' : '❌ 未启动'}\n`);
+  console.log(`\n服务状态: ${serverRunning ? '✅ 运行中' : '❌ 未启动'}`);
+
+  // 显示 Auth Token 状态（带部分 token 显示）
+  if (authToken) {
+    const maskedToken = authToken.length > 12
+      ? `${authToken.slice(0, 8)}...${authToken.slice(-4)}`
+      : `${authToken.slice(0, 4)}...`;
+    console.log(`Auth Token: ✅ 已配置 (${maskedToken})`);
+  } else {
+    console.log(`Auth Token: （未配置，本地部署无需 token）`);
+  }
+  console.log('');
 
   if (allRobots.length === 0) {
     console.log('尚未配置机器人，请运行 npx @vrs-soft/wecom-aibot-mcp 启动配置向导');
@@ -144,8 +161,9 @@ function showStatus() {
   for (const robot of allRobots) {
     const usage = robotUsage.get(robot.name);
     const statusTag = usage ? ` [使用中]` : '';
+    const docTag = robot.doc_mcp_url ? ' [文档✅]' : '';
 
-    console.log(`    Bot名称：  ${robot.name}${statusTag}`);
+    console.log(`    Bot名称：  ${robot.name}${statusTag}${docTag}`);
     console.log(`    Bot ID：   ${robot.botId}`);
     console.log(`    目标用户：${robot.targetUserId}`);
     if (usage) {
@@ -378,7 +396,7 @@ async function main() {
   // --reinstall 命令：删除所有全局配置（保留机器人配置）后重新安装
   if (args.includes('--reinstall')) {
     logger.log('\n[mcp] 重新安装全局配置...');
-    console.log('[mcp] 保留所有机器人配置: ~/.wecom-aibot-mcp/config.json 和 robot-*.json');
+    console.log('[mcp] 保留所有机器人配置: ~/.wecom-aibot-mcp/robot-*.json');
 
     const CLAUDE_CONFIG_FILE = path.join(os.homedir(), '.claude.json');
     const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.local.json');
@@ -478,6 +496,51 @@ async function main() {
       stopServer();
     }
     uninstall();
+    process.exit(0);
+  }
+
+  // --set-token 命令：设置/清除 Auth Token
+  if (args.includes('--set-token')) {
+    const tokenIndex = args.indexOf('--set-token');
+    const clearToken = args.includes('--clear');
+
+    if (clearToken) {
+      setAuthToken(undefined);
+      updateMcpAuthHeaders(undefined);
+      console.log('[mcp] ✅ Auth Token 已清除（服务端 + 客户端 MCP 配置）');
+      process.exit(0);
+    }
+
+    // 检查下一个参数是否是 token（不是另一个 --flag）
+    const nextArg = args[tokenIndex + 1];
+    const token = (nextArg && !nextArg.startsWith('--')) ? nextArg : undefined;
+
+    if (!token) {
+      // 交互式输入 token
+      const readline = await import('readline');
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const input = await new Promise<string>((resolve) => {
+        rl.question('请输入 Auth Token（留空取消）: ', (answer: string) => {
+          rl.close();
+          resolve(answer.trim());
+        });
+      });
+      if (!input) {
+        console.log('[mcp] 已取消');
+        process.exit(0);
+      }
+      setAuthToken(input);
+      updateMcpAuthHeaders(input);
+      console.log('[mcp] ✅ Auth Token 已设置');
+      console.log(`[mcp] 服务端: ~/.wecom-aibot-mcp/server.json`);
+      console.log(`[mcp] 客户端: ~/.claude.json MCP headers 已同步`);
+      console.log(`[mcp] Token: ${input.slice(0, 8)}...${input.slice(-4)}`);
+    } else {
+      setAuthToken(token);
+      updateMcpAuthHeaders(token);
+      console.log('[mcp] ✅ Auth Token 已设置');
+      console.log(`[mcp] Token: ${token.slice(0, 8)}...${token.slice(-4)}`);
+    }
     process.exit(0);
   }
 
@@ -590,8 +653,28 @@ async function main() {
     if (savedConfig && savedConfig.botId && savedConfig.secret && savedConfig.targetUserId) {
       config = savedConfig;
     } else if (isInteractive) {
-      // TTY 模式下没有配置，启动配置向导
-      console.log('[config] 未找到配置，启动配置向导...\n');
+      // TTY 模式下没有配置，先选择安装模式
+      console.log('\n请选择安装模式：\n');
+      console.log('  1. 本地安装（完整功能：HTTP + Channel MCP）');
+      console.log('  2. 远程服务器（连接远程 HTTP MCP）\n');
+
+      const readline = await import('readline');
+      const modeChoice = await new Promise<string>((resolve) => {
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        rl.question('请选择 (1/2，默认 1): ', (answer: string) => {
+          rl.close();
+          resolve(answer.trim() || '1');
+        });
+      });
+
+      if (modeChoice === '2') {
+        // 远程安装模式
+        await runRemoteInstallWizard();
+        process.exit(0);
+      }
+
+      // 本地安装模式：启动配置向导
+      console.log('\n[config] 本地安装模式\n');
       const result = await runConfigWizard();
       config = result.config;
       instanceName = result.instanceName;

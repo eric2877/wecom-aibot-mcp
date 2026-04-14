@@ -52,8 +52,8 @@ function findRobotConfig(robotName: string): RobotConfig | null {
 
   if (!robot) return null;
 
-  // 搜索所有配置文件（config.json + robot-*.json）
-  const allFiles = ['config.json', ...fs.readdirSync(CONFIG_DIR).filter(f => f.startsWith('robot-') && f.endsWith('.json'))];
+  // 搜索所有机器人配置文件（robot-*.json）
+  const allFiles = fs.readdirSync(CONFIG_DIR).filter(f => f.startsWith('robot-') && f.endsWith('.json'));
   const files = allFiles.filter(f => fs.existsSync(path.join(CONFIG_DIR, f)));
 
   // 先按 botId 精确匹配找 secret

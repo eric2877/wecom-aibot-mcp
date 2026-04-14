@@ -4,7 +4,7 @@
  * 首次运行时引导用户配置 Bot ID、Secret 和默认目标用户
  *
  * 配置存储位置：
- * - 机器人配置：~/.wecom-aibot-mcp/config.json
+ * - 机器人配置：~/.wecom-aibot-mcp/robot-*.json
  * - MCP 配置：~/.claude.json (仅 URL)
  */
 import * as readline from 'readline';
@@ -24,8 +24,8 @@ export interface WecomConfig {
 }
 
 const CONFIG_DIR = path.join(os.homedir(), '.wecom-aibot-mcp');
-const BOT_CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const VERSION_FILE = path.join(CONFIG_DIR, 'version.json');
+const SERVER_CONFIG_FILE = path.join(CONFIG_DIR, 'server.json');  // HTTP Server 配置（auth token 等）
 const CLAUDE_CONFIG_FILE = path.join(os.homedir(), '.claude.json');
 const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.local.json');
 const HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.sh');
@@ -35,8 +35,8 @@ const TASK_COMPLETED_HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'task-completed-ho
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// 版本号（从 package.json 读取）
-const VERSION: string = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8')).version;
+// 版本号（从 package.json 读取，全局共享）
+export const VERSION: string = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8')).version;
 const SKILL_TEMPLATE_DIR = path.join(__dirname, '..', 'skills', 'headless-mode');
 const SKILL_TEMPLATE_FILE = path.join(SKILL_TEMPLATE_DIR, 'SKILL.md');
 
@@ -52,12 +52,13 @@ function ensureConfigDir() {
   }
 }
 
-// 从 ~/.wecom-aibot-mcp/config.json 读取已保存的配置
+// 从 ~/.wecom-aibot-mcp/robot-*.json 读取第一个有效配置
 export function loadConfig(): WecomConfig | null {
   try {
-    // 从机器人配置文件读取
-    if (fs.existsSync(BOT_CONFIG_FILE)) {
-      const content = fs.readFileSync(BOT_CONFIG_FILE, 'utf-8');
+    if (!fs.existsSync(CONFIG_DIR)) return null;
+    const files = fs.readdirSync(CONFIG_DIR).filter(f => f.startsWith('robot-') && f.endsWith('.json'));
+    for (const file of files) {
+      const content = fs.readFileSync(path.join(CONFIG_DIR, file), 'utf-8');
       const config = JSON.parse(content);
       if (config.botId && config.secret && config.targetUserId) {
         const result: WecomConfig = {
@@ -74,6 +75,66 @@ export function loadConfig(): WecomConfig | null {
     logger.error('[config] 读取配置失败:', err);
   }
   return null;
+}
+
+// 获取 HTTP Server 的 auth token（从 server.json 读取）
+export function getAuthToken(): string | undefined {
+  if (!fs.existsSync(SERVER_CONFIG_FILE)) return undefined;
+  try {
+    const config = JSON.parse(fs.readFileSync(SERVER_CONFIG_FILE, 'utf-8'));
+    return config.authToken || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// 设置/清除 HTTP Server 的 auth token（写入 server.json）
+export function setAuthToken(token: string | undefined): boolean {
+  ensureConfigDir();
+  let config: any = {};
+  if (fs.existsSync(SERVER_CONFIG_FILE)) {
+    try {
+      config = JSON.parse(fs.readFileSync(SERVER_CONFIG_FILE, 'utf-8'));
+    } catch {
+      // ignore
+    }
+  }
+  if (token) {
+    config.authToken = token;
+  } else {
+    delete config.authToken;
+    // 如果 config 为空，删除文件
+    if (Object.keys(config).length === 0) {
+      if (fs.existsSync(SERVER_CONFIG_FILE)) fs.unlinkSync(SERVER_CONFIG_FILE);
+      return true;
+    }
+  }
+  fs.writeFileSync(SERVER_CONFIG_FILE, JSON.stringify(config, null, 2));
+  return true;
+}
+
+// 更新 ~/.claude.json 中 wecom-aibot MCP 配置的 auth headers
+export function updateMcpAuthHeaders(token?: string): void {
+  if (!fs.existsSync(CLAUDE_CONFIG_FILE)) return;
+  try {
+    const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
+    const claudeConfig = JSON.parse(content);
+    if (!claudeConfig.mcpServers) return;
+
+    // 更新所有 wecom-aibot 相关的 HTTP MCP 配置
+    for (const name of Object.keys(claudeConfig.mcpServers)) {
+      if (name.startsWith('wecom-aibot') && claudeConfig.mcpServers[name].type === 'http') {
+        if (token) {
+          claudeConfig.mcpServers[name].headers = { Authorization: `Bearer ${token}` };
+        } else {
+          delete claudeConfig.mcpServers[name].headers;
+        }
+      }
+    }
+    fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
+  } catch {
+    // ignore
+  }
 }
 
 // 获取所有 wecom-aibot 相关的 MCP 实例
@@ -160,20 +221,9 @@ export function deleteRobotConfig(robotName: string): boolean {
 
     // 查找机器人对应的配置文件
     let configFile: string | null = null;
-    let isDefault = false;
 
-    // 检查是否是默认机器人（config.json）
-    if (fs.existsSync(BOT_CONFIG_FILE)) {
-      const config = JSON.parse(fs.readFileSync(BOT_CONFIG_FILE, 'utf-8'));
-      const name = config.nameTag || `机器人-${config.botId?.slice(0, 8) || 'unknown'}`;
-      if (name === robotName) {
-        configFile = BOT_CONFIG_FILE;
-        isDefault = true;
-      }
-    }
-
-    // 检查其他机器人配置文件
-    if (!configFile && fs.existsSync(CONFIG_DIR)) {
+    // 从 robot-*.json 中查找
+    if (fs.existsSync(CONFIG_DIR)) {
       const files = fs.readdirSync(CONFIG_DIR).filter(f => f.startsWith('robot-') && f.endsWith('.json'));
       for (const file of files) {
         const filePath = path.join(CONFIG_DIR, file);
@@ -191,30 +241,8 @@ export function deleteRobotConfig(robotName: string): boolean {
       return false;
     }
 
-    // 如果是默认机器人，需要处理迁移
-    if (isDefault) {
-      // 查找其他机器人配置文件
-      const otherRobotFiles = fs.existsSync(CONFIG_DIR)
-        ? fs.readdirSync(CONFIG_DIR).filter(f => f.startsWith('robot-') && f.endsWith('.json'))
-        : [];
-
-      if (otherRobotFiles.length > 0) {
-        // 将第一个其他机器人提升为默认
-        const newDefaultFile = path.join(CONFIG_DIR, otherRobotFiles[0]);
-        const newDefaultConfig = JSON.parse(fs.readFileSync(newDefaultFile, 'utf-8'));
-        fs.writeFileSync(BOT_CONFIG_FILE, JSON.stringify(newDefaultConfig, null, 2));
-        fs.unlinkSync(newDefaultFile);
-        console.log(`[config] 已将 "${newDefaultConfig.nameTag || otherRobotFiles[0]}" 提升为默认机器人`);
-      } else {
-        // 没有其他机器人，直接删除默认配置
-        fs.unlinkSync(BOT_CONFIG_FILE);
-        console.log('[config] 已删除最后一个机器人配置');
-      }
-    } else {
-      // 不是默认机器人，直接删除
-      fs.unlinkSync(configFile);
-    }
-
+    // 直接删除
+    fs.unlinkSync(configFile);
     console.log(`[config] 已删除机器人: ${robotName}`);
     return true;
   } catch (err) {
@@ -342,7 +370,7 @@ export function uninstall() {
     }
   }
 
-  // 删除整个配置目录（包括 config.json、robot-*.json、hook 脚本、日志等）
+  // 删除整个配置目录（包括 robot-*.json、hook 脚本、日志等）
   // 使用 recursive: true 和 force: true 确保完全删除
   if (fs.existsSync(CONFIG_DIR)) {
     try {
@@ -717,17 +745,10 @@ function writeMcpServerConfig(config: WecomConfig, instanceName?: string) {
       fs.writeFileSync(existingConfigFile, JSON.stringify(botConfig, null, 2));
       console.log(`[config] 已更新机器人配置: ${existingConfigFile}`);
     } else {
-      // 新配置：检查是否有默认配置文件
-      if (fs.existsSync(BOT_CONFIG_FILE)) {
-        // 有默认配置，创建新的 robot-*.json 文件
-        const newConfigPath = path.join(CONFIG_DIR, `robot-${Date.now()}.json`);
-        fs.writeFileSync(newConfigPath, JSON.stringify(botConfig, null, 2));
-        console.log(`[config] 已添加新机器人配置: ${newConfigPath}`);
-      } else {
-        // 没有默认配置，写入 config.json
-        fs.writeFileSync(BOT_CONFIG_FILE, JSON.stringify(botConfig, null, 2));
-        console.log('[config] 已写入机器人配置 ~/.wecom-aibot-mcp/config.json');
-      }
+      // 新机器人：统一使用 robot-*.json
+      const newConfigPath = path.join(CONFIG_DIR, `robot-${Date.now()}.json`);
+      fs.writeFileSync(newConfigPath, JSON.stringify(botConfig, null, 2));
+      console.log(`[config] 已添加新机器人配置: ${newConfigPath}`);
     }
 
     // 2. 写入 MCP 配置到 ~/.claude.json（仅 URL）
@@ -754,7 +775,7 @@ function writeMcpServerConfig(config: WecomConfig, instanceName?: string) {
     logger.error('[config] 写入配置失败:', err);
     console.log('[config] ⚠️  请手动配置:');
     console.log('');
-    console.log('~/.wecom-aibot-mcp/config.json:');
+    console.log('~/.wecom-aibot-mcp/robot-*.json:');
     console.log(JSON.stringify({
       botId: config.botId,
       secret: config.secret,
@@ -803,6 +824,10 @@ export async function addMcpConfig() {
       console.log('Secret 不能为空');
       secret = await question(rl, 'Secret: ');
     }
+
+    // 获取文档 MCP URL（可选）
+    console.log('');
+    const docMcpUrl = await question(rl, '文档 MCP URL（可选，企业微信管理后台获取，留空跳过）: ');
 
     rl.close();
 
@@ -870,24 +895,16 @@ export async function addMcpConfig() {
       secret,
       targetUserId,
       nameTag: robotName,
+      ...(docMcpUrl ? { doc_mcp_url: docMcpUrl } : {}),
     };
 
     // 确保配置目录存在
     ensureConfigDir();
 
-    // 如果是第一个机器人，保存为默认配置
-    const defaultConfigPath = BOT_CONFIG_FILE;
+    // 统一使用 robot-*.json 格式
     const robotConfigPath = path.join(CONFIG_DIR, `robot-${Date.now()}.json`);
-
-    if (!fs.existsSync(defaultConfigPath)) {
-      // 第一个机器人作为默认
-      fs.writeFileSync(defaultConfigPath, JSON.stringify(robotConfig, null, 2));
-      console.log(`\n[config] ✅ 已设为默认机器人: ${robotName}`);
-    } else {
-      // 后续机器人保存为独立文件
-      fs.writeFileSync(robotConfigPath, JSON.stringify(robotConfig, null, 2));
-      console.log(`\n[config] ✅ 已添加新机器人: ${robotName}`);
-    }
+    fs.writeFileSync(robotConfigPath, JSON.stringify(robotConfig, null, 2));
+    console.log(`\n[config] ✅ 已添加机器人: ${robotName}`);
 
     console.log(`[config] 用户 ID: ${targetUserId}`);
 
@@ -910,23 +927,7 @@ export async function addMcpConfig() {
 export function listAllRobots(): Array<{ name: string; botId: string; targetUserId: string; doc_mcp_url?: string }> {
   const robots: Array<{ name: string; botId: string; targetUserId: string; doc_mcp_url?: string }> = [];
 
-  // 主配置文件（config.json）
-  if (fs.existsSync(BOT_CONFIG_FILE)) {
-    try {
-      const config = JSON.parse(fs.readFileSync(BOT_CONFIG_FILE, 'utf-8'));
-      const name = config.nameTag || `机器人-${config.botId?.slice(0, 8) || 'unknown'}`;
-      robots.push({
-        name,
-        botId: config.botId,
-        targetUserId: config.targetUserId,
-        ...(config.doc_mcp_url ? { doc_mcp_url: config.doc_mcp_url } : {}),
-      });
-    } catch {
-      // ignore
-    }
-  }
-
-  // 其他机器人配置
+  // 所有机器人配置（统一 robot-*.json 格式）
   if (fs.existsSync(CONFIG_DIR)) {
     const files = fs.readdirSync(CONFIG_DIR).filter(f => f.startsWith('robot-') && f.endsWith('.json'));
     for (const file of files) {
@@ -1037,7 +1038,7 @@ export function ensureHookInstalled() {
 }
 
 // 确保所有全局配置已写入（强制覆盖，不依赖智能体）
-export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' = 'full'): { upgraded: boolean; previousVersion?: string } {
+export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' | 'remote' | 'remote-channel' = 'full', remoteOptions?: { url: string; token: string }): { upgraded: boolean; previousVersion?: string } {
   ensureConfigDir();
 
   // 读取已安装版本
@@ -1065,6 +1066,69 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
     return { upgraded, previousVersion };
   }
 
+  // remote 模式：仅写入远程 HTTP MCP 配置（带 token headers），不装 Channel/Hook
+  if (mode === 'remote') {
+    if (!remoteOptions?.url || !remoteOptions?.token) {
+      console.log('[config] ❌ 远程模式需要提供 URL 和 Token');
+      return { upgraded: false, previousVersion };
+    }
+    let claudeConfig: any = {};
+    if (fs.existsSync(CLAUDE_CONFIG_FILE)) {
+      claudeConfig = JSON.parse(fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8'));
+    }
+    if (!claudeConfig.mcpServers) claudeConfig.mcpServers = {};
+    claudeConfig.mcpServers['wecom-aibot'] = {
+      type: 'http',
+      url: remoteOptions.url,
+      headers: { Authorization: `Bearer ${remoteOptions.token}` },
+    };
+    fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
+    console.log('[config] remote 模式：已写入远程 HTTP MCP 配置（带 Token）');
+    fs.writeFileSync(VERSION_FILE, JSON.stringify({ version: VERSION, installedAt: Date.now() }, null, 2));
+    return { upgraded, previousVersion };
+  }
+
+  // remote-channel 模式：写入远程 HTTP MCP（带 token）+ Channel MCP
+  if (mode === 'remote-channel') {
+    if (!remoteOptions?.url || !remoteOptions?.token) {
+      console.log('[config] ❌ 远程模式需要提供 URL 和 Token');
+      return { upgraded: false, previousVersion };
+    }
+    let claudeConfig: any = {};
+    if (fs.existsSync(CLAUDE_CONFIG_FILE)) {
+      claudeConfig = JSON.parse(fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8'));
+    }
+    if (!claudeConfig.mcpServers) claudeConfig.mcpServers = {};
+
+    // HTTP MCP 配置（带 token）
+    claudeConfig.mcpServers['wecom-aibot'] = {
+      type: 'http',
+      url: remoteOptions.url,
+      headers: { Authorization: `Bearer ${remoteOptions.token}` },
+    };
+
+    // Channel MCP 配置（带 MCP_URL + MCP_AUTH_TOKEN）
+    const binPath = path.join(__dirname, 'bin.js');
+    claudeConfig.mcpServers['wecom-aibot-channel'] = {
+      command: 'node',
+      args: [binPath, '--channel'],
+      env: {
+        MCP_URL: remoteOptions.url,
+        MCP_AUTH_TOKEN: remoteOptions.token,
+      },
+    };
+
+    fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
+    console.log('[config] remote-channel 模式：已写入 HTTP MCP + Channel MCP 配置（带 Token）');
+
+    // Channel 模式需要权限配置
+    writeMcpPermissions();
+    console.log('[config] 已写入权限配置到 ~/.claude/settings.local.json');
+
+    fs.writeFileSync(VERSION_FILE, JSON.stringify({ version: VERSION, installedAt: Date.now() }, null, 2));
+    return { upgraded, previousVersion };
+  }
+
   // 1. 强制写入 MCP 配置到 ~/.claude.json
   let claudeConfig: any = {};
   if (fs.existsSync(CLAUDE_CONFIG_FILE)) {
@@ -1082,11 +1146,17 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
       console.log('[config] 请设置环境变量: MCP_URL=http://远程IP:18963');
       return { upgraded: false, previousVersion };
     }
-    // Channel MCP 配置：硬编码本地路径
+    // Channel MCP 配置：使用当前模块路径
+    const binPath = path.join(__dirname, 'bin.js');
+    const channelEnv: any = { MCP_URL: mcpUrl };
+    const authToken = getAuthToken();
+    if (authToken) {
+      channelEnv.MCP_AUTH_TOKEN = authToken;
+    }
     claudeConfig.mcpServers['wecom-aibot-channel'] = {
       command: 'node',
-      args: ['/Volumes/Mac_Data/VScode/wecom-aibot-mcp/dist/bin.js', '--channel'],
-      env: { MCP_URL: mcpUrl },
+      args: [binPath, '--channel'],
+      env: channelEnv,
     };
     console.log(`[config] Channel-only 模式：Channel MCP 使用本地路径`);
   } else {
@@ -1095,10 +1165,11 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
       type: 'http',
       url: 'http://127.0.0.1:18963/mcp',
     };
-    // Channel MCP 配置：硬编码本地路径
+    // Channel MCP 配置：使用当前模块路径
+    const binPath = path.join(__dirname, 'bin.js');
     claudeConfig.mcpServers['wecom-aibot-channel'] = {
       command: 'node',
-      args: ['/Volumes/Mac_Data/VScode/wecom-aibot-mcp/dist/bin.js', '--channel'],
+      args: [binPath, '--channel'],
       env: { MCP_URL: 'http://127.0.0.1:18963' },
     };
     console.log(`[config] full 模式：Channel MCP 使用本地路径`);
@@ -1117,7 +1188,54 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
   return { upgraded, previousVersion };
 }
 
-// 保存配置（直接写入 ~/.claude.json）
+// 远程安装向导（交互式输入 URL + Token）
+export async function runRemoteInstallWizard(): Promise<'remote' | 'remote-channel' | null> {
+  const rl = createRL();
+
+  try {
+    console.log('\n请选择远程部署模式：\n');
+    console.log('  1. 仅 HTTP MCP（轮询模式，最简单）');
+    console.log('  2. HTTP MCP + Channel MCP（推荐，Channel 更稳定不易掉线）\n');
+
+    const choice = await question(rl, '请选择 (1/2): ');
+    const mode = choice === '2' ? 'remote-channel' : 'remote';
+
+    let serverUrl = await question(rl, '远程服务器地址（如 https://your-server:18963）: ');
+    while (!serverUrl) {
+      console.log('服务器地址不能为空');
+      serverUrl = await question(rl, '远程服务器地址: ');
+    }
+
+    // 标准化 URL（去掉尾部斜杠）
+    serverUrl = serverUrl.replace(/\/+$/, '');
+
+    let token = await question(rl, 'Auth Token（必填，远程服务器需配置相同 Token）: ');
+    while (!token) {
+      console.log('Auth Token 不能为空');
+      token = await question(rl, 'Auth Token: ');
+    }
+
+    // 写入配置
+    ensureGlobalConfigs(mode, { url: serverUrl, token });
+
+    console.log('\n─────────────────────────────────────');
+    console.log('配置完成！');
+    console.log(`  模式:       ${mode === 'remote-channel' ? 'HTTP + Channel' : '仅 HTTP'}`);
+    console.log(`  服务器:     ${serverUrl}`);
+    console.log(`  Auth Token: ${token.slice(0, 8)}...${token.slice(-4)}`);
+    console.log('─────────────────────────────────────\n');
+
+    if (mode === 'remote-channel') {
+      console.log('Channel 模式优势：微信消息自动唤醒 agent，无需主动轮询');
+    }
+
+    console.log('[config] 请重启 Claude Code 以加载最新配置\n');
+    return mode;
+  } finally {
+    rl.close();
+  }
+}
+
 export function saveConfig(config: WecomConfig, instanceName?: string): boolean {
   ensureConfigDir();  // 确保运行时文件目录存在
 
@@ -1345,16 +1463,6 @@ export async function runConfigWizard(): Promise<{ config: WecomConfig; instance
 
 // 查找机器人配置文件路径（按名称）
 export function findRobotConfigFile(robotName: string): string | null {
-  // 检查默认配置文件
-  if (fs.existsSync(BOT_CONFIG_FILE)) {
-    const config = JSON.parse(fs.readFileSync(BOT_CONFIG_FILE, 'utf-8'));
-    const name = config.nameTag || `机器人-${config.botId?.slice(0, 8) || 'unknown'}`;
-    if (name === robotName) {
-      return BOT_CONFIG_FILE;
-    }
-  }
-
-  // 检查其他机器人配置文件
   if (fs.existsSync(CONFIG_DIR)) {
     const files = fs.readdirSync(CONFIG_DIR).filter(f => f.startsWith('robot-') && f.endsWith('.json'));
     for (const file of files) {
@@ -1372,15 +1480,6 @@ export function findRobotConfigFile(robotName: string): string | null {
 
 // 查找机器人配置文件路径（按 botId）
 export function findRobotConfigFileByBotId(botId: string): string | null {
-  // 检查默认配置文件
-  if (fs.existsSync(BOT_CONFIG_FILE)) {
-    const config = JSON.parse(fs.readFileSync(BOT_CONFIG_FILE, 'utf-8'));
-    if (config.botId === botId) {
-      return BOT_CONFIG_FILE;
-    }
-  }
-
-  // 检查其他机器人配置文件
   if (fs.existsSync(CONFIG_DIR)) {
     const files = fs.readdirSync(CONFIG_DIR).filter(f => f.startsWith('robot-') && f.endsWith('.json'));
     for (const file of files) {
@@ -1465,7 +1564,7 @@ export async function detectUserIdFromMessage(
  *
  * 优先级：
  * 1. 环境变量（WECOM_BOT_ID, WECOM_SECRET, WECOM_TARGET_USER）
- * 2. 保存的配置文件（~/.wecom-aibot-mcp/config.json）
+ * 2. 保存的配置文件（~/.wecom-aibot-mcp/robot-*.json）
  * 3. 运行配置向导
  */
 export async function getOrInitConfig(): Promise<WecomConfig> {

@@ -22,7 +22,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { listAllRobots, getDocMcpUrl, installSkill } from '../config-wizard.js';
+import { listAllRobots, getDocMcpUrl, installSkill, VERSION } from '../config-wizard.js';
 import { callDocTool } from '../doc-proxy.js';
 import {
   connectRobot,
@@ -321,7 +321,7 @@ npx @vrs-soft/wecom-aibot-mcp
         content: [{
           type: 'text',
           text: JSON.stringify({
-            version: '2.0.0',
+            version: VERSION,
             requirements: {
               // 权限配置需求
               permissions: {

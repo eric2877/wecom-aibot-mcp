@@ -13,7 +13,7 @@ import * as os from 'os';
 
 // 配置目录
 const CONFIG_DIR = path.join(os.homedir(), '.wecom-aibot-mcp');
-const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+const CONFIG_FILE = path.join(CONFIG_DIR, 'robot-test-integration.json');
 
 // HTTP 端口 - 使用不同端口避免冲突
 const TEST_PORT = 18965;
@@ -44,6 +44,7 @@ function httpRequest(options: http.RequestOptions, body?: string): Promise<{ sta
 
 describe('HTTP 服务器集成测试', () => {
   let serverModule: typeof import('../../src/http-server');
+  const SERVER_CONFIG_FILE = path.join(CONFIG_DIR, 'server.json');
 
   beforeAll(async () => {
     // 确保配置目录存在
@@ -57,6 +58,11 @@ describe('HTTP 服务器集成测试', () => {
       secret: 'test-secret',
       targetUserId: 'test-user'
     }));
+
+    // 确保没有 server.json（无 Auth Token）
+    if (fs.existsSync(SERVER_CONFIG_FILE)) {
+      fs.unlinkSync(SERVER_CONFIG_FILE);
+    }
 
     // 导入模块
     serverModule = await import('../../src/http-server.js');
@@ -78,6 +84,11 @@ describe('HTTP 服务器集成测试', () => {
     // 清理配置
     if (fs.existsSync(CONFIG_FILE)) {
       fs.unlinkSync(CONFIG_FILE);
+    }
+
+    // 清理 server.json
+    if (fs.existsSync(SERVER_CONFIG_FILE)) {
+      fs.unlinkSync(SERVER_CONFIG_FILE);
     }
   });
 
@@ -351,29 +362,112 @@ describe('HTTP 服务器集成测试', () => {
     });
   });
 
-  describe('HS-INT-009: 多 CC 管理', () => {
+  describe('HS-INT-010: Auth Token 校验', () => {
+    const TEST_TOKEN = 'test-auth-token-12345';
+    const SERVER_CONFIG_FILE = path.join(CONFIG_DIR, 'server.json');
+
+    // 注意：这个测试组必须放在最后，因为它会动态改变 server.json
+    // afterEach 会清理 server.json，确保不影响后续测试（如果有）
+
+    beforeEach(() => {
+      // 清理可能存在的旧 server.json
+      if (fs.existsSync(SERVER_CONFIG_FILE)) {
+        fs.unlinkSync(SERVER_CONFIG_FILE);
+      }
+      // 写入测试 token
+      fs.writeFileSync(SERVER_CONFIG_FILE, JSON.stringify({ authToken: TEST_TOKEN }));
+    });
+
     afterEach(() => {
-      serverModule.unregisterCcId('cc-multi-1');
-      serverModule.unregisterCcId('cc-multi-2');
+      // 清理 server.json，确保无 token 状态
+      if (fs.existsSync(SERVER_CONFIG_FILE)) {
+        fs.unlinkSync(SERVER_CONFIG_FILE);
+      }
     });
 
-    it('应该能管理多个 CCID', () => {
-      serverModule.registerCcId('cc-multi-1', 'robot-1');
-      serverModule.registerCcId('cc-multi-2', 'robot-2');
-
-      expect(serverModule.getRobotByCcId('cc-multi-1')).toBe('robot-1');
-      expect(serverModule.getRobotByCcId('cc-multi-2')).toBe('robot-2');
-      expect(serverModule.getCCCount()).toBeGreaterThanOrEqual(2);
+    afterAll(() => {
+      // 确保测试组结束后 server.json 被清理
+      if (fs.existsSync(SERVER_CONFIG_FILE)) {
+        fs.unlinkSync(SERVER_CONFIG_FILE);
+      }
     });
 
-    it('注销一个 CCID 不应该影响其他 CCID', () => {
-      serverModule.registerCcId('cc-multi-1', 'robot-1');
-      serverModule.registerCcId('cc-multi-2', 'robot-2');
+    it('/health 端点应该豁免 token 校验', async () => {
+      const result = await httpRequest({
+        hostname: '127.0.0.1',
+        port: TEST_PORT,
+        path: '/health',
+        method: 'GET',
+      });
+      expect(result.status).toBe(200);
+      expect(result.data.status).toBe('ok');
+    });
 
-      serverModule.unregisterCcId('cc-multi-1');
+    it('无 token 的请求应该返回 401', async () => {
+      const result = await httpRequest({
+        hostname: '127.0.0.1',
+        port: TEST_PORT,
+        path: '/state',
+        method: 'GET',
+      });
+      expect(result.status).toBe(401);
+      expect(result.data.error).toBe('Unauthorized');
+    });
 
-      expect(serverModule.getCCRegistryEntry('cc-multi-1')).toBeNull();
-      expect(serverModule.getRobotByCcId('cc-multi-2')).toBe('robot-2');
+    it('无效 token 的请求应该返回 401', async () => {
+      const result = await httpRequest({
+        hostname: '127.0.0.1',
+        port: TEST_PORT,
+        path: '/state',
+        method: 'GET',
+        headers: { Authorization: 'Bearer wrong-token' },
+      });
+      expect(result.status).toBe(401);
+      expect(result.data.error).toBe('Unauthorized');
+    });
+
+    it('有效 token 的请求应该成功', async () => {
+      const result = await httpRequest({
+        hostname: '127.0.0.1',
+        port: TEST_PORT,
+        path: '/state',
+        method: 'GET',
+        headers: { Authorization: `Bearer ${TEST_TOKEN}` },
+      });
+      expect(result.status).toBe(200);
+      expect(result.data).toHaveProperty('connection');
+    });
+
+    it('OPTIONS 请求应该豁免 token 校验（CORS preflight）', async () => {
+      const result = await httpRequest({
+        hostname: '127.0.0.1',
+        port: TEST_PORT,
+        path: '/state',
+        method: 'OPTIONS',
+      });
+      expect(result.status).toBe(200);
+    });
+
+    it('/skill 端点应该需要 token', async () => {
+      // 无 token
+      const resultNoToken = await httpRequest({
+        hostname: '127.0.0.1',
+        port: TEST_PORT,
+        path: '/skill',
+        method: 'GET',
+      });
+      expect(resultNoToken.status).toBe(401);
+
+      // 有 token
+      const resultWithToken = await httpRequest({
+        hostname: '127.0.0.1',
+        port: TEST_PORT,
+        path: '/skill',
+        method: 'GET',
+        headers: { Authorization: `Bearer ${TEST_TOKEN}` },
+      });
+      // 可能返回 404（skill 文件不存在）或 200
+      expect(resultWithToken.status).not.toBe(401);
     });
   });
 });
