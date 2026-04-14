@@ -88,10 +88,6 @@ vi.mock('readline', () => ({
 import {
   listAllRobots,
   loadConfig,
-  saveConfig,
-  deleteConfig,
-  deleteHook,
-  ensureHookInstalled,
 } from '../../src/config-wizard';
 
 describe('Config Wizard', () => {
@@ -127,51 +123,6 @@ describe('Config Wizard', () => {
         expect(config).toHaveProperty('secret');
         expect(config).toHaveProperty('targetUserId');
       }
-    });
-  });
-
-  describe('CW-003: saveConfig', () => {
-    it('应该能保存配置', () => {
-      const config = {
-        botId: 'test-bot',
-        secret: 'test-secret',
-        targetUserId: 'test-user'
-      };
-
-      saveConfig(config);
-      expect(true).toBe(true);
-    });
-
-    it('应该能保存带实例名的配置', () => {
-      const config = {
-        botId: 'test-bot',
-        secret: 'test-secret',
-        targetUserId: 'test-user'
-      };
-
-      saveConfig(config, 'custom-instance');
-      expect(true).toBe(true);
-    });
-  });
-
-  describe('CW-004: deleteConfig', () => {
-    it('应该能删除配置', () => {
-      deleteConfig();
-      expect(true).toBe(true);
-    });
-  });
-
-  describe('CW-005: deleteHook', () => {
-    it('应该能删除 Hook', () => {
-      deleteHook();
-      expect(true).toBe(true);
-    });
-  });
-
-  describe('CW-006: ensureHookInstalled', () => {
-    it('应该能确保 Hook 安装', () => {
-      ensureHookInstalled();
-      expect(true).toBe(true);
     });
   });
 

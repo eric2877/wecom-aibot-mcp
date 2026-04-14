@@ -517,12 +517,12 @@ npx @vrs-soft/wecom-aibot-mcp
         };
       }
 
-      // 如果用户传入 cc_id，直接使用；否则自动生成
-      const finalCcId = cc_id || generateCcId(effectiveAgentName);
-
-      // 检查 wecom-aibot.json 是否已有匹配的 ccId（重连场景）
+      // 检查 wecom-aibot.json 是否已有 ccId（重连场景）
       const existingConfig = loadWechatModeConfig(projectDir);
-      const isReconnect = existingConfig?.ccId === finalCcId;
+
+      // 优先级：cc_id 参数 > (非 agent_name 指定时) 配置文件已有 ccId > 自动生成
+      const finalCcId = cc_id || (!agent_name && existingConfig?.ccId) || generateCcId(effectiveAgentName);
+      const isReconnect = !!existingConfig?.ccId && existingConfig.ccId === finalCcId;
 
       // 注册 ccId 到 CC 注册表（重连直接覆盖，首次注册清理超时条目）
       registerCcId(finalCcId, selectedRobot.name, effectiveAgentName, mode, projectDir, isReconnect);

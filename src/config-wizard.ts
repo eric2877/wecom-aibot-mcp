@@ -1218,7 +1218,8 @@ export async function runConfigWizard(): Promise<{ config: WecomConfig; instance
     } else {
       console.log('\n请选择要操作的机器人：\n');
       robots.forEach((robot, idx) => {
-        console.log(`  ${idx + 1}. ${robot.name} (Bot ID: ${robot.botId.slice(0, 12)}...)`);
+        const docTag = robot.doc_mcp_url ? ' [文档✅]' : '';
+        console.log(`  ${idx + 1}. ${robot.name} (Bot ID: ${robot.botId.slice(0, 12)}...)${docTag}`);
       });
       console.log(`  ${robots.length + 1}. 添加新机器人\n`);
 
@@ -1327,7 +1328,7 @@ export async function runConfigWizard(): Promise<{ config: WecomConfig; instance
     const config: WecomConfig = {
       botId,
       secret,
-      targetUserId: '',  // 稍后通过消息识别
+      targetUserId: targetRobot?.targetUserId || '',  // 修改时保留原值，新建时稍后识别
       nameTag: robotName,
       ...(docMcpUrl ? { doc_mcp_url: docMcpUrl } : {}),
     };

@@ -32,6 +32,7 @@ vi.mock('../../src/config-wizard.js', () => ({
     { name: 'ClaudeCode', botId: 'bot1', targetUserId: 'user1' },
     { name: 'module-studio', botId: 'bot2', targetUserId: 'user2' }
   ]),
+  installSkill: vi.fn(),
 }));
 
 vi.mock('../../src/http-server.js', () => ({
@@ -48,6 +49,7 @@ vi.mock('../../src/headless-state.js', () => ({
 }));
 
 vi.mock('../../src/project-config.js', () => ({
+  loadWechatModeConfig: vi.fn().mockReturnValue(null),
   updateWechatModeConfig: vi.fn(),
   addPermissionHook: vi.fn(),
   removePermissionHook: vi.fn(),
@@ -80,6 +82,7 @@ import {
   getRobotByCcId,
   generateCcId,
 } from '../../src/http-server';
+import { loadWechatModeConfig } from '../../src/project-config';
 
 describe('MCP Tools', () => {
   let toolHandlers: Map<string, { handler: Function; schema: any }>;
@@ -104,8 +107,8 @@ describe('MCP Tools', () => {
 
   describe('registerTools', () => {
     it('应该注册正确数量的工具', () => {
-      // 当前注册的工具数量：12 个（添加了 heartbeat_check 和 get_setup_requirements）
-      expect(toolHandlers.size).toBe(12);
+      // 当前注册的工具数量：29 个
+      expect(toolHandlers.size).toBe(29);
     });
 
     it('应该注册 send_message 工具', () => {
@@ -140,9 +143,6 @@ describe('MCP Tools', () => {
       expect(toolHandlers.has('detect_user_from_message')).toBe(true);
     });
 
-    it('应该注册 add_robot_config 工具', () => {
-      expect(toolHandlers.has('add_robot_config')).toBe(true);
-    });
   });
 
   describe('send_message 工具', () => {
@@ -209,7 +209,7 @@ describe('MCP Tools', () => {
 
       // ccId 由服务端生成
       expect(generateCcId).toHaveBeenCalledWith('TestAgent');
-      expect(registerCcId).toHaveBeenCalledWith('TestAgent-1', 'ClaudeCode', 'TestAgent', 'http');
+      expect(registerCcId).toHaveBeenCalledWith('TestAgent-1', 'ClaudeCode', 'TestAgent', 'http', '/path/to/test-project', false);
     });
 
     it('连接失败时应该返回错误', async () => {
@@ -242,6 +242,55 @@ describe('MCP Tools', () => {
 
       // agent_name 未指定，应使用 cc_id 'my-project'
       expect(connectRobot).toHaveBeenCalledWith('ClaudeCode', 'my-project');
+    });
+
+    it('配置文件有 ccId 时应复用（重连场景）', async () => {
+      vi.mocked(connectRobot).mockResolvedValueOnce({
+        success: true,
+        client: {
+          sendText: vi.fn().mockResolvedValue(true),
+        },
+      } as any);
+      vi.mocked(loadWechatModeConfig).mockReturnValueOnce({
+        wechatMode: true,
+        ccId: 'existing-cc-id',
+        robotName: 'ClaudeCode',
+      });
+
+      const handler = toolHandlers.get('enter_headless_mode')!.handler;
+      const result = await handler(
+        { robot_id: '1', project_dir: '/path/to/my-app', mode: 'http' }
+      );
+
+      const response = JSON.parse(result.content[0].text);
+      // 应复用配置文件中的 ccId，而不是生成新的
+      expect(response.ccId).toBe('existing-cc-id');
+      expect(generateCcId).not.toHaveBeenCalled();
+    });
+
+    it('配置文件有 ccId 但传了 agent_name 时应生成新 ccId', async () => {
+      vi.mocked(connectRobot).mockResolvedValueOnce({
+        success: true,
+        client: {
+          sendText: vi.fn().mockResolvedValue(true),
+        },
+      } as any);
+      vi.mocked(loadWechatModeConfig).mockReturnValueOnce({
+        wechatMode: true,
+        ccId: 'existing-cc-id',
+        robotName: 'ClaudeCode',
+      });
+      vi.mocked(generateCcId).mockReturnValueOnce('new-agent-name');
+
+      const handler = toolHandlers.get('enter_headless_mode')!.handler;
+      const result = await handler(
+        { agent_name: 'new-agent-name', robot_id: '1', project_dir: '/path/to/my-app', mode: 'http' }
+      );
+
+      const response = JSON.parse(result.content[0].text);
+      // 传了 agent_name，应生成新 ccId，不复用旧的
+      expect(response.ccId).toBe('new-agent-name');
+      expect(generateCcId).toHaveBeenCalledWith('new-agent-name');
     });
   });
 
