@@ -22,7 +22,8 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { listAllRobots, installSkill } from '../config-wizard.js';
+import { listAllRobots, getDocMcpUrl, installSkill } from '../config-wizard.js';
+import { callDocTool } from '../doc-proxy.js';
 import {
   connectRobot,
   disconnectRobot,
@@ -388,14 +389,16 @@ npx @vrs-soft/wecom-aibot-mcp
       bot_id: z.string().describe('企业微信 Bot ID'),
       secret: z.string().describe('机器人密钥'),
       default_user: z.string().optional().describe('默认目标用户'),
+      doc_mcp_url: z.string().optional().describe('机器人文档 MCP URL（企业微信文档能力）'),
     },
-    async ({ name, bot_id, secret, default_user }) => {
+    async ({ name, bot_id, secret, default_user, doc_mcp_url }) => {
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             message: '请使用 --add 命令添加机器人配置',
             command: `npx @vrs-soft/wecom-aibot-mcp --add`,
+            tip: doc_mcp_url ? '运行向导时在"文档 MCP URL"提示处粘贴您的 URL' : undefined,
           }, null, 2),
         }],
       };
@@ -417,6 +420,7 @@ npx @vrs-soft/wecom-aibot-mcp
         name: robot.name,
         botId: robot.botId?.slice(0, 12) + '...',  // 只显示前12位
         targetUser: robot.targetUserId,
+        hasDocMcp: !!robot.doc_mcp_url,  // 是否配置了文档 MCP 能力
       }));
 
       return {
@@ -747,5 +751,282 @@ npx @vrs-soft/wecom-aibot-mcp
     }
   );
 
-  logger.log('[mcp] 已注册 14 个工具');
+  // ============================================
+  // 文档代理工具（企业微信文档 MCP 能力）
+  // 代理转发到机器人专属的 doc_mcp_url
+  // ============================================
+
+  // 公共辅助：解析 doc MCP URL
+  function resolveDocUrl(robotName?: string): { url: string | null; errorContent?: ReturnType<typeof server.tool> } {
+    const { url, error } = getDocMcpUrl(robotName);
+    if (!url) {
+      return {
+        url: null,
+        errorContent: { content: [{ type: 'text', text: error ?? '未配置文档 MCP URL' }] } as any,
+      };
+    }
+    return { url };
+  }
+
+  server.tool(
+    'create_doc',
+    '新建文档或智能表格。doc_type: 3=文档, 10=智能表格。创建成功后返回文档链接。',
+    {
+      doc_type: z.number().int().describe('文档类型：3=文档，10=智能表格'),
+      doc_name: z.string().describe('文档名称，最多 255 个字符'),
+      robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
+    },
+    async ({ doc_type, doc_name, robot_name }) => {
+      const { url, errorContent } = resolveDocUrl(robot_name);
+      if (!url) return errorContent as any;
+      return callDocTool(url, 'create_doc', { doc_type, doc_name });
+    }
+  );
+
+  server.tool(
+    'get_doc_content',
+    '获取企业微信文档内容（Markdown 格式）。支持异步轮询：首次调用无需 task_id，若 task_done 为 false 则带 task_id 继续轮询。',
+    {
+      type: z.number().int().describe('内容格式：2=Markdown'),
+      url: z.string().optional().describe('文档访问链接，与 docid 二选一'),
+      docid: z.string().optional().describe('文档 docid，与 url 二选一'),
+      task_id: z.string().optional().describe('任务 ID（轮询时填写）'),
+      robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
+    },
+    async ({ type, url: docUrl, docid, task_id, robot_name }) => {
+      const { url, errorContent } = resolveDocUrl(robot_name);
+      if (!url) return errorContent as any;
+      return callDocTool(url, 'get_doc_content', { type, url: docUrl, docid, task_id });
+    }
+  );
+
+  server.tool(
+    'edit_doc_content',
+    '编辑企业微信文档内容，支持 Markdown 格式覆写。',
+    {
+      content: z.string().describe('覆写的文档内容'),
+      content_type: z.number().int().describe('内容类型：1=Markdown'),
+      url: z.string().optional().describe('文档访问链接，与 docid 二选一'),
+      docid: z.string().optional().describe('文档 docid，与 url 二选一'),
+      robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
+    },
+    async ({ content, content_type, url: docUrl, docid, robot_name }) => {
+      const { url, errorContent } = resolveDocUrl(robot_name);
+      if (!url) return errorContent as any;
+      return callDocTool(url, 'edit_doc_content', { content, content_type, url: docUrl, docid });
+    }
+  );
+
+  server.tool(
+    'smartsheet_get_sheet',
+    '查询智能表格中的子表信息。',
+    {
+      url: z.string().optional().describe('文档访问链接，与 docid 二选一'),
+      docid: z.string().optional().describe('文档 docid，与 url 二选一'),
+      robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
+    },
+    async ({ url: docUrl, docid, robot_name }) => {
+      const { url, errorContent } = resolveDocUrl(robot_name);
+      if (!url) return errorContent as any;
+      return callDocTool(url, 'smartsheet_get_sheet', { url: docUrl, docid });
+    }
+  );
+
+  server.tool(
+    'smartsheet_add_sheet',
+    '在智能表格内添加新子表。',
+    {
+      url: z.string().optional().describe('文档访问链接，与 docid 二选一'),
+      docid: z.string().optional().describe('文档 docid，与 url 二选一'),
+      properties: z.object({ title: z.string().optional() }).optional().describe('子表属性，可设置 title'),
+      robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
+    },
+    async ({ url: docUrl, docid, properties, robot_name }) => {
+      const { url, errorContent } = resolveDocUrl(robot_name);
+      if (!url) return errorContent as any;
+      return callDocTool(url, 'smartsheet_add_sheet', { url: docUrl, docid, properties });
+    }
+  );
+
+  server.tool(
+    'smartsheet_update_sheet',
+    '修改智能表格子表的标题。',
+    {
+      properties: z.object({
+        sheet_id: z.string().describe('子表 ID'),
+        title: z.string().describe('新标题'),
+      }).describe('子表属性'),
+      url: z.string().optional().describe('文档访问链接，与 docid 二选一'),
+      docid: z.string().optional().describe('文档 docid，与 url 二选一'),
+      robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
+    },
+    async ({ properties, url: docUrl, docid, robot_name }) => {
+      const { url, errorContent } = resolveDocUrl(robot_name);
+      if (!url) return errorContent as any;
+      return callDocTool(url, 'smartsheet_update_sheet', { properties, url: docUrl, docid });
+    }
+  );
+
+  server.tool(
+    'smartsheet_delete_sheet',
+    '删除智能表格中的子表（不可逆）。',
+    {
+      sheet_id: z.string().describe('要删除的子表 ID'),
+      url: z.string().optional().describe('文档访问链接，与 docid 二选一'),
+      docid: z.string().optional().describe('文档 docid，与 url 二选一'),
+      robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
+    },
+    async ({ sheet_id, url: docUrl, docid, robot_name }) => {
+      const { url, errorContent } = resolveDocUrl(robot_name);
+      if (!url) return errorContent as any;
+      return callDocTool(url, 'smartsheet_delete_sheet', { sheet_id, url: docUrl, docid });
+    }
+  );
+
+  server.tool(
+    'smartsheet_get_fields',
+    '获取智能表格子表的字段（列）信息。',
+    {
+      sheet_id: z.string().describe('子表 ID'),
+      url: z.string().optional().describe('文档访问链接，与 docid 二选一'),
+      docid: z.string().optional().describe('文档 docid，与 url 二选一'),
+      robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
+    },
+    async ({ sheet_id, url: docUrl, docid, robot_name }) => {
+      const { url, errorContent } = resolveDocUrl(robot_name);
+      if (!url) return errorContent as any;
+      return callDocTool(url, 'smartsheet_get_fields', { sheet_id, url: docUrl, docid });
+    }
+  );
+
+  server.tool(
+    'smartsheet_add_fields',
+    '向智能表格子表添加字段（列）。调用前必须先用 smartsheet_get_fields 查看现有字段并用 smartsheet_update_fields 重命名默认字段，否则会多出无用列。',
+    {
+      sheet_id: z.string().describe('子表 ID'),
+      fields: z.array(z.object({
+        field_title: z.string(),
+        field_type: z.string(),
+      })).describe('要添加的字段列表'),
+      url: z.string().optional().describe('文档访问链接，与 docid 二选一'),
+      docid: z.string().optional().describe('文档 docid，与 url 二选一'),
+      robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
+    },
+    async ({ sheet_id, fields, url: docUrl, docid, robot_name }) => {
+      const { url, errorContent } = resolveDocUrl(robot_name);
+      if (!url) return errorContent as any;
+      return callDocTool(url, 'smartsheet_add_fields', { sheet_id, fields, url: docUrl, docid });
+    }
+  );
+
+  server.tool(
+    'smartsheet_update_fields',
+    '更新智能表格子表字段的标题（不能更改字段类型）。',
+    {
+      sheet_id: z.string().describe('子表 ID'),
+      fields: z.array(z.object({
+        field_id: z.string(),
+        field_title: z.string(),
+        field_type: z.string(),
+      })).describe('要更新的字段列表'),
+      url: z.string().optional().describe('文档访问链接，与 docid 二选一'),
+      docid: z.string().optional().describe('文档 docid，与 url 二选一'),
+      robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
+    },
+    async ({ sheet_id, fields, url: docUrl, docid, robot_name }) => {
+      const { url, errorContent } = resolveDocUrl(robot_name);
+      if (!url) return errorContent as any;
+      return callDocTool(url, 'smartsheet_update_fields', { sheet_id, fields, url: docUrl, docid });
+    }
+  );
+
+  server.tool(
+    'smartsheet_delete_fields',
+    '删除智能表格子表中的字段（列）（不可逆）。',
+    {
+      sheet_id: z.string().describe('子表 ID'),
+      field_ids: z.array(z.string()).describe('要删除的字段 ID 列表'),
+      url: z.string().optional().describe('文档访问链接，与 docid 二选一'),
+      docid: z.string().optional().describe('文档 docid，与 url 二选一'),
+      robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
+    },
+    async ({ sheet_id, field_ids, url: docUrl, docid, robot_name }) => {
+      const { url, errorContent } = resolveDocUrl(robot_name);
+      if (!url) return errorContent as any;
+      return callDocTool(url, 'smartsheet_delete_fields', { sheet_id, field_ids, url: docUrl, docid });
+    }
+  );
+
+  server.tool(
+    'smartsheet_get_records',
+    '查询智能表格子表的所有记录。',
+    {
+      sheet_id: z.string().describe('子表 ID'),
+      url: z.string().optional().describe('文档访问链接，与 docid 二选一'),
+      docid: z.string().optional().describe('文档 docid，与 url 二选一'),
+      robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
+    },
+    async ({ sheet_id, url: docUrl, docid, robot_name }) => {
+      const { url, errorContent } = resolveDocUrl(robot_name);
+      if (!url) return errorContent as any;
+      return callDocTool(url, 'smartsheet_get_records', { sheet_id, url: docUrl, docid });
+    }
+  );
+
+  server.tool(
+    'smartsheet_add_records',
+    '向智能表格子表添加记录（行）。单次建议不超过 500 行。values 的 key 必须是字段标题（field_title），不能用 field_id。',
+    {
+      sheet_id: z.string().describe('子表 ID'),
+      records: z.array(z.object({ values: z.record(z.string(), z.unknown()) })).describe('记录列表，values key 为字段标题'),
+      url: z.string().optional().describe('文档访问链接，与 docid 二选一'),
+      docid: z.string().optional().describe('文档 docid，与 url 二选一'),
+      robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
+    },
+    async ({ sheet_id, records, url: docUrl, docid, robot_name }) => {
+      const { url, errorContent } = resolveDocUrl(robot_name);
+      if (!url) return errorContent as any;
+      return callDocTool(url, 'smartsheet_add_records', { sheet_id, records, url: docUrl, docid });
+    }
+  );
+
+  server.tool(
+    'smartsheet_update_records',
+    '更新智能表格子表中的记录（行）。单次建议不超过 500 行。',
+    {
+      sheet_id: z.string().describe('子表 ID'),
+      records: z.array(z.object({
+        record_id: z.string(),
+        values: z.record(z.string(), z.unknown()),
+      })).describe('要更新的记录列表，含 record_id 和 values'),
+      key_type: z.enum(['CELL_VALUE_KEY_TYPE_FIELD_TITLE', 'CELL_VALUE_KEY_TYPE_FIELD_ID']).describe('values 的 key 类型'),
+      url: z.string().optional().describe('文档访问链接，与 docid 二选一'),
+      docid: z.string().optional().describe('文档 docid，与 url 二选一'),
+      robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
+    },
+    async ({ sheet_id, records, key_type, url: docUrl, docid, robot_name }) => {
+      const { url, errorContent } = resolveDocUrl(robot_name);
+      if (!url) return errorContent as any;
+      return callDocTool(url, 'smartsheet_update_records', { sheet_id, records, key_type, url: docUrl, docid });
+    }
+  );
+
+  server.tool(
+    'smartsheet_delete_records',
+    '删除智能表格子表中的记录（行）（不可逆）。单次建议不超过 500 行。',
+    {
+      sheet_id: z.string().describe('子表 ID'),
+      record_ids: z.array(z.string()).describe('要删除的记录 ID 列表'),
+      url: z.string().optional().describe('文档访问链接，与 docid 二选一'),
+      docid: z.string().optional().describe('文档 docid，与 url 二选一'),
+      robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
+    },
+    async ({ sheet_id, record_ids, url: docUrl, docid, robot_name }) => {
+      const { url, errorContent } = resolveDocUrl(robot_name);
+      if (!url) return errorContent as any;
+      return callDocTool(url, 'smartsheet_delete_records', { sheet_id, record_ids, url: docUrl, docid });
+    }
+  );
+
+  logger.log('[mcp] 已注册 29 个工具（含 15 个文档代理工具）');
 }

@@ -20,6 +20,7 @@ export interface WecomConfig {
   targetUserId: string;
   targetUserName?: string;
   nameTag?: string;  // 机器人名称
+  doc_mcp_url?: string;  // 机器人文档 MCP URL（企业微信文档能力）
 }
 
 const CONFIG_DIR = path.join(os.homedir(), '.wecom-aibot-mcp');
@@ -59,11 +60,14 @@ export function loadConfig(): WecomConfig | null {
       const content = fs.readFileSync(BOT_CONFIG_FILE, 'utf-8');
       const config = JSON.parse(content);
       if (config.botId && config.secret && config.targetUserId) {
-        return {
+        const result: WecomConfig = {
           botId: config.botId,
           secret: config.secret,
           targetUserId: config.targetUserId,
         };
+        if (config.nameTag) result.nameTag = config.nameTag;
+        if (config.doc_mcp_url) result.doc_mcp_url = config.doc_mcp_url;
+        return result;
       }
     }
   } catch (err) {
@@ -694,6 +698,9 @@ function writeMcpServerConfig(config: WecomConfig, instanceName?: string) {
     if (config.nameTag) {
       botConfig.nameTag = config.nameTag;
     }
+    if (config.doc_mcp_url) {
+      botConfig.doc_mcp_url = config.doc_mcp_url;
+    }
 
     // 检查名称唯一性（如果设置了新名称）
     if (config.nameTag && isRobotNameExists(config.nameTag, config.botId)) {
@@ -858,7 +865,7 @@ export async function addMcpConfig() {
     }
 
     // 保存机器人配置
-    const robotConfig = {
+    const robotConfig: any = {
       botId,
       secret,
       targetUserId,
@@ -900,8 +907,8 @@ export async function addMcpConfig() {
 }
 
 // 列出所有机器人配置
-export function listAllRobots(): Array<{ name: string; botId: string; targetUserId: string }> {
-  const robots: Array<{ name: string; botId: string; targetUserId: string }> = [];
+export function listAllRobots(): Array<{ name: string; botId: string; targetUserId: string; doc_mcp_url?: string }> {
+  const robots: Array<{ name: string; botId: string; targetUserId: string; doc_mcp_url?: string }> = [];
 
   // 主配置文件（config.json）
   if (fs.existsSync(BOT_CONFIG_FILE)) {
@@ -912,6 +919,7 @@ export function listAllRobots(): Array<{ name: string; botId: string; targetUser
         name,
         botId: config.botId,
         targetUserId: config.targetUserId,
+        ...(config.doc_mcp_url ? { doc_mcp_url: config.doc_mcp_url } : {}),
       });
     } catch {
       // ignore
@@ -929,6 +937,7 @@ export function listAllRobots(): Array<{ name: string; botId: string; targetUser
           name,
           botId: config.botId,
           targetUserId: config.targetUserId,
+          ...(config.doc_mcp_url ? { doc_mcp_url: config.doc_mcp_url } : {}),
         });
       } catch {
         // ignore
@@ -937,6 +946,40 @@ export function listAllRobots(): Array<{ name: string; botId: string; targetUser
   }
 
   return robots;
+}
+
+// 获取指定机器人（或唯一机器人）的文档 MCP URL
+export function getDocMcpUrl(robotName?: string): { url: string | null; error?: string } {
+  const robots = listAllRobots();
+  const robotsWithDoc = robots.filter(r => r.doc_mcp_url);
+
+  if (robotsWithDoc.length === 0) {
+    return {
+      url: null,
+      error: '未配置文档 MCP URL。请运行 `npx @vrs-soft/wecom-aibot-mcp --add` 添加机器人时填写文档 MCP URL，或通过 `add_robot_config` 工具设置。',
+    };
+  }
+
+  if (robotName) {
+    const robot = robotsWithDoc.find(r => r.name === robotName);
+    if (!robot) {
+      return {
+        url: null,
+        error: `未找到名为 "${robotName}" 的机器人，或该机器人未配置文档 MCP URL。已配置文档能力的机器人: ${robotsWithDoc.map(r => r.name).join(', ')}`,
+      };
+    }
+    return { url: robot.doc_mcp_url! };
+  }
+
+  if (robotsWithDoc.length === 1) {
+    return { url: robotsWithDoc[0].doc_mcp_url! };
+  }
+
+  // 多个机器人有 doc_mcp_url，需要用户指定
+  return {
+    url: null,
+    error: `有多个机器人配置了文档 MCP URL，请通过 robot_name 参数指定使用哪个机器人。已配置文档能力的机器人: ${robotsWithDoc.map(r => r.name).join(', ')}`,
+  };
 }
 
 // 写入 MCP 工具权限 + 注册 PermissionRequest hook 到 Claude settings
@@ -1165,7 +1208,7 @@ export async function runConfigWizard(): Promise<{ config: WecomConfig; instance
 
   try {
     const robots = listAllRobots();
-    let targetRobot: { name: string; botId: string; targetUserId: string } | null = null;
+    let targetRobot: { name: string; botId: string; targetUserId: string; doc_mcp_url?: string } | null = null;
     let isNewRobot = false;
 
     // 第一步：选择要修改的机器人
@@ -1252,12 +1295,24 @@ export async function runConfigWizard(): Promise<{ config: WecomConfig; instance
       }
     }
 
-    // 第五步：目标用户（稍后通过消息自动识别）
+    // 第五步：文档 MCP URL（可选）
+    const currentDocUrl = targetRobot?.doc_mcp_url ?? '';
+    const docUrlPrompt = currentDocUrl
+      ? `文档 MCP URL（当前: ${currentDocUrl.slice(0, 40)}...，留空保持不变）: `
+      : '文档 MCP URL（可选，企业微信管理后台获取，留空跳过）: ';
+    let docMcpUrl = await question(rl, docUrlPrompt);
+    if (!docMcpUrl && currentDocUrl) {
+      docMcpUrl = currentDocUrl;
+      console.log('[config] 保持原文档 MCP URL');
+    }
+
+    // 第六步：目标用户（稍后通过消息自动识别）
     console.log('\n─────────────────────────────────────');
     console.log('配置确认：');
     console.log(`  机器人名称: ${robotName}`);
     console.log(`  Bot ID:     ${botId}`);
     console.log(`  Secret:     ${secret.slice(0, 8)}...${secret.slice(-4)}`);
+    console.log(`  文档 MCP:   ${docMcpUrl ? '✅ 已配置' : '（未配置）'}`);
     console.log(`  目标用户:   （将通过消息自动识别）`);
     console.log('─────────────────────────────────────\n');
 
@@ -1274,6 +1329,7 @@ export async function runConfigWizard(): Promise<{ config: WecomConfig; instance
       secret,
       targetUserId: '',  // 稍后通过消息识别
       nameTag: robotName,
+      ...(docMcpUrl ? { doc_mcp_url: docMcpUrl } : {}),
     };
 
     // 如果是修改现有机器人，返回其 instanceName（用于删除旧配置）

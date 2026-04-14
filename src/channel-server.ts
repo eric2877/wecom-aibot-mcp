@@ -44,6 +44,7 @@ function logChannel(message: string, data?: any): void {
 let sseConnected = false;
 let sseAbortController: AbortController | null = null;
 let mcpServer: McpServer | null = null;
+let sseCurrentCcId: string | undefined = undefined;
 
 // HTTP MCP session ID（需要在转发请求前初始化）
 let httpSessionId: string | null = null;
@@ -189,6 +190,7 @@ function connectSSE(ccId?: string): void {
     return;
   }
   sseConnected = true;
+  sseCurrentCcId = ccId;
 
   const sseUrl = ccId ? `${MCP_URL}/sse/${ccId}` : `${MCP_URL}/sse`;
   logChannel('Connecting to SSE', { url: sseUrl, ccId, mcpServerReady: mcpServer ? 'yes' : 'no' });
@@ -235,6 +237,11 @@ function connectSSE(ccId?: string): void {
         logChannel('SSE stream ended');
         clearInterval(heartbeatInterval);
         sseConnected = false;
+        // 非主动断开时自动重连
+        if (!sseAbortController?.signal.aborted) {
+          logChannel('SSE 断线，3 秒后重连', { ccId });
+          setTimeout(() => connectSSE(ccId), 3000);
+        }
         break;
       }
 
@@ -305,6 +312,11 @@ function connectSSE(ccId?: string): void {
   }).catch((err) => {
     logChannel('SSE error', { error: String(err) });
     sseConnected = false;
+    // 非主动断开时自动重连
+    if (!sseAbortController?.signal.aborted) {
+      logChannel('SSE 出错，3 秒后重连', { ccId });
+      setTimeout(() => connectSSE(ccId), 3000);
+    }
   });
 }
 
@@ -423,9 +435,10 @@ function registerChannelTools(server: McpServer) {
       bot_id: z.string().describe('企业微信 Bot ID'),
       secret: z.string().describe('机器人密钥'),
       default_user: z.string().optional().describe('默认目标用户'),
+      doc_mcp_url: z.string().optional().describe('机器人文档 MCP URL（企业微信文档能力）'),
     },
-    async ({ name, bot_id, secret, default_user }) => {
-      return forwardToHttpMcp('add_robot_config', { name, bot_id, secret, default_user });
+    async ({ name, bot_id, secret, default_user, doc_mcp_url }) => {
+      return forwardToHttpMcp('add_robot_config', { name, bot_id, secret, default_user, doc_mcp_url });
     }
   );
 
@@ -508,11 +521,12 @@ function registerChannelTools(server: McpServer) {
       project_dir: z.string().optional().describe('项目目录路径（用于更新配置文件）'),
     },
     async ({ cc_id, project_dir }) => {
-      // 断开 SSE 连接
+      // 断开 SSE 连接（abort 后重连逻辑不会触发）
       if (sseAbortController) {
         sseAbortController.abort();
         sseAbortController = null;
         sseConnected = false;
+        sseCurrentCcId = undefined;
         logChannel('SSE disconnected', { cc_id });
       }
 
@@ -575,7 +589,99 @@ function registerChannelTools(server: McpServer) {
     }
   );
 
-  logChannel('Registered 13 tools');
+  // ============================================
+  // 文档代理工具（转发到 HTTP MCP）
+  // ============================================
+  const docTools: Array<[string, string, Record<string, z.ZodTypeAny>]> = [
+    ['create_doc', '新建文档或智能表格', {
+      doc_type: z.number().int().describe('文档类型：3=文档，10=智能表格'),
+      doc_name: z.string().describe('文档名称'),
+      robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
+    }],
+    ['get_doc_content', '获取文档内容（Markdown 格式）', {
+      type: z.number().int().describe('内容格式：2=Markdown'),
+      url: z.string().optional().describe('文档链接'),
+      docid: z.string().optional().describe('文档 docid'),
+      task_id: z.string().optional().describe('任务 ID（轮询时填写）'),
+      robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
+    }],
+    ['edit_doc_content', '编辑文档内容（Markdown 格式覆写）', {
+      content: z.string().describe('覆写的文档内容'),
+      content_type: z.number().int().describe('内容类型：1=Markdown'),
+      url: z.string().optional().describe('文档链接'),
+      docid: z.string().optional().describe('文档 docid'),
+      robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
+    }],
+    ['smartsheet_get_sheet', '查询智能表格子表信息', {
+      url: z.string().optional(), docid: z.string().optional(),
+      robot_name: z.string().optional(),
+    }],
+    ['smartsheet_add_sheet', '添加智能表格子表', {
+      url: z.string().optional(), docid: z.string().optional(),
+      properties: z.object({ title: z.string().optional() }).optional(),
+      robot_name: z.string().optional(),
+    }],
+    ['smartsheet_update_sheet', '更新智能表格子表标题', {
+      properties: z.object({ sheet_id: z.string(), title: z.string() }),
+      url: z.string().optional(), docid: z.string().optional(),
+      robot_name: z.string().optional(),
+    }],
+    ['smartsheet_delete_sheet', '删除智能表格子表', {
+      sheet_id: z.string(), url: z.string().optional(), docid: z.string().optional(),
+      robot_name: z.string().optional(),
+    }],
+    ['smartsheet_get_fields', '查询智能表格字段', {
+      sheet_id: z.string(), url: z.string().optional(), docid: z.string().optional(),
+      robot_name: z.string().optional(),
+    }],
+    ['smartsheet_add_fields', '添加智能表格字段', {
+      sheet_id: z.string(),
+      fields: z.array(z.object({ field_title: z.string(), field_type: z.string() })),
+      url: z.string().optional(), docid: z.string().optional(),
+      robot_name: z.string().optional(),
+    }],
+    ['smartsheet_update_fields', '更新智能表格字段标题', {
+      sheet_id: z.string(),
+      fields: z.array(z.object({ field_id: z.string(), field_title: z.string(), field_type: z.string() })),
+      url: z.string().optional(), docid: z.string().optional(),
+      robot_name: z.string().optional(),
+    }],
+    ['smartsheet_delete_fields', '删除智能表格字段', {
+      sheet_id: z.string(), field_ids: z.array(z.string()),
+      url: z.string().optional(), docid: z.string().optional(),
+      robot_name: z.string().optional(),
+    }],
+    ['smartsheet_get_records', '查询智能表格记录', {
+      sheet_id: z.string(), url: z.string().optional(), docid: z.string().optional(),
+      robot_name: z.string().optional(),
+    }],
+    ['smartsheet_add_records', '添加智能表格记录', {
+      sheet_id: z.string(),
+      records: z.array(z.object({ values: z.record(z.string(), z.unknown()) })),
+      url: z.string().optional(), docid: z.string().optional(),
+      robot_name: z.string().optional(),
+    }],
+    ['smartsheet_update_records', '更新智能表格记录', {
+      sheet_id: z.string(),
+      records: z.array(z.object({ record_id: z.string(), values: z.record(z.string(), z.unknown()) })),
+      key_type: z.enum(['CELL_VALUE_KEY_TYPE_FIELD_TITLE', 'CELL_VALUE_KEY_TYPE_FIELD_ID']),
+      url: z.string().optional(), docid: z.string().optional(),
+      robot_name: z.string().optional(),
+    }],
+    ['smartsheet_delete_records', '删除智能表格记录', {
+      sheet_id: z.string(), record_ids: z.array(z.string()),
+      url: z.string().optional(), docid: z.string().optional(),
+      robot_name: z.string().optional(),
+    }],
+  ];
+
+  for (const [toolName, description, schema] of docTools) {
+    server.tool(toolName, description, schema, async (args: Record<string, unknown>) => {
+      return forwardToHttpMcp(toolName, args);
+    });
+  }
+
+  logChannel('Registered 28 tools (13 core + 15 doc proxy)');
 }
 
 /**

@@ -17,6 +17,7 @@ export interface WecomConfig {
   secret: string;
   defaultUser: string;
   nameTag?: string;
+  doc_mcp_url?: string;  // 机器人文档 MCP URL（企业微信文档能力）
 }
 
 // ClientPool 存储
