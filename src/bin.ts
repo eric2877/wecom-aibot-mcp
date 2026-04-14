@@ -56,6 +56,10 @@ function showHelp() {
 选项:
   --help, -h      显示帮助信息
   --version, -v   显示版本号
+  --setup         安装向导（交互式，询问本地 / 远程）
+  --setup --server          服务器端安装（配置机器人 + Token）
+  --setup --channel         Channel 客户端安装（写入 Channel MCP）
+  --setup --server --channel  本地完整安装（HTTP + Channel）
   --upgrade       强制升级全局配置（覆盖 MCP 配置、权限、skill）
   --reinstall     重新安装全局配置（删除后重新写入，保留机器人配置）
   --start         启动 MCP Server（后台服务模式）
@@ -75,16 +79,13 @@ function showHelp() {
   --clean-cache   清空 CC 注册表缓存（清理异常断线残留的 ccId）
 
 使用流程:
-  1. 首次安装: npx @vrs-soft/wecom-aibot-mcp
-     （进入配置向导，完成后自动后台启动服务）
+  1. 安装:    npx @vrs-soft/wecom-aibot-mcp --setup
+     （根据角色选择参数：--server / --channel / 两者都传 / 不传交互选择）
 
-  2. 已有配置: npx @vrs-soft/wecom-aibot-mcp
-     （显示状态，提示使用 --start 启动）
-
-  3. 启动服务: npx @vrs-soft/wecom-aibot-mcp --start
+  2. 启动服务: npx @vrs-soft/wecom-aibot-mcp --start
      （后台启动 MCP HTTP Server）
 
-  4. 停止服务: npx @vrs-soft/wecom-aibot-mcp --stop
+  3. 停止服务: npx @vrs-soft/wecom-aibot-mcp --stop
 
 拆分部署（远程 HTTP + 本地 Channel）:
 
@@ -364,9 +365,9 @@ async function main() {
     args.includes('--http-only') ? 'http-only' :
     args.includes('--channel-only') ? 'channel-only' : 'full';
 
-  // --reinstall 命令需要先删除再安装，跳过开头的 ensureGlobalConfigs
-  // --http-only 模式不需要写 MCP 配置
-  if (!args.includes('--reinstall') && !args.includes('--http-only')) {
+  // --reinstall / --http-only / --setup 命令跳过顶部 ensureGlobalConfigs
+  // （--setup 自己在向导完成后调用）
+  if (!args.includes('--reinstall') && !args.includes('--http-only') && !args.includes('--setup')) {
     // 强制覆盖所有全局配置（不依赖智能体）
     ensureGlobalConfigs(installMode);
   }
@@ -563,9 +564,87 @@ async function main() {
     return; // 保持运行，不 exit
   }
 
+  // --setup：统一安装向导
+  //   --setup                    → 交互式（询问本地 / 远程）
+  //   --setup --server           → 服务器端（机器人配置 + Token）
+  //   --setup --channel          → Channel 客户端（写入 Channel MCP）
+  //   --setup --server --channel → 本地完整安装（HTTP + Channel）
+  if (args.includes('--setup')) {
+    const wantServer = args.includes('--server');
+    const wantChannel = args.includes('--channel');
+
+    if (wantServer && wantChannel) {
+      // 本地完整安装
+      console.log('\n[setup] 本地完整安装模式\n');
+      const savedConfig = loadConfig();
+      if (!savedConfig?.botId) await runConfigWizard();
+      ensureGlobalConfigs('full');
+      startMcpServerBackground();
+      console.log('[setup] 安装完成！请重启 Claude Code 以加载配置');
+
+    } else if (wantServer) {
+      // 服务器端
+      console.log('\n[setup] Server 安装模式\n');
+      const savedConfig = loadConfig();
+      if (!savedConfig?.botId) await runConfigWizard();
+      const readline = await import('readline');
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const token = await new Promise<string>(resolve =>
+        rl.question('Auth Token（Client 端需填写相同 Token，留空跳过）: ', a => { rl.close(); resolve(a.trim()); })
+      );
+      if (token) setAuthToken(token);
+      console.log('\n[setup] Server 配置完成！');
+      console.log('  启动: npx @vrs-soft/wecom-aibot-mcp --http-only --start');
+
+    } else if (wantChannel) {
+      // Channel 客户端
+      console.log('\n[setup] Channel Client 安装模式\n');
+      let mcpUrl = process.env.MCP_URL;
+      if (!mcpUrl) {
+        const readline = await import('readline');
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        mcpUrl = await new Promise<string>(resolve =>
+          rl.question('远程服务器地址（如 https://your-server:18963）: ', a => { rl.close(); resolve(a.trim()); })
+        );
+        if (!mcpUrl) { console.log('[setup] ❌ 地址不能为空'); process.exit(1); }
+        process.env.MCP_URL = mcpUrl;
+      }
+      if (!getAuthToken()) {
+        const readline = await import('readline');
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const token = await new Promise<string>(resolve =>
+          rl.question('Auth Token: ', a => { rl.close(); resolve(a.trim()); })
+        );
+        if (token) setAuthToken(token);
+      }
+      ensureGlobalConfigs('channel-only');
+      console.log('[setup] Channel MCP 配置完成！请重启 Claude Code 以加载配置');
+
+    } else {
+      // 交互式：1/2 模式选择
+      console.log('\n请选择安装模式：\n');
+      console.log('  1. 本地安装（完整功能：HTTP + Channel MCP）');
+      console.log('  2. 远程服务器（连接远程 HTTP MCP）\n');
+      const readline = await import('readline');
+      const modeChoice = await new Promise<string>((resolve) => {
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        rl.question('请选择 (1/2，默认 1): ', a => { rl.close(); resolve(a.trim() || '1'); });
+      });
+      if (modeChoice === '2') {
+        await runRemoteInstallWizard();
+      } else {
+        await runConfigWizard();
+        ensureGlobalConfigs('full');
+        startMcpServerBackground();
+      }
+    }
+    process.exit(0);
+  }
+
   // --channel：启动 Channel MCP 代理（stdio）
   // 注意：必须在 --debug 之前检查，否则 --channel --debug 会先触发 HTTP Server
-  if (args.includes('--channel')) {
+  // --setup --channel 已在上方处理，这里不拦截
+  if (args.includes('--channel') && !args.includes('--setup')) {
     // 检查 HTTP MCP 的 debug 标记文件
     const debugFile = path.join(os.homedir(), '.wecom-aibot-mcp', 'debug');
     const isDebug = fs.existsSync(debugFile) || args.includes('--debug');
@@ -653,32 +732,10 @@ async function main() {
     if (savedConfig && savedConfig.botId && savedConfig.secret && savedConfig.targetUserId) {
       config = savedConfig;
     } else if (isInteractive) {
-      // TTY 模式下没有配置，先选择安装模式
-      console.log('\n请选择安装模式：\n');
-      console.log('  1. 本地安装（完整功能：HTTP + Channel MCP）');
-      console.log('  2. 远程服务器（连接远程 HTTP MCP）\n');
-
-      const readline = await import('readline');
-      const modeChoice = await new Promise<string>((resolve) => {
-        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        rl.question('请选择 (1/2，默认 1): ', (answer: string) => {
-          rl.close();
-          resolve(answer.trim() || '1');
-        });
-      });
-
-      if (modeChoice === '2') {
-        // 远程安装模式
-        await runRemoteInstallWizard();
-        process.exit(0);
-      }
-
-      // 本地安装模式：启动配置向导
-      console.log('\n[config] 本地安装模式\n');
-      const result = await runConfigWizard();
-      config = result.config;
-      instanceName = result.instanceName;
-      ranWizard = true;
+      // TTY 模式下没有配置：提示使用 --setup，不再隐式弹向导
+      console.log('[config] 未找到机器人配置。');
+      console.log('[config] 请运行: npx @vrs-soft/wecom-aibot-mcp --setup');
+      process.exit(1);
     } else {
       // 非 TTY 模式（MCP HTTP），必须有配置
       logger.error('[config] 未找到配置，且当前为非交互模式。');
