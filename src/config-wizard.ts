@@ -1189,13 +1189,41 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
 }
 
 // 远程安装向导（交互式输入 URL + Token）
-export async function runRemoteInstallWizard(): Promise<'remote' | 'remote-channel' | null> {
+export async function runRemoteInstallWizard(): Promise<'remote' | 'remote-channel' | 'server' | null> {
   const rl = createRL();
+  const CLAUDE_CONFIG_FILE = path.join(os.homedir(), '.claude.json');
 
   try {
-    console.log('\n请选择远程部署模式：\n');
-    console.log('  1. 仅 HTTP MCP（轮询模式，最简单）');
-    console.log('  2. HTTP MCP + Channel MCP（推荐，Channel 更稳定不易掉线）\n');
+    // 检测本机是否有 ~/.claude.json（判断是 Client 还是 Server）
+    const hasClaudeConfig = fs.existsSync(CLAUDE_CONFIG_FILE);
+
+    if (!hasClaudeConfig) {
+      // Server 安装模式：本机无 ~/.claude.json，作为远程服务器
+      console.log('\n检测到本机无 ~/.claude.json → Server 安装模式\n');
+      console.log('  Server 端只需启动 HTTP MCP Server，不写入 MCP 配置');
+      console.log('  Client 端在其他机器上安装\n');
+
+      const confirm = await question(rl, '确认作为远程 Server 安装？(y/N): ');
+      if (confirm.toLowerCase() !== 'y') {
+        console.log('[config] 已取消');
+        return null;
+      }
+
+      // Server 不写入 ~/.claude.json，只提示启动命令
+      console.log('\n─────────────────────────────────────');
+      console.log('Server 安装完成！');
+      console.log('  启动命令: npx @anthropic/wecom-aibot-mcp --http-only --start');
+      console.log('  或者:     npm run start:http');
+      console.log('─────────────────────────────────────\n');
+      console.log('[config] Client 端请在其他机器运行安装程序连接本服务器\n');
+      return 'server';
+    }
+
+    // Client 安装模式：本机有 ~/.claude.json，作为客户端
+    console.log('\n检测到本机有 ~/.claude.json → Client 安装模式\n');
+    console.log('  请选择连接远程服务器的方式：\n');
+    console.log('  1. 仅 HTTP MCP（轮询模式）');
+    console.log('  2. HTTP MCP + Channel MCP（推荐，消息自动唤醒）\n');
 
     const choice = await question(rl, '请选择 (1/2): ');
     const mode = choice === '2' ? 'remote-channel' : 'remote';
@@ -1219,7 +1247,7 @@ export async function runRemoteInstallWizard(): Promise<'remote' | 'remote-chann
     ensureGlobalConfigs(mode, { url: serverUrl, token });
 
     console.log('\n─────────────────────────────────────');
-    console.log('配置完成！');
+    console.log('Client 配置完成！');
     console.log(`  模式:       ${mode === 'remote-channel' ? 'HTTP + Channel' : '仅 HTTP'}`);
     console.log(`  服务器:     ${serverUrl}`);
     console.log(`  Auth Token: ${token.slice(0, 8)}...${token.slice(-4)}`);

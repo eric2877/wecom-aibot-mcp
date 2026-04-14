@@ -89,41 +89,34 @@ npx @vrs-soft/wecom-aibot-mcp --clean-cache
 
 HTTP MCP Server 和 Channel MCP 分开安装在不同机器：
 
+**自动角色检测**：首次运行时根据 `~/.claude.json` 存在与否自动判断角色：
+- **无 ~/.claude.json** → Server 模式（仅启动 HTTP Server，不写入配置）
+- **有 ~/.claude.json** → Client 模式（写入 HTTP MCP 或 Channel MCP 配置）
+
 ```bash
-# 远程服务器（Server 端：仅安装 HTTP MCP Server）
+# 远程服务器（Server 模式）
 npx @vrs-soft/wecom-aibot-mcp --set-token your-secret-token
 npx @vrs-soft/wecom-aibot-mcp --http-only --start
 
-# 本地客户端（Client 端）两种方式：
+# 本地客户端（Client 模式）
+# 选择 1: 仅 HTTP MCP
+npx @vrs-soft/wecom-aibot-mcp  # 输入远程服务器 URL 和 Token
 
-# 方式 1：仅 HTTP MCP — 手动配置 ~/.claude.json（无需运行安装程序）
-{
-  "mcpServers": {
-    "wecom-aibot": {
-      "type": "http",
-      "url": "https://your-server:18963/mcp",
-      "headers": { "Authorization": "Bearer your-secret-token" }
-    }
-  }
-}
+# 选择 2: HTTP MCP + Channel MCP（推荐）
+npx @vrs-soft/wecom-aibot-mcp  # 输入远程服务器 URL 和 Token，同时安装 Channel
 
-# 方式 2：HTTP + Channel MCP — 运行安装程序安装 Channel MCP
-npx @vrs-soft/wecom-aibot-mcp
-# → 选择 2：远程服务器
-# → 选择 2：HTTP + Channel MCP（推荐）
-# → 输入 URL 和 Token
-
+# 启动 Channel MCP
 claude --dangerously-load-development-channels server:wecom-aibot-channel
 ```
 
 **部署模式对比**：
 
-| 端 | 操作 | Auth Token |
-|---|------|-----------|
-| 本地（选项 1） | HTTP Server + Channel MCP 同机 | 不需要 |
-| 远程 Server | `--http-only` 安装 HTTP MCP | 设置 token |
-| Client 仅 HTTP | 手动配置 `~/.claude.json` | 配置 headers |
-| Client + Channel | 运行安装程序安装 Channel MCP | 配置 env |
+| 角色 | 检测条件 | 操作 | Auth Token |
+|---|---------|------|-----------|
+| 本地一体 | 默认安装 | HTTP Server + Channel MCP 同机 | 不需要 |
+| Server | 无 ~/.claude.json | `--http-only` 启动 HTTP MCP | 设置 token |
+| Client 仅 HTTP | 有 ~/.claude.json | 选择选项 1 | 配置 headers |
+| Client Channel | 有 ~/.claude.json | 选择选项 2（推荐） | 环境变量 |
 
 **Auth Token 说明**：
 - 仅在拆分部署场景需要
