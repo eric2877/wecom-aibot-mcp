@@ -518,3 +518,146 @@ send_message(cc_id, content, target_user=msg.chatid)
 - 发布日期: 2026-04-13
 - MCP Server 名称: wecom-aibot-channel v2.0.0
 - 工具数量: HTTP MCP 14 个、Channel MCP 13 个
+
+---
+
+## v2.3.4 - 2026-04-14
+
+---
+
+## 18. Auth Token 远程部署认证
+
+### 问题
+
+远程 HTTPS 部署时，HTTP Server 需要访问控制，防止未授权访问。
+
+### 设计原则
+
+**Auth Token 与机器人配置无关，它是 HTTP Server 的访问凭证。**
+
+仅在拆分部署场景需要（server 和 channel 分开安装），本地安装无需配置。
+
+### 数据流
+
+```
+┌─────────────┐    Authorization header    ┌──────────────────┐
+│  Claude Code │ ────────────────────────── │  HTTP Server     │
+│  (客户端)    │    Bearer <token>          │  (服务端)        │
+└─────────────┘                             │                  │
+                                            │  校验 token      │
+                                            │  server.json     │
+                                            └──────────────────┘
+```
+
+### Token 存储位置
+
+| 位置 | 文件 | 用途 |
+|------|------|------|
+| 服务端 | `~/.wecom-aibot-mcp/server.json` | HTTP Server 读取并校验 |
+| 客户端 HTTP | `~/.claude.json` → `headers.Authorization` | Claude Code 自动携带 |
+| 客户端 Channel | `~/.claude.json` → `env.MCP_AUTH_TOKEN` | Channel Server 读取 |
+
+### HTTP Server 校验逻辑
+
+位置：CORS/OPTIONS 处理之后，路由分发之前。
+
+```typescript
+const authToken = getAuthToken();
+if (authToken && url !== '/health') {
+  const authHeader = req.headers['authorization'];
+  if (authHeader !== `Bearer ${authToken}`) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Unauthorized' }));
+    return;
+  }
+}
+```
+
+**豁免端点**：`/health`（负载均衡探测，无需认证）
+
+**向后兼容**：无 token 配置时，所有请求放行。
+
+### Channel Server 携带 Token
+
+从环境变量 `MCP_AUTH_TOKEN` 读取：
+
+```typescript
+const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
+
+function getAuthHeaders(): Record<string, string> {
+  if (!MCP_AUTH_TOKEN) return {};
+  return { Authorization: `Bearer ${MCP_AUTH_TOKEN}` };
+}
+```
+
+应用于所有 HTTP 请求：initHttpSession、forwardToHttpMcp、SSE、/skill。
+
+### CLI 命令
+
+| 命令 | 说明 |
+|------|------|
+| `--set-token my-token` | 直接设置 Token |
+| `--set-token` | 交互式输入 Token |
+| `--set-token --clear` | 清除 Token |
+
+设置操作同时更新：
+1. 服务端 `server.json`
+2. 客户端 `~/.claude.json` 中所有 HTTP MCP 配置的 headers
+
+### 远程部署流程
+
+```bash
+# 远程服务器
+npx @vrs-soft/wecom-aibot-mcp --set-token your-secret-token
+npx @vrs-soft/wecom-aibot-mcp --http-only --start
+
+# 本地（首次运行选择"远程服务器"）
+npx @vrs-soft/wecom-aibot-mcp
+# → 选择安装模式：远程服务器
+# → 输入 URL: https://your-server:18963
+# → 输入 Token: your-secret-token
+```
+
+### MCP 配置格式（远程 + Channel）
+
+```json
+{
+  "mcpServers": {
+    "wecom-aibot": {
+      "type": "http",
+      "url": "https://remote-server:18963/mcp",
+      "headers": {
+        "Authorization": "Bearer your-secret-token"
+      }
+    },
+    "wecom-aibot-channel": {
+      "command": "node",
+      "args": ["bin.js", "--channel"],
+      "env": {
+        "MCP_URL": "https://remote-server:18963",
+        "MCP_AUTH_TOKEN": "your-secret-token"
+      }
+    }
+  }
+}
+```
+
+### 安全设计
+
+- Token 仅通过 HTTPS 传输（远程部署）
+- `/health` 端点不校验（供负载均衡使用）
+- 本地部署默认不配置 token
+- Token 明文存储在 `server.json`，依赖文件系统权限保护
+
+---
+
+## 文件变更汇总（v2.3.4）
+
+| 文件 | 变更内容 |
+|------|----------|
+| `src/http-server.ts` | Auth token 校验逻辑 |
+| `src/channel-server.ts` | getAuthHeaders() 函数 |
+| `src/config-wizard.ts` | getAuthToken/setAuthToken/updateMcpAuthHeaders |
+| `src/bin.ts` | --set-token CLI 命令、远程安装向导 |
+| `tests/integration/http-server-integration.test.ts` | Auth token 校验测试 |
+| `tests/unit/config-wizard.test.ts` | Auth token 函数测试 |

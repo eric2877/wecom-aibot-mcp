@@ -40,6 +40,8 @@ claude --dangerously-load-development-channels server:wecom-aibot-channel
 | `--status` | 查看服务状态和机器人列表 |
 | `--config` | 修改默认机器人配置 |
 | `--add / --delete` | 添加/删除机器人 |
+| `--set-token [token]` | 设置 Auth Token（远程部署用） |
+| `--set-token --clear` | 清除 Auth Token |
 | `--debug` | 前台启动，输出调试日志 |
 | `--clean-cache` | 清空 CC 注册表缓存 |
 | `--upgrade` | 强制升级全局配置 |
@@ -88,12 +90,19 @@ npx @vrs-soft/wecom-aibot-mcp --clean-cache
 HTTP MCP 跑在远程服务器，Channel 代理跑在本地：
 
 ```bash
-# 远程服务器
+# 远程服务器（设置 Auth Token）
+npx @vrs-soft/wecom-aibot-mcp --set-token your-secret-token
 npx @vrs-soft/wecom-aibot-mcp --http-only --start
 
-# 本地
-MCP_URL=http://远程IP:18963 npx @vrs-soft/wecom-aibot-mcp --channel-only
+# 本地（首次运行选择"远程服务器"，输入 URL 和 Token）
+npx @vrs-soft/wecom-aibot-mcp
 ```
+
+**Auth Token 说明**：
+- 仅在拆分部署场景需要（server 和 channel 分开安装）
+- 本地安装（server + channel 同一台机器）无需配置
+- `/health` 端点豁免校验（供负载均衡探测）
+- Token 同时写入服务端 `server.json` 和客户端 MCP 配置
 
 ## License
 
