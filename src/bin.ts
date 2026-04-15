@@ -369,9 +369,15 @@ async function main() {
     args.includes('--http-only') ? 'http-only' :
     args.includes('--channel-only') ? 'channel-only' : 'full';
 
-  // --reinstall / --http-only / --setup 命令跳过顶部 ensureGlobalConfigs
-  // （--setup 自己在向导完成后调用）
-  if (!args.includes('--reinstall') && !args.includes('--http-only') && !args.includes('--setup')) {
+  // 以下命令跳过顶部 ensureGlobalConfigs，避免覆盖配置
+  // --setup: 向导完成后自己调用
+  // --channel: 作为 Channel MCP 代理运行，不应改写全局配置
+  // --reinstall / --http-only: 有自己的处理逻辑
+  // --version / -v: 只查版本，不写配置
+  const skipEnsure = args.includes('--reinstall') || args.includes('--http-only') ||
+    args.includes('--setup') || args.includes('--channel') ||
+    args.includes('--version') || args.includes('-v');
+  if (!skipEnsure) {
     // 强制覆盖所有全局配置（不依赖智能体）
     ensureGlobalConfigs(installMode);
   }
