@@ -598,19 +598,34 @@ async function main() {
       if (token) setAuthToken(token);
 
       // HTTPS 证书配置
+      const defaultCertPath = path.join(os.homedir(), '.wecom-aibot-mcp', 'cert.pem');
+      const defaultKeyPath  = path.join(os.homedir(), '.wecom-aibot-mcp', 'key.pem');
+      console.log('\n  HTTPS 证书配置（留空跳过，保持 HTTP 模式）');
+      console.log('  默认证书位置（将证书文件放到此路径即可）:');
+      console.log(`    证书: ${defaultCertPath}`);
+      console.log(`    私钥: ${defaultKeyPath}`);
+      console.log('  如使用 Let\'s Encrypt，路径通常为:');
+      console.log('    /etc/letsencrypt/live/<域名>/fullchain.pem');
+      console.log('    /etc/letsencrypt/live/<域名>/privkey.pem\n');
+
       const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
-      const certPath = await new Promise<string>(resolve =>
-        rl2.question('SSL 证书路径（cert.pem，留空使用 HTTP）: ', a => { rl2.close(); resolve(a.trim()); })
+      const certInput = await new Promise<string>(resolve =>
+        rl2.question(`SSL 证书路径（直接回车使用默认）: `, a => { rl2.close(); resolve(a.trim()); })
       );
-      if (certPath) {
+      const certPath = certInput || defaultCertPath;
+
+      if (fs.existsSync(certPath)) {
         const rl3 = readline.createInterface({ input: process.stdin, output: process.stdout });
-        const keyPath = await new Promise<string>(resolve =>
-          rl3.question('SSL 私钥路径（key.pem）: ', a => { rl3.close(); resolve(a.trim()); })
+        const keyInput = await new Promise<string>(resolve =>
+          rl3.question(`SSL 私钥路径（直接回车使用默认）: `, a => { rl3.close(); resolve(a.trim()); })
         );
-        if (keyPath) {
-          setHttpsConfig(certPath, keyPath);
-          console.log('[setup] HTTPS 已配置');
-        }
+        const keyPath = keyInput || defaultKeyPath;
+        setHttpsConfig(certPath, keyPath);
+        console.log(`[setup] HTTPS 已配置: ${certPath}`);
+      } else if (certInput) {
+        console.log(`[setup] ⚠️  证书文件不存在: ${certPath}，跳过 HTTPS 配置`);
+      } else {
+        console.log(`[setup] 将证书放到默认位置后重新运行 --setup --server 即可启用 HTTPS`);
       }
 
       console.log('\n[setup] Server 配置完成！');
