@@ -599,33 +599,43 @@ async function main() {
 
       // HTTPS 证书配置
       const defaultCertPath = path.join(os.homedir(), '.wecom-aibot-mcp', 'cert.pem');
-      const defaultKeyPath  = path.join(os.homedir(), '.wecom-aibot-mcp', 'key.pem');
       console.log('\n  HTTPS 证书配置（留空跳过，保持 HTTP 模式）');
-      console.log('  默认证书位置（将证书文件放到此路径即可）:');
-      console.log(`    证书: ${defaultCertPath}`);
-      console.log(`    私钥: ${defaultKeyPath}`);
-      console.log('  如使用 Let\'s Encrypt，路径通常为:');
-      console.log('    /etc/letsencrypt/live/<域名>/fullchain.pem');
-      console.log('    /etc/letsencrypt/live/<域名>/privkey.pem\n');
+      console.log('  请输入完整路径含文件名（.pem / .crt / .key 均可），例如:');
+      console.log(`    ${defaultCertPath}`);
+      console.log('    /etc/letsencrypt/live/example.com/fullchain.pem');
+      console.log('    /etc/gitlab/ssl/gitlab.example.com.crt\n');
+
+      const checkFile = (p: string, label: string): boolean => {
+        if (!fs.existsSync(p)) { console.log(`[setup] ⚠️  ${label}文件不存在: ${p}`); return false; }
+        if (fs.statSync(p).isDirectory()) { console.log(`[setup] ⚠️  ${label}路径是目录而非文件: ${p}`); return false; }
+        return true;
+      };
 
       const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
       const certInput = await new Promise<string>(resolve =>
-        rl2.question(`SSL 证书路径（直接回车使用默认）: `, a => { rl2.close(); resolve(a.trim()); })
+        rl2.question(`SSL 证书文件完整路径（留空跳过）: `, a => { rl2.close(); resolve(a.trim()); })
       );
-      const certPath = certInput || defaultCertPath;
 
-      if (fs.existsSync(certPath)) {
-        const rl3 = readline.createInterface({ input: process.stdin, output: process.stdout });
-        const keyInput = await new Promise<string>(resolve =>
-          rl3.question(`SSL 私钥路径（直接回车使用默认）: `, a => { rl3.close(); resolve(a.trim()); })
-        );
-        const keyPath = keyInput || defaultKeyPath;
-        setHttpsConfig(certPath, keyPath);
-        console.log(`[setup] HTTPS 已配置: ${certPath}`);
-      } else if (certInput) {
-        console.log(`[setup] ⚠️  证书文件不存在: ${certPath}，跳过 HTTPS 配置`);
+      if (certInput) {
+        if (!checkFile(certInput, '证书')) {
+          console.log('[setup] 跳过 HTTPS 配置');
+        } else {
+          const rl3 = readline.createInterface({ input: process.stdin, output: process.stdout });
+          const keyInput = await new Promise<string>(resolve =>
+            rl3.question(`SSL 私钥文件完整路径: `, a => { rl3.close(); resolve(a.trim()); })
+          );
+          if (keyInput && checkFile(keyInput, '私钥')) {
+            setHttpsConfig(certInput, keyInput);
+            console.log(`[setup] HTTPS 已配置`);
+            console.log(`  证书: ${certInput}`);
+            console.log(`  私钥: ${keyInput}`);
+          } else if (!keyInput) {
+            console.log('[setup] 私钥路径不能为空，跳过 HTTPS 配置');
+          }
+        }
       } else {
-        console.log(`[setup] 将证书放到默认位置后重新运行 --setup --server 即可启用 HTTPS`);
+        console.log(`[setup] 跳过 HTTPS，使用 HTTP 模式`);
+        console.log(`[setup] 如需启用 HTTPS，配置证书后重新运行 --setup --server`);
       }
 
       console.log('\n[setup] Server 配置完成！');
@@ -646,15 +656,17 @@ async function main() {
         if (!mcpUrl) { console.log('[setup] ❌ 地址不能为空'); process.exit(1); }
         process.env.MCP_URL = mcpUrl;
       }
-      if (!getAuthToken()) {
+      let authToken = getAuthToken();
+      if (!authToken) {
         const readline = await import('readline');
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        const token = await new Promise<string>(resolve =>
+        const tokenInput = await new Promise<string>(resolve =>
           rl.question('Auth Token: ', a => { rl.close(); resolve(a.trim()); })
         );
-        if (token) setAuthToken(token);
+        if (tokenInput) { setAuthToken(tokenInput); authToken = tokenInput; }
       }
-      ensureGlobalConfigs('channel-only');
+      // remote-channel 模式：同时写入 HTTP MCP（供 Claude Code 连接远程服务器）和 Channel MCP
+      ensureGlobalConfigs('remote-channel', { url: mcpUrl, token: authToken || '' });
       console.log('[setup] Channel MCP 配置完成！请重启 Claude Code 以加载配置');
 
     } else {

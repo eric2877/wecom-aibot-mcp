@@ -1109,9 +1109,10 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
       claudeConfig = JSON.parse(fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8'));
     }
     if (!claudeConfig.mcpServers) claudeConfig.mcpServers = {};
+    const mcpEndpointUrl = remoteOptions.url.replace(/\/+$/, '') + '/mcp';
     claudeConfig.mcpServers['wecom-aibot'] = {
       type: 'http',
-      url: remoteOptions.url,
+      url: mcpEndpointUrl,
       headers: { Authorization: `Bearer ${remoteOptions.token}` },
     };
     fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
@@ -1122,8 +1123,8 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
 
   // remote-channel 模式：写入远程 HTTP MCP（带 token）+ Channel MCP
   if (mode === 'remote-channel') {
-    if (!remoteOptions?.url || !remoteOptions?.token) {
-      console.log('[config] ❌ 远程模式需要提供 URL 和 Token');
+    if (!remoteOptions?.url) {
+      console.log('[config] ❌ 远程模式需要提供 URL');
       return { upgraded: false, previousVersion };
     }
     let claudeConfig: any = {};
@@ -1132,22 +1133,19 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
     }
     if (!claudeConfig.mcpServers) claudeConfig.mcpServers = {};
 
-    // HTTP MCP 配置（带 token）
-    claudeConfig.mcpServers['wecom-aibot'] = {
-      type: 'http',
-      url: remoteOptions.url,
-      headers: { Authorization: `Bearer ${remoteOptions.token}` },
-    };
+    // HTTP MCP 配置（带 token，可选）
+    const mcpEndpointUrl = remoteOptions.url.replace(/\/+$/, '') + '/mcp';
+    const httpMcpConfig: any = { type: 'http', url: mcpEndpointUrl };
+    if (remoteOptions.token) httpMcpConfig.headers = { Authorization: `Bearer ${remoteOptions.token}` };
+    claudeConfig.mcpServers['wecom-aibot'] = httpMcpConfig;
 
     // Channel MCP 配置（带 MCP_URL + MCP_AUTH_TOKEN）
-    const binPath = path.join(__dirname, 'bin.js');
+    const channelEnvRemote: any = { MCP_URL: remoteOptions.url.replace(/\/+$/, '') };
+    if (remoteOptions.token) channelEnvRemote.MCP_AUTH_TOKEN = remoteOptions.token;
     claudeConfig.mcpServers['wecom-aibot-channel'] = {
-      command: 'node',
-      args: [binPath, '--channel'],
-      env: {
-        MCP_URL: remoteOptions.url,
-        MCP_AUTH_TOKEN: remoteOptions.token,
-      },
+      command: 'npx',
+      args: ['-y', '@vrs-soft/wecom-aibot-mcp', '--channel'],
+      env: channelEnvRemote,
     };
 
     fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
@@ -1178,19 +1176,18 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
       console.log('[config] 请设置环境变量: MCP_URL=http://远程IP:18963');
       return { upgraded: false, previousVersion };
     }
-    // Channel MCP 配置：使用当前模块路径
-    const binPath = path.join(__dirname, 'bin.js');
-    const channelEnv: any = { MCP_URL: mcpUrl };
+    // Channel MCP 配置：使用 npx（确保使用最新发布版本）
+    const channelEnv: any = { MCP_URL: mcpUrl.replace(/\/+$/, '') };
     const authToken = getAuthToken();
     if (authToken) {
       channelEnv.MCP_AUTH_TOKEN = authToken;
     }
     claudeConfig.mcpServers['wecom-aibot-channel'] = {
-      command: 'node',
-      args: [binPath, '--channel'],
+      command: 'npx',
+      args: ['-y', '@vrs-soft/wecom-aibot-mcp', '--channel'],
       env: channelEnv,
     };
-    console.log(`[config] Channel-only 模式：Channel MCP 使用本地路径`);
+    console.log(`[config] Channel-only 模式：Channel MCP 已配置（npx 模式）`);
   } else {
     // full 模式：同时写入 HTTP MCP 和 Channel MCP 配置
     claudeConfig.mcpServers['wecom-aibot'] = {
