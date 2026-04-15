@@ -646,27 +646,28 @@ async function main() {
     } else if (wantChannel) {
       // Channel 客户端
       console.log('\n[setup] Channel Client 安装模式\n');
-      let mcpUrl = process.env.MCP_URL;
-      if (!mcpUrl) {
-        const readline = await import('readline');
-        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        mcpUrl = await new Promise<string>(resolve =>
-          rl.question('远程服务器地址（如 https://your-server:18963）: ', a => { rl.close(); resolve(a.trim()); })
+      // 交互式安装必须每次都提示，不能直接用已有的环境变量（可能是旧值）
+      const readline = await import('readline');
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const existingUrl = process.env.MCP_URL || '';
+      const urlPrompt = existingUrl
+        ? `远程服务器地址（当前: ${existingUrl}，直接回车保持不变）: `
+        : `远程服务器地址（如 https://your-server:18963）: `;
+      const urlInput = await new Promise<string>(resolve =>
+        rl.question(urlPrompt, a => { rl.close(); resolve(a.trim()); })
+      );
+      const mcpUrl = urlInput || existingUrl;
+      if (!mcpUrl) { console.log('[setup] ❌ 地址不能为空'); process.exit(1); }
+      process.env.MCP_URL = mcpUrl;
+      if (!getAuthToken()) {
+        const readline2 = await import('readline');
+        const rl2 = readline2.createInterface({ input: process.stdin, output: process.stdout });
+        const token = await new Promise<string>(resolve =>
+          rl2.question('Auth Token: ', a => { rl2.close(); resolve(a.trim()); })
         );
-        if (!mcpUrl) { console.log('[setup] ❌ 地址不能为空'); process.exit(1); }
-        process.env.MCP_URL = mcpUrl;
+        if (token) setAuthToken(token);
       }
-      let authToken = getAuthToken();
-      if (!authToken) {
-        const readline = await import('readline');
-        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        const tokenInput = await new Promise<string>(resolve =>
-          rl.question('Auth Token: ', a => { rl.close(); resolve(a.trim()); })
-        );
-        if (tokenInput) { setAuthToken(tokenInput); authToken = tokenInput; }
-      }
-      // remote-channel 模式：同时写入 HTTP MCP（供 Claude Code 连接远程服务器）和 Channel MCP
-      ensureGlobalConfigs('remote-channel', { url: mcpUrl, token: authToken || '' });
+      ensureGlobalConfigs('channel-only');
       console.log('[setup] Channel MCP 配置完成！请重启 Claude Code 以加载配置');
 
     } else {
