@@ -498,12 +498,37 @@ if [[ "$WECHAT_MODE" != "true" ]]; then
   exit 0
 fi
 
-# 检查 MCP Server 是否在线
-HEALTH=$(curl -s -m 2 "http://127.0.0.1:$MCP_PORT/health" 2>/dev/null)
-log_debug "[$(date)] Health check: $HEALTH"
+# 确定 MCP Server 地址（本地优先，失败则尝试远程 channel 配置）
+MCP_BASE_URL="http://127.0.0.1:$MCP_PORT"
+AUTH_ARGS=()
+
+HEALTH=$(curl -s -m 2 "$MCP_BASE_URL/health" 2>/dev/null)
+log_debug "[$(date)] Local health check: $HEALTH"
 if ! echo "$HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
-  log_debug "[$(date)] Health check failed, exit 0"
-  exit 0
+  log_debug "[$(date)] Local server not available, trying remote channel config..."
+  CLAUDE_JSON="$HOME/.claude.json"
+  if [[ -f "$CLAUDE_JSON" ]]; then
+    REMOTE_URL=$(jq -r '.mcpServers["wecom-aibot-channel"].env.MCP_URL // empty' "$CLAUDE_JSON" 2>/dev/null)
+    REMOTE_TOKEN=$(jq -r '.mcpServers["wecom-aibot-channel"].env.MCP_AUTH_TOKEN // empty' "$CLAUDE_JSON" 2>/dev/null)
+    if [[ -n "$REMOTE_URL" ]]; then
+      REMOTE_HEALTH=$(curl -s -m 5 \${REMOTE_TOKEN:+-H "Authorization: Bearer $REMOTE_TOKEN"} "$REMOTE_URL/health" 2>/dev/null)
+      log_debug "[$(date)] Remote health check ($REMOTE_URL): $REMOTE_HEALTH"
+      if echo "$REMOTE_HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
+        MCP_BASE_URL="$REMOTE_URL"
+        [[ -n "$REMOTE_TOKEN" ]] && AUTH_ARGS=(-H "Authorization: Bearer $REMOTE_TOKEN")
+        log_debug "[$(date)] Using remote server: $MCP_BASE_URL"
+      else
+        log_debug "[$(date)] Remote health check failed, exit 0"
+        exit 0
+      fi
+    else
+      log_debug "[$(date)] No remote URL configured, exit 0"
+      exit 0
+    fi
+  else
+    log_debug "[$(date)] No ~/.claude.json found, exit 0"
+    exit 0
+  fi
 fi
 
 # 读取当前项目使用的机器人名称和 ccId
@@ -516,7 +541,8 @@ BODY=$(jq -n --arg tool_name "$TOOL_NAME" --argjson tool_input "$TOOL_INPUT" --a
   '{"tool_name":$tool_name,"tool_input":$tool_input,"projectDir":$project_dir,"robotName":$robot_name,"ccId":$cc_id}')
 
 log_debug "[$(date)] Sending approval request..."
-RESPONSE=$(curl -s -m 10 -X POST "http://127.0.0.1:$MCP_PORT/approve" \\
+RESPONSE=$(curl -s -m 10 -X POST "$MCP_BASE_URL/approve" \\
+  "\${AUTH_ARGS[@]}" \\
   -H "Content-Type: application/json" \\
   -d "$BODY")
 
@@ -545,7 +571,7 @@ while [[ $POLL_COUNT -lt $MAX_POLL ]]; do
   sleep 2
   POLL_COUNT=$((POLL_COUNT + 1))
 
-  STATUS=$(curl -s -m 3 "http://127.0.0.1:$MCP_PORT/approval_status/$TASK_ID" 2>/dev/null)
+  STATUS=$(curl -s -m 3 "\${AUTH_ARGS[@]}" "$MCP_BASE_URL/approval_status/$TASK_ID" 2>/dev/null)
   RESULT=$(echo "$STATUS" | jq -r '.result // empty')
   log_debug "[$(date)] Poll $POLL_COUNT/$MAX_POLL: result=$RESULT"
 
@@ -573,7 +599,7 @@ if [[ "$AUTO_APPROVE" != "true" ]]; then
   # autoApprove 关闭，继续无限等待用户响应
   while true; do
     sleep 2
-    STATUS=$(curl -s -m 3 "http://127.0.0.1:$MCP_PORT/approval_status/$TASK_ID" 2>/dev/null)
+    STATUS=$(curl -s -m 3 "\${AUTH_ARGS[@]}" "$MCP_BASE_URL/approval_status/$TASK_ID" 2>/dev/null)
     RESULT=$(echo "$STATUS" | jq -r '.result // empty')
 
     if [[ "$RESULT" == "allow-once" || "$RESULT" == "allow-always" ]]; then
@@ -608,7 +634,7 @@ log_debug "[$(date)] IS_DELETE: $IS_DELETE"
 if [[ $IS_DELETE -eq 1 ]]; then
   log_debug "[$(date)] Auto-deny: delete operation"
   # 通知 MCP Server 发送微信消息
-  curl -s -m 5 -X POST "http://127.0.0.1:$MCP_PORT/approval_timeout/$TASK_ID" -H "Content-Type: application/json" -d '{"result":"deny","reason":"超时自动拒绝：删除操作需人工确认"}' > /dev/null 2>&1 &
+  curl -s -m 5 -X POST "$MCP_BASE_URL/approval_timeout/$TASK_ID" "\${AUTH_ARGS[@]}" -H "Content-Type: application/json" -d '{"result":"deny","reason":"超时自动拒绝：删除操作需人工确认"}' > /dev/null 2>&1 &
   printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"超时自动拒绝：删除操作需人工确认"}}}'
   exit 0
 fi
@@ -647,12 +673,12 @@ log_debug "[$(date)] IS_IN_PROJECT: $IS_IN_PROJECT"
 if [[ $IS_IN_PROJECT -eq 1 ]]; then
   log_debug "[$(date)] Auto-allow: project operation"
   # 通知 MCP Server 发送微信消息
-  curl -s -m 5 -X POST "http://127.0.0.1:$MCP_PORT/approval_timeout/$TASK_ID" -H "Content-Type: application/json" -d '{"result":"allow-once","reason":"超时自动允许：项目内操作"}' > /dev/null 2>&1 &
+  curl -s -m 5 -X POST "$MCP_BASE_URL/approval_timeout/$TASK_ID" "\${AUTH_ARGS[@]}" -H "Content-Type: application/json" -d '{"result":"allow-once","reason":"超时自动允许：项目内操作"}' > /dev/null 2>&1 &
   printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","message":"超时自动允许：项目内操作"}}}'
 else
   log_debug "[$(date)] Auto-deny: outside project"
   # 通知 MCP Server 发送微信消息
-  curl -s -m 5 -X POST "http://127.0.0.1:$MCP_PORT/approval_timeout/$TASK_ID" -H "Content-Type: application/json" -d '{"result":"deny","reason":"超时自动拒绝：项目外操作需人工确认"}' > /dev/null 2>&1 &
+  curl -s -m 5 -X POST "$MCP_BASE_URL/approval_timeout/$TASK_ID" "\${AUTH_ARGS[@]}" -H "Content-Type: application/json" -d '{"result":"deny","reason":"超时自动拒绝：项目外操作需人工确认"}' > /dev/null 2>&1 &
   printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"超时自动拒绝：项目外操作需人工确认"}}}'
 fi
 `;
@@ -715,12 +741,35 @@ if [[ "$AUTO_APPROVE" != "true" ]]; then
   exit 0
 fi
 
-# 检查 MCP Server 是否在线
-HEALTH=$(curl -s -m 2 "http://127.0.0.1:$MCP_PORT/health" 2>/dev/null)
-log_debug "[$(date)] Health check: $HEALTH"
+# 确定 MCP Server 地址（本地优先，失败则尝试远程 channel 配置）
+MCP_BASE_URL="http://127.0.0.1:$MCP_PORT"
+AUTH_ARGS=()
+
+HEALTH=$(curl -s -m 2 "$MCP_BASE_URL/health" 2>/dev/null)
+log_debug "[$(date)] Local health check: $HEALTH"
 if ! echo "$HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
-  log_debug "[$(date)] MCP Server offline, exit 0 (allow complete)"
-  exit 0
+  CLAUDE_JSON="$HOME/.claude.json"
+  if [[ -f "$CLAUDE_JSON" ]]; then
+    REMOTE_URL=$(jq -r '.mcpServers["wecom-aibot-channel"].env.MCP_URL // empty' "$CLAUDE_JSON" 2>/dev/null)
+    REMOTE_TOKEN=$(jq -r '.mcpServers["wecom-aibot-channel"].env.MCP_AUTH_TOKEN // empty' "$CLAUDE_JSON" 2>/dev/null)
+    if [[ -n "$REMOTE_URL" ]]; then
+      REMOTE_HEALTH=$(curl -s -m 5 \${REMOTE_TOKEN:+-H "Authorization: Bearer $REMOTE_TOKEN"} "$REMOTE_URL/health" 2>/dev/null)
+      if echo "$REMOTE_HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
+        MCP_BASE_URL="$REMOTE_URL"
+        [[ -n "$REMOTE_TOKEN" ]] && AUTH_ARGS=(-H "Authorization: Bearer $REMOTE_TOKEN")
+        log_debug "[$(date)] Using remote server: $MCP_BASE_URL"
+      else
+        log_debug "[$(date)] MCP Server offline, exit 0 (allow complete)"
+        exit 0
+      fi
+    else
+      log_debug "[$(date)] MCP Server offline, exit 0 (allow complete)"
+      exit 0
+    fi
+  else
+    log_debug "[$(date)] MCP Server offline, exit 0 (allow complete)"
+    exit 0
+  fi
 fi
 
 # 获取 ccId
