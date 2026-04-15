@@ -376,7 +376,8 @@ async function main() {
   // --version / -v: 只查版本，不写配置
   const skipEnsure = args.includes('--reinstall') || args.includes('--http-only') ||
     args.includes('--setup') || args.includes('--channel') ||
-    args.includes('--version') || args.includes('-v');
+    args.includes('--version') || args.includes('-v') ||
+    args.includes('--start') || args.includes('--debug');
   if (!skipEnsure) {
     // 强制覆盖所有全局配置（不依赖智能体）
     ensureGlobalConfigs(installMode);
