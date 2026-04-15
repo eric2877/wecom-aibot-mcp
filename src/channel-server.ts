@@ -17,6 +17,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { VERSION } from './config-wizard.js';
+import { addPermissionHook } from './project-config.js';
 
 const MCP_URL = process.env.MCP_URL || 'http://127.0.0.1:18963';
 const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
@@ -505,6 +506,11 @@ function registerChannelTools(server: McpServer) {
             if (parsed.ccId) {
               logChannel('Got ccId, connecting SSE', { ccId: parsed.ccId, mode });
               connectSSE(parsed.ccId);
+
+              // Channel 模式：在本地项目写入 PermissionRequest hook
+              const localProjectDir = project_dir || process.cwd();
+              const hookResult = addPermissionHook(localProjectDir);
+              logChannel('本地 PermissionRequest hook 已写入', { path: hookResult.path, success: hookResult.success });
 
               // Channel 模式：过滤 heartbeat 信息，简化消息
               if (mode === 'channel' || parsed.mode === 'channel') {

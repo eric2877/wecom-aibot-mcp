@@ -1088,23 +1088,20 @@ function writeMcpPermissions() {
       if (!existingPerms.has(perm)) settings.permissions.allow.push(perm);
     }
 
-    // 删除全局 PermissionRequest hook（hook 由 enter_headless_mode 写入项目级别）
-    if (settings.hooks && settings.hooks['PermissionRequest']) {
-      // 只删除 wecom-aibot 相关的 hook
-      settings.hooks['PermissionRequest'] = settings.hooks['PermissionRequest'].filter(
-        (hook: any) => !hook.hooks?.some?.((h: any) => h.command?.includes?.('wecom-aibot-mcp'))
-      );
-      if (settings.hooks['PermissionRequest'].length === 0) {
-        delete settings.hooks['PermissionRequest'];
-      }
-      if (Object.keys(settings.hooks).length === 0) {
-        delete settings.hooks;
-      }
+    // 注册全局 PermissionRequest hook（支持 channel 模式，hook 内部有 wechatMode 检查）
+    if (!settings.hooks) settings.hooks = {};
+    if (!settings.hooks['PermissionRequest']) settings.hooks['PermissionRequest'] = [];
+    const hookCommand = HOOK_SCRIPT_PATH;
+    const alreadyRegistered = settings.hooks['PermissionRequest'].some(
+      (entry: any) => entry.hooks?.some?.((h: any) => h.command === hookCommand)
+    );
+    if (!alreadyRegistered) {
+      settings.hooks['PermissionRequest'].push({ hooks: [{ type: 'command', command: hookCommand }] });
     }
 
     fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(settings, null, 2));
 
-    // 确保 hook 脚本文件存在（进入微信模式时需要）
+    // 确保 hook 脚本文件存在
     writeHookScript();
   } catch (err) {
     logger.error('[config] 写入配置失败:', err);
