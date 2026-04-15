@@ -1176,18 +1176,19 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
       console.log('[config] 请设置环境变量: MCP_URL=http://远程IP:18963');
       return { upgraded: false, previousVersion };
     }
-    // Channel MCP 配置：使用 npx（确保使用最新发布版本）
+    // Channel MCP 配置：使用本地模块路径
+    const binPath = path.join(__dirname, 'bin.js');
     const channelEnv: any = { MCP_URL: mcpUrl.replace(/\/+$/, '') };
     const authToken = getAuthToken();
     if (authToken) {
       channelEnv.MCP_AUTH_TOKEN = authToken;
     }
     claudeConfig.mcpServers['wecom-aibot-channel'] = {
-      command: 'npx',
-      args: ['-y', '@vrs-soft/wecom-aibot-mcp', '--channel'],
+      command: 'node',
+      args: [binPath, '--channel'],
       env: channelEnv,
     };
-    console.log(`[config] Channel-only 模式：Channel MCP 已配置（npx 模式）`);
+    console.log(`[config] Channel-only 模式：Channel MCP 已配置`);
   } else {
     // full 模式：同时写入 HTTP MCP 和 Channel MCP 配置
     claudeConfig.mcpServers['wecom-aibot'] = {
@@ -1195,11 +1196,16 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
       url: 'http://127.0.0.1:18963/mcp',
     };
     // Channel MCP 配置：使用当前模块路径
+    // 保留已有的自定义 MCP_URL（如 channel-only 安装时写入的远程地址）
     const binPath = path.join(__dirname, 'bin.js');
+    const existingMcpUrl = claudeConfig.mcpServers['wecom-aibot-channel']?.env?.MCP_URL;
+    const channelMcpUrl = (existingMcpUrl && !existingMcpUrl.startsWith('http://127.0.0.1'))
+      ? existingMcpUrl
+      : 'http://127.0.0.1:18963';
     claudeConfig.mcpServers['wecom-aibot-channel'] = {
       command: 'node',
       args: [binPath, '--channel'],
-      env: { MCP_URL: 'http://127.0.0.1:18963' },
+      env: { MCP_URL: channelMcpUrl },
     };
     console.log(`[config] full 模式：Channel MCP 使用本地路径`);
   }
