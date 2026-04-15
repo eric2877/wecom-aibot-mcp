@@ -651,6 +651,19 @@ class WecomClient extends EventEmitter {
   }
 
   /**
+   * 获取所有未解决的审批记录 Map（用于重连时迁移到新 client）
+   */
+  getUnresolvedApprovalMap(): Map<string, ApprovalRecord> {
+    const pending = new Map<string, ApprovalRecord>();
+    this.approvals.forEach((approval, taskId) => {
+      if (!approval.resolved) {
+        pending.set(taskId, approval);
+      }
+    });
+    return pending;
+  }
+
+  /**
    * 注入审批记录（MCP 重启恢复用）
    * 如果 taskId 已存在则跳过，避免覆盖用户已点击的结果
    */
@@ -735,6 +748,25 @@ class WecomClient extends EventEmitter {
     return this.pendingMessages.length;
   }
 
+  /**
+   * 取出所有待发送的审批消息并清空队列（用于 client 迁移）
+   * 仅迁移 approval 类型，text 通知类消息不需要迁移
+   */
+  takePendingApprovalMessages(): PendingMessage[] {
+    const approvalMessages = this.pendingMessages.filter(m => m.type === 'approval');
+    this.pendingMessages = this.pendingMessages.filter(m => m.type !== 'approval');
+    return approvalMessages;
+  }
+
+  /**
+   * 注入待发送消息（用于 client 迁移，新 client 连接后会自动重发）
+   */
+  injectPendingMessages(messages: PendingMessage[]): void {
+    if (messages.length === 0) return;
+    this.pendingMessages.unshift(...messages);
+    logger.log(`[wecom] 注入待发送消息: ${messages.length} 条`);
+  }
+
   // 获取重连状态
   getReconnectStatus(): { wasReconnecting: boolean; attempt: number; lastDisconnectTime: number } {
     return {
@@ -764,4 +796,4 @@ export function getClient(): WecomClient {
   return instance;
 }
 
-export { WecomClient, ApprovalRecord, MessageRecord, MAX_PENDING_MESSAGES };
+export { WecomClient, ApprovalRecord, MessageRecord, PendingMessage, MAX_PENDING_MESSAGES };

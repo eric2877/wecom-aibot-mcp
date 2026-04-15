@@ -193,7 +193,28 @@ export async function getClient(robotName: string): Promise<WecomClient | null> 
   const robot = await findRobotConfig(state.robotName);
   if (robot) {
     logger.log(`[connection] 重连机器人: ${robot.name}`);
+    const oldClient = state.client;
+
+    // 迁移旧 client 的未解决审批记录和待发送审批消息
+    const pendingApprovals = oldClient.getUnresolvedApprovalMap();
+    const pendingApprovalMessages = oldClient.takePendingApprovalMessages();
+
+    // 先断开旧 client，防止旧 client 重连后与新 client 并存导致事件分流
+    oldClient.disconnect();
+
     state.client = new WecomClient(robot.botId, robot.secret, robot.targetUserId, robot.name);
+
+    // 注入审批记录，确保 Hook 轮询和用户点击仍能正常处理
+    pendingApprovals.forEach((approval, taskId) => {
+      state.client.injectApprovalRecord(taskId, {
+        toolName: approval.toolName,
+        toolInput: approval.toolInput,
+      });
+    });
+
+    // 注入待发送的审批卡片消息，新 client 连接后会自动重发
+    state.client.injectPendingMessages(pendingApprovalMessages);
+
     state.client.connect();
 
     const connected = await waitForConnection(state.client, 5000);

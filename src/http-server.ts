@@ -977,7 +977,7 @@ async function handleApprovalRequest(req: http.IncomingMessage, res: http.Server
 
     const title = `【待审批】${tool_name}`;
     const requestId = `hook_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const taskId = await client.sendApprovalRequest(title, description, requestId);
+    const taskId = await client.sendApprovalRequest(title, description, requestId, undefined, tool_input, ccId);
 
     logger.log(`[http] 审批请求已发送: ${taskId} (机器人: ${robotName})`);
 
@@ -1021,6 +1021,9 @@ function handleApprovalStatus(_req: http.IncomingMessage, res: http.ServerRespon
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'pending', result: 'pending' }));
       }
+    }).catch(() => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'pending', result: 'pending' }));
     });
     return;
   }

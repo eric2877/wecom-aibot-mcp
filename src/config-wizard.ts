@@ -475,13 +475,14 @@ if ! echo "$HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
   exit 0
 fi
 
-# 读取当前项目使用的机器人名称
+# 读取当前项目使用的机器人名称和 ccId
 ROBOT_NAME=$(jq -r '.robotName // empty' "$CONFIG_FILE" 2>/dev/null)
+CC_ID=$(jq -r '.ccId // empty' "$CONFIG_FILE" 2>/dev/null)
 
 # 发送审批请求（使用 pwd 作为 projectDir）
 TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}')
-BODY=$(jq -n --arg tool_name "$TOOL_NAME" --argjson tool_input "$TOOL_INPUT" --arg project_dir "$PROJECT_DIR" --arg robot_name "$ROBOT_NAME" \\
-  '{"tool_name":$tool_name,"tool_input":$tool_input,"projectDir":$project_dir,"robotName":$robot_name}')
+BODY=$(jq -n --arg tool_name "$TOOL_NAME" --argjson tool_input "$TOOL_INPUT" --arg project_dir "$PROJECT_DIR" --arg robot_name "$ROBOT_NAME" --arg cc_id "$CC_ID" \\
+  '{"tool_name":$tool_name,"tool_input":$tool_input,"projectDir":$project_dir,"robotName":$robot_name,"ccId":$cc_id}')
 
 log_debug "[$(date)] Sending approval request..."
 RESPONSE=$(curl -s -m 10 -X POST "http://127.0.0.1:$MCP_PORT/approve" \\
