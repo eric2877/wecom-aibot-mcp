@@ -665,13 +665,18 @@ async function main() {
       const mcpUrl = urlInput || existingUrl;
       if (!mcpUrl) { console.log('[setup] ❌ 地址不能为空'); process.exit(1); }
       process.env.MCP_URL = mcpUrl;
-      if (!getAuthToken()) {
+      {
+        const existingToken = getAuthToken();
+        const tokenPrompt = existingToken
+          ? `Auth Token（当前: ${existingToken.slice(0, 8)}...${existingToken.slice(-4)}，直接回车保持不变）: `
+          : 'Auth Token（留空跳过）: ';
         const readline2 = await import('readline');
         const rl2 = readline2.createInterface({ input: process.stdin, output: process.stdout });
-        const token = await new Promise<string>(resolve =>
-          rl2.question('Auth Token: ', a => { rl2.close(); resolve(a.trim()); })
+        const tokenInput = await new Promise<string>(resolve =>
+          rl2.question(tokenPrompt, a => { rl2.close(); resolve(a.trim()); })
         );
-        if (token) setAuthToken(token);
+        const finalToken = tokenInput || existingToken || '';
+        if (finalToken) setAuthToken(finalToken);
       }
       ensureGlobalConfigs('channel-only');
       console.log('[setup] Channel MCP 配置完成！请重启 Claude Code 以加载配置');
