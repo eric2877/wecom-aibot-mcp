@@ -58,6 +58,18 @@ npx @vrs-soft/wecom-aibot-mcp --stop    # 停止
 
 使用微信模式时告诉 Claude「**现在开始通过微信联系**」，会自动触发 `headless-mode` skill。
 
+**Channel 模式下 Claude 的启动命令**（由 skill 自动调用）：
+
+```
+enter_headless_mode(mode="channel", agent_name="<项目名>")
+```
+
+也可以直接在对话中输入：
+
+```
+/headless-mode
+```
+
 ---
 
 ## 常用命令
