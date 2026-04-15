@@ -113,6 +113,37 @@ export function setAuthToken(token: string | undefined): boolean {
   return true;
 }
 
+// 获取 HTTPS 证书配置（从 server.json 读取）
+export function getHttpsConfig(): { certPath: string; keyPath: string } | null {
+  if (!fs.existsSync(SERVER_CONFIG_FILE)) return null;
+  try {
+    const config = JSON.parse(fs.readFileSync(SERVER_CONFIG_FILE, 'utf-8'));
+    if (config.certPath && config.keyPath) {
+      return { certPath: config.certPath, keyPath: config.keyPath };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// 设置 HTTPS 证书配置（写入 server.json）
+export function setHttpsConfig(certPath: string, keyPath: string): boolean {
+  ensureConfigDir();
+  let config: any = {};
+  if (fs.existsSync(SERVER_CONFIG_FILE)) {
+    try {
+      config = JSON.parse(fs.readFileSync(SERVER_CONFIG_FILE, 'utf-8'));
+    } catch {
+      // ignore
+    }
+  }
+  config.certPath = certPath;
+  config.keyPath = keyPath;
+  fs.writeFileSync(SERVER_CONFIG_FILE, JSON.stringify(config, null, 2));
+  return true;
+}
+
 // 更新 ~/.claude.json 中 wecom-aibot MCP 配置的 auth headers
 export function updateMcpAuthHeaders(token?: string): void {
   if (!fs.existsSync(CLAUDE_CONFIG_FILE)) return;

@@ -14,6 +14,7 @@
  */
 
 import * as http from 'http';
+import * as https from 'https';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
@@ -37,7 +38,7 @@ export const HTTP_PORT = 18963;
 // Hook 脚本路径
 export const HOOK_SCRIPT_PATH = path.join(os.homedir(), '.wecom-aibot-mcp', 'permission-hook.sh');
 
-let httpServer: http.Server | null = null;
+let httpServer: http.Server | https.Server | null = null;
 let startTime: number = 0;
 
 // Session ID 生成器（MCP SSE 使用）
@@ -563,7 +564,8 @@ ${onlineList.map(id => `• 【${id}】`).join('\n')}
 
 export async function startHttpServer(
   _server: McpServer,
-  port: number = HTTP_PORT
+  port: number = HTTP_PORT,
+  httpsConfig?: { certPath: string; keyPath: string }
 ): Promise<void> {
   startTime = Date.now();
 
@@ -571,7 +573,7 @@ export async function startHttpServer(
   initMcpServer();
 
   return new Promise((resolve, reject) => {
-    httpServer = http.createServer(async (req, res) => {
+    const requestHandler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
@@ -894,7 +896,16 @@ export async function startHttpServer(
 
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not Found' }));
-    });
+    };
+
+    // 根据是否有 HTTPS 配置创建对应的 server
+    if (httpsConfig) {
+      const cert = fs.readFileSync(httpsConfig.certPath, 'utf-8');
+      const key = fs.readFileSync(httpsConfig.keyPath, 'utf-8');
+      httpServer = https.createServer({ cert, key }, requestHandler);
+    } else {
+      httpServer = http.createServer(requestHandler);
+    }
 
     httpServer.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
@@ -904,9 +915,13 @@ export async function startHttpServer(
       }
     });
 
-    httpServer.listen(port, '127.0.0.1', async () => {
-      logger.log(`[http] MCP Server 已启动: http://127.0.0.1:${port}`);
-      logger.log(`[http] MCP endpoint: http://127.0.0.1:${port}/mcp (stateless mode)`);
+    // HTTPS 模式绑定所有网卡（供远程客户端访问），HTTP 模式只绑本地
+    const host = httpsConfig ? '0.0.0.0' : '127.0.0.1';
+    const protocol = httpsConfig ? 'https' : 'http';
+
+    httpServer.listen(port, host, async () => {
+      logger.log(`[http] MCP Server 已启动: ${protocol}://${host}:${port}`);
+      logger.log(`[http] MCP endpoint: ${protocol}://${host}:${port}/mcp (stateless mode)`);
 
       // 自动连接所有配置的机器人
       await connectAllRobots();

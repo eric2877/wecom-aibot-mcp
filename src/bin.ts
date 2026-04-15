@@ -27,6 +27,8 @@ import {
   ensureGlobalConfigs,
   getAuthToken,
   setAuthToken,
+  getHttpsConfig,
+  setHttpsConfig,
   updateMcpAuthHeaders,
   runRemoteInstallWizard,
   WecomConfig,
@@ -291,8 +293,10 @@ async function startMcpServerForeground(isDebug: boolean = false): Promise<void>
   logger.log('  ╚════════════════════════════════════════════════════════╝');
   logger.log('');
 
-  logger.log(`[mcp] 启动 MCP HTTP Server (端口: ${HTTP_PORT})...`);
-  await startHttpServer(server);
+  const httpsConfig = getHttpsConfig() ?? undefined;
+  const protocol = httpsConfig ? 'HTTPS' : 'HTTP';
+  logger.log(`[mcp] 启动 MCP ${protocol} Server (端口: ${HTTP_PORT})...`);
+  await startHttpServer(server, HTTP_PORT, httpsConfig);
 
   startKeepaliveMonitor();
 
@@ -583,18 +587,36 @@ async function main() {
       console.log('[setup] 安装完成！请重启 Claude Code 以加载配置');
 
     } else if (wantServer) {
-      // 服务器端
-      console.log('\n[setup] Server 安装模式\n');
-      const savedConfig = loadConfig();
-      if (!savedConfig?.botId) await runConfigWizard();
+      // 服务器端：分两步——先完成 Server 安装，再配置机器人
+      console.log('\n[setup] ─── 步骤 1/2：Server 安装 ───\n');
+      console.log('  Server 负责运行 HTTP MCP 服务，Bot 配置在下一步单独完成\n');
       const readline = await import('readline');
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
       const token = await new Promise<string>(resolve =>
-        rl.question('Auth Token（Client 端需填写相同 Token，留空跳过）: ', a => { rl.close(); resolve(a.trim()); })
+        rl.question('Auth Token（Client 端连接时需填写相同 Token，留空跳过）: ', a => { rl.close(); resolve(a.trim()); })
       );
       if (token) setAuthToken(token);
+
+      // HTTPS 证书配置
+      const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const certPath = await new Promise<string>(resolve =>
+        rl2.question('SSL 证书路径（cert.pem，留空使用 HTTP）: ', a => { rl2.close(); resolve(a.trim()); })
+      );
+      if (certPath) {
+        const rl3 = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const keyPath = await new Promise<string>(resolve =>
+          rl3.question('SSL 私钥路径（key.pem）: ', a => { rl3.close(); resolve(a.trim()); })
+        );
+        if (keyPath) {
+          setHttpsConfig(certPath, keyPath);
+          console.log('[setup] HTTPS 已配置');
+        }
+      }
+
       console.log('\n[setup] Server 配置完成！');
       console.log('  启动: npx @vrs-soft/wecom-aibot-mcp --http-only --start');
+      console.log('\n[setup] ─── 步骤 2/2：配置企业微信机器人 ───\n');
+      await addMcpConfig();
 
     } else if (wantChannel) {
       // Channel 客户端
