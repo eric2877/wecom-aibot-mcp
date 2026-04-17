@@ -478,15 +478,42 @@ case "$TOOL_NAME" in
     ;;
 esac
 
-# 检查项目目录的微信模式配置文件
-PROJECT_DIR=$(pwd)
-CONFIG_FILE="$PROJECT_DIR/.claude/wecom-aibot.json"
+# 通过进程树匹配活跃项目（以 Claude 进程为准，不依赖 pwd）
+ACTIVE_INDEX="$HOME/.wecom-aibot-mcp/active-projects.json"
+log_debug "[$(date)] Checking active-projects index via PID tree (pid=$$, ppid=$PPID)"
 
-log_debug "[$(date)] Checking config: $CONFIG_FILE"
+if [[ ! -f "$ACTIVE_INDEX" ]]; then
+  log_debug "[$(date)] No active-projects index, exit 0"
+  exit 0
+fi
+
+# 沿进程树向上查找，深度 8 层
+PROJECT_DIR=""
+SEARCH_PID=$PPID
+for i in {1..8}; do
+  if [[ -z "$SEARCH_PID" ]] || [[ "$SEARCH_PID" -le 1 ]]; then
+    break
+  fi
+  MATCH=$(jq -r --argjson p "$SEARCH_PID" '.[] | select(.pid==$p) | .projectDir' "$ACTIVE_INDEX" 2>/dev/null)
+  if [[ -n "$MATCH" ]]; then
+    PROJECT_DIR="$MATCH"
+    log_debug "[$(date)] Found project via PID $SEARCH_PID (depth $i): $PROJECT_DIR"
+    break
+  fi
+  SEARCH_PID=$(ps -o ppid= -p "$SEARCH_PID" 2>/dev/null | tr -d ' ')
+done
+
+if [[ -z "$PROJECT_DIR" ]]; then
+  log_debug "[$(date)] No PID match in process tree, exit 0"
+  exit 0
+fi
+
+CONFIG_FILE="$PROJECT_DIR/.claude/wecom-aibot.json"
+log_debug "[$(date)] Found project: $PROJECT_DIR"
 
 # 配置文件不存在，不在微信模式
 if [[ ! -f "$CONFIG_FILE" ]]; then
-  log_debug "[$(date)] No config file, exit 0"
+  log_debug "[$(date)] No wecom-aibot.json config, exit 0"
   exit 0
 fi
 
@@ -498,36 +525,47 @@ if [[ "$WECHAT_MODE" != "true" ]]; then
   exit 0
 fi
 
-# 确定 MCP Server 地址（本地优先，失败则尝试远程 channel 配置）
+# 确定 MCP Server 地址
+# channel 模式直接使用远程地址，http 模式先试本地再回退远程
+MODE=$(jq -r '.mode // "http"' "$CONFIG_FILE" 2>/dev/null)
 MCP_BASE_URL="http://127.0.0.1:$MCP_PORT"
 AUTH_ARGS=()
 
-HEALTH=$(curl -s -m 2 "$MCP_BASE_URL/health" 2>/dev/null)
-log_debug "[$(date)] Local health check: $HEALTH"
-if ! echo "$HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
-  log_debug "[$(date)] Local server not available, trying remote channel config..."
+_try_remote() {
   CLAUDE_JSON="$HOME/.claude.json"
-  if [[ -f "$CLAUDE_JSON" ]]; then
-    REMOTE_URL=$(jq -r '.mcpServers["wecom-aibot-channel"].env.MCP_URL // empty' "$CLAUDE_JSON" 2>/dev/null)
-    REMOTE_TOKEN=$(jq -r '.mcpServers["wecom-aibot-channel"].env.MCP_AUTH_TOKEN // empty' "$CLAUDE_JSON" 2>/dev/null)
-    if [[ -n "$REMOTE_URL" ]]; then
-      REMOTE_HEALTH=$(curl -s -m 5 \${REMOTE_TOKEN:+-H "Authorization: Bearer $REMOTE_TOKEN"} "$REMOTE_URL/health" 2>/dev/null)
-      log_debug "[$(date)] Remote health check ($REMOTE_URL): $REMOTE_HEALTH"
-      if echo "$REMOTE_HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
-        MCP_BASE_URL="$REMOTE_URL"
-        [[ -n "$REMOTE_TOKEN" ]] && AUTH_ARGS=(-H "Authorization: Bearer $REMOTE_TOKEN")
-        log_debug "[$(date)] Using remote server: $MCP_BASE_URL"
-      else
-        log_debug "[$(date)] Remote health check failed, exit 0"
-        exit 0
-      fi
-    else
-      log_debug "[$(date)] No remote URL configured, exit 0"
-      exit 0
-    fi
-  else
+  if [[ ! -f "$CLAUDE_JSON" ]]; then
     log_debug "[$(date)] No ~/.claude.json found, exit 0"
     exit 0
+  fi
+  REMOTE_URL=$(jq -r '.mcpServers["wecom-aibot-channel"].env.MCP_URL // empty' "$CLAUDE_JSON" 2>/dev/null)
+  REMOTE_TOKEN=$(jq -r '.mcpServers["wecom-aibot-channel"].env.MCP_AUTH_TOKEN // empty' "$CLAUDE_JSON" 2>/dev/null)
+  if [[ -z "$REMOTE_URL" ]]; then
+    log_debug "[$(date)] No remote URL configured, exit 0"
+    exit 0
+  fi
+  REMOTE_HEALTH=$(curl -s -m 5 \${REMOTE_TOKEN:+-H "Authorization: Bearer $REMOTE_TOKEN"} "$REMOTE_URL/health" 2>/dev/null)
+  log_debug "[$(date)] Remote health check ($REMOTE_URL): $REMOTE_HEALTH"
+  if echo "$REMOTE_HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
+    MCP_BASE_URL="$REMOTE_URL"
+    [[ -n "$REMOTE_TOKEN" ]] && AUTH_ARGS=(-H "Authorization: Bearer $REMOTE_TOKEN")
+    log_debug "[$(date)] Using remote server: $MCP_BASE_URL"
+  else
+    log_debug "[$(date)] Remote health check failed, exit 0"
+    exit 0
+  fi
+}
+
+if [[ "$MODE" == "channel" ]]; then
+  # channel 模式：直接使用远程地址，跳过本地检查
+  log_debug "[$(date)] Channel mode, using remote server directly"
+  _try_remote
+else
+  # http 模式：本地优先，失败则尝试远程
+  HEALTH=$(curl -s -m 2 "$MCP_BASE_URL/health" 2>/dev/null)
+  log_debug "[$(date)] Local health check: $HEALTH"
+  if ! echo "$HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
+    log_debug "[$(date)] Local server not available, trying remote channel config..."
+    _try_remote
   fi
 fi
 

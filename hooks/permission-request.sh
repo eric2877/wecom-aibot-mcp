@@ -92,7 +92,9 @@ fi
 while true; do
   sleep 2
 
-  STATUS=$(curl -s -m 3 "http://127.0.0.1:$MCP_PORT/approval_status/$TASK_ID" 2>/dev/null)
+  HTTP_CODE=$(curl -s -o /tmp/approval_resp_$$ -w "%{http_code}" -m 3 "http://127.0.0.1:$MCP_PORT/approval_status/$TASK_ID" 2>/dev/null)
+  STATUS=$(cat /tmp/approval_resp_$$ 2>/dev/null)
+  rm -f /tmp/approval_resp_$$
   RESULT=$(echo "$STATUS" | jq -r '.result // empty')
 
   if [[ "$RESULT" == "allow-once" || "$RESULT" == "allow-always" ]]; then
@@ -100,6 +102,10 @@ while true; do
     exit 0
   elif [[ "$RESULT" == "deny" ]]; then
     printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"用户拒绝或超时自动拒绝"}}}'
+    exit 0
+  elif [[ "$HTTP_CODE" == "404" ]]; then
+    # 审批记录已被清除（超时审批后立即删除），视为已批准
+    printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
     exit 0
   fi
 done

@@ -43,7 +43,7 @@ import {
   isHeadlessMode,
 } from '../headless-state.js';
 import { subscribeWecomMessageByCcId, WecomMessage } from '../message-bus.js';
-import { updateWechatModeConfig, loadWechatModeConfig, addPermissionHook, removePermissionHook, addStopHook, removeStopHook } from '../project-config.js';
+import { updateWechatModeConfig, loadWechatModeConfig, addPermissionHook, removePermissionHook, addStopHook, removeStopHook, registerActiveProject, unregisterActiveProject } from '../project-config.js';
 import { logger } from '../logger.js';
 
 // 辅助函数：从 ccId 获取客户端
@@ -536,6 +536,9 @@ npx @vrs-soft/wecom-aibot-mcp
         autoApproveTimeout: auto_approve_timeout,
       });
 
+      // 注册 PID → projectDir（供 permission hook 通过进程树匹配项目）
+      registerActiveProject(process.ppid ?? process.pid, projectDir);
+
       // 安装 skill 到项目本地（支持远程部署 MCP）
       const skillResult = installSkill(projectDir);
 
@@ -605,9 +608,10 @@ npx @vrs-soft/wecom-aibot-mcp
       // 断开连接
       disconnectRobot(robotName);
 
-      // 更新项目配置文件中的 wechatMode 为 false
+      // 更新项目配置文件中的 wechatMode 为 false，注销 PID 索引
       const projectDir = project_dir || process.cwd();
       updateWechatModeConfig(projectDir, { wechatMode: false });
+      unregisterActiveProject(projectDir);
 
       // 删除 PermissionRequest hook 从项目 settings.json
       const hookResult = removePermissionHook(projectDir);

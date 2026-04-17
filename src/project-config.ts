@@ -166,6 +166,7 @@ export function updateWechatModeConfig(projectDir: string, updates: Partial<Wech
   const newConfig = { ...config, ...updates };
   fs.writeFileSync(configPath, JSON.stringify(newConfig, null, 2));
   logger.log(`[project-config] 已更新微信模式配置: ${configPath}`);
+
 }
 
 /**
@@ -478,4 +479,40 @@ export function removeStopHook(projectDir: string): { success: boolean; path: st
     logger.error(`[project-config] 删除 Stop hook 失败: ${err}`);
     return { success: false, path: settingsPath, existed: false };
   }
+}
+// ============================================================
+// 活跃项目索引（PID → projectDir，供 permission hook 使用）
+// ============================================================
+
+const ACTIVE_PROJECTS_FILE = path.join(os.homedir(), '.wecom-aibot-mcp', 'active-projects.json');
+
+interface ActiveProjectEntry {
+  pid: number;        // Claude 进程 PID（MCP server 的 ppid）
+  projectDir: string;
+}
+
+function readActiveProjects(): ActiveProjectEntry[] {
+  if (!fs.existsSync(ACTIVE_PROJECTS_FILE)) return [];
+  try { return JSON.parse(fs.readFileSync(ACTIVE_PROJECTS_FILE, 'utf-8')); } catch { return []; }
+}
+
+function writeActiveProjects(entries: ActiveProjectEntry[]): void {
+  const dir = path.dirname(ACTIVE_PROJECTS_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(ACTIVE_PROJECTS_FILE, JSON.stringify(entries, null, 2));
+}
+
+/** 进入微信模式时注册 PID → projectDir */
+export function registerActiveProject(claudePid: number, projectDir: string): void {
+  const entries = readActiveProjects().filter(e => e.projectDir !== projectDir);
+  entries.push({ pid: claudePid, projectDir });
+  writeActiveProjects(entries);
+  logger.log(`[project-config] 注册活跃项目: pid=${claudePid} projectDir=${projectDir}`);
+}
+
+/** 退出微信模式时注销 */
+export function unregisterActiveProject(projectDir: string): void {
+  const entries = readActiveProjects().filter(e => e.projectDir !== projectDir);
+  writeActiveProjects(entries);
+  logger.log(`[project-config] 注销活跃项目: ${projectDir}`);
 }
