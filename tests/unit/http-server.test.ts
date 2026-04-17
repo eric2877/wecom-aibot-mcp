@@ -45,8 +45,10 @@ import {
   getCCCountByRobot,
   getOnlineCcIds,
   HTTP_PORT,
-  HOOK_SCRIPT_PATH,
 } from '../../src/http-server';
+import {
+  HOOK_SCRIPT_PATH,
+} from '../../src/index';
 
 describe('HTTP Server', () => {
   beforeEach(() => {

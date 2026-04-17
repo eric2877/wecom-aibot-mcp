@@ -26,9 +26,16 @@ export {
   startHttpServer,
   stopHttpServer,
   HTTP_PORT,
-  HOOK_SCRIPT_PATH,
 } from './http-server.js';
 export type { ApprovalRequest } from './http-server.js';
+
+// Hook 脚本路径（统一从 project-config.ts 导出）
+export {
+  PERMISSION_HOOK_SCRIPT_PATH,
+  STOP_HOOK_SCRIPT_PATH,
+} from './project-config.js';
+// 向后兼容别名
+export { PERMISSION_HOOK_SCRIPT_PATH as HOOK_SCRIPT_PATH } from './project-config.js';
 
 // 工具注册
 export { registerTools } from './tools/index.js';

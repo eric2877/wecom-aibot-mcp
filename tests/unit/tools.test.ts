@@ -53,8 +53,8 @@ vi.mock('../../src/project-config.js', () => ({
   updateWechatModeConfig: vi.fn(),
   addPermissionHook: vi.fn(),
   removePermissionHook: vi.fn(),
-  addTaskCompletedHook: vi.fn(),
-  removeTaskCompletedHook: vi.fn(),
+  addStopHook: vi.fn(),
+  removeStopHook: vi.fn(),
 }));
 
 vi.mock('../../src/message-bus.js', () => ({

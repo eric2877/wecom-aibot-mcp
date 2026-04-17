@@ -29,7 +29,7 @@ const SERVER_CONFIG_FILE = path.join(CONFIG_DIR, 'server.json');  // HTTP Server
 const CLAUDE_CONFIG_FILE = path.join(os.homedir(), '.claude.json');
 const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.local.json');
 const HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.sh');
-const TASK_COMPLETED_HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'task-completed-hook.sh');
+const STOP_HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'stop-hook.sh');
 
 // Skill 模板路径（包内）- 使用 fileURLToPath 确保跨平台兼容
 const __filename = fileURLToPath(import.meta.url);
@@ -688,19 +688,19 @@ fi
   console.log(`[config] Hook 脚本已写入: ${HOOK_SCRIPT_PATH}`);
 }
 
-// 生成并写入 TaskCompleted hook 脚本
-// 用于任务完成后自动恢复微信消息轮询
-function writeTaskCompletedHookScript() {
+// 生成并写入 Stop hook 脚本
+// HTTP 模式使用：阻止 Claude 停止，提示调用 get_pending_messages 恢复轮询
+function writeStopHookScript() {
   const script = `#!/bin/bash
-# wecom-aibot-mcp TaskCompleted hook
-# 任务完成后检查是否需要恢复微信消息轮询
+# wecom-aibot-mcp Stop hook
+# HTTP 模式使用：阻止 Claude 停止，提示调用 get_pending_messages 恢复轮询
 #
 # 固定端口: 18963
 # 检查 $(pwd)/.claude/wecom-aibot.json 的 wechatMode 和 autoApprove 字段
 
 MCP_PORT=18963
 
-# 先保存输入（TaskCompleted 事件数据）
+# 先保存输入（Stop 事件数据）
 INPUT=$(cat)
 
 # 日志输出：--debug 模式下输出到 stderr，否则静默
@@ -711,7 +711,7 @@ log_debug() {
   fi
 }
 
-log_debug "[$(date)] TaskCompleted hook called. INPUT: \${INPUT:0:200}"
+log_debug "[$(date)] Stop hook called. INPUT: \${INPUT:0:200}"
 
 # 检查项目目录的微信模式配置文件
 PROJECT_DIR=$(pwd)
@@ -719,9 +719,9 @@ CONFIG_FILE="$PROJECT_DIR/.claude/wecom-aibot.json"
 
 log_debug "[$(date)] Checking config: $CONFIG_FILE"
 
-# 配置文件不存在，不在微信模式
+# 配置文件不存在，不在微信模式，允许停止
 if [[ ! -f "$CONFIG_FILE" ]]; then
-  log_debug "[$(date)] No config file, exit 0 (allow complete)"
+  log_debug "[$(date)] No config file, exit 0 (allow stop)"
   exit 0
 fi
 
@@ -729,7 +729,7 @@ fi
 WECHAT_MODE=$(jq -r '.wechatMode // false' "$CONFIG_FILE" 2>/dev/null)
 log_debug "[$(date)] wechatMode: $WECHAT_MODE"
 if [[ "$WECHAT_MODE" != "true" ]]; then
-  log_debug "[$(date)] wechatMode not true, exit 0 (allow complete)"
+  log_debug "[$(date)] wechatMode not true, exit 0 (allow stop)"
   exit 0
 fi
 
@@ -737,7 +737,7 @@ fi
 AUTO_APPROVE=$(jq -r '.autoApprove // false' "$CONFIG_FILE" 2>/dev/null)
 log_debug "[$(date)] autoApprove: $AUTO_APPROVE"
 if [[ "$AUTO_APPROVE" != "true" ]]; then
-  log_debug "[$(date)] autoApprove not true, exit 0 (allow complete)"
+  log_debug "[$(date)] autoApprove not true, exit 0 (allow stop)"
   exit 0
 fi
 
@@ -759,15 +759,15 @@ if ! echo "$HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
         [[ -n "$REMOTE_TOKEN" ]] && AUTH_ARGS=(-H "Authorization: Bearer $REMOTE_TOKEN")
         log_debug "[$(date)] Using remote server: $MCP_BASE_URL"
       else
-        log_debug "[$(date)] MCP Server offline, exit 0 (allow complete)"
+        log_debug "[$(date)] MCP Server offline, exit 0 (allow stop)"
         exit 0
       fi
     else
-      log_debug "[$(date)] MCP Server offline, exit 0 (allow complete)"
+      log_debug "[$(date)] MCP Server offline, exit 0 (allow stop)"
       exit 0
     fi
   else
-    log_debug "[$(date)] MCP Server offline, exit 0 (allow complete)"
+    log_debug "[$(date)] MCP Server offline, exit 0 (allow stop)"
     exit 0
   fi
 fi
@@ -776,21 +776,21 @@ fi
 CC_ID=$(jq -r '.ccId // empty' "$CONFIG_FILE" 2>/dev/null)
 log_debug "[$(date)] ccId: $CC_ID"
 if [[ -z "$CC_ID" ]]; then
-  log_debug "[$(date)] No ccId in config, exit 0 (allow complete)"
+  log_debug "[$(date)] No ccId in config, exit 0 (allow stop)"
   exit 0
 fi
 
 # 处于微信模式且 autoApprove 为 true，需要恢复轮询
-# 使用 exit code 2 阻止任务完成，并提示 Claude 调用 MCP 工具
-log_debug "[$(date)] ✅ WeChat mode active, blocking completion to resume polling"
+# 使用 exit code 2 阻止停止，并提示 Claude 调用 MCP 工具
+log_debug "[$(date)] ✅ WeChat mode active, blocking stop to resume polling"
 log_debug "[$(date)] ccId=$CC_ID, will prompt Claude to call get_pending_messages"
 echo "任务已完成，请调用 mcp__wecom-aibot__get_pending_messages(cc_id=\"$CC_ID\", timeout_ms=30000) 恢复微信消息轮询" >&2
 exit 2
 `;
 
   ensureConfigDir();
-  fs.writeFileSync(TASK_COMPLETED_HOOK_SCRIPT_PATH, script, { mode: 0o755 });
-  console.log(`[config] TaskCompleted Hook 脚本已写入: ${TASK_COMPLETED_HOOK_SCRIPT_PATH}`);
+  fs.writeFileSync(STOP_HOOK_SCRIPT_PATH, script, { mode: 0o755 });
+  console.log(`[config] Stop Hook 脚本已写入: ${STOP_HOOK_SCRIPT_PATH}`);
 }
 
 // 写入 MCP Server 配置到 ~/.claude.json
@@ -1064,7 +1064,7 @@ export function getDocMcpUrl(robotName?: string): { url: string | null; error?: 
   };
 }
 
-// 写入 MCP 工具权限 + 注册 PermissionRequest hook 到 Claude settings
+// 写入 MCP 工具权限到 Claude settings
 function writeMcpPermissions() {
   try {
     // 确保目录存在
@@ -1088,20 +1088,13 @@ function writeMcpPermissions() {
       if (!existingPerms.has(perm)) settings.permissions.allow.push(perm);
     }
 
-    // 注册全局 PermissionRequest hook（支持 channel 模式，hook 内部有 wechatMode 检查）
-    if (!settings.hooks) settings.hooks = {};
-    if (!settings.hooks['PermissionRequest']) settings.hooks['PermissionRequest'] = [];
-    const hookCommand = HOOK_SCRIPT_PATH;
-    const alreadyRegistered = settings.hooks['PermissionRequest'].some(
-      (entry: any) => entry.hooks?.some?.((h: any) => h.command === hookCommand)
-    );
-    if (!alreadyRegistered) {
-      settings.hooks['PermissionRequest'].push({ hooks: [{ type: 'command', command: hookCommand }] });
-    }
+    // 注意：PermissionRequest hook 通过项目级 settings.json 配置，不注册全局 hook
+    // HTTP 模式：enter_headless_mode 在项目目录写入 hook
+    // Channel 模式：由 Claude Code 自动审批，不需要 hook
 
     fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(settings, null, 2));
 
-    // 确保 hook 脚本文件存在
+    // 确保 hook 脚本文件存在（供项目级 hook 引用）
     writeHookScript();
   } catch (err) {
     logger.error('[config] 写入配置失败:', err);
@@ -1112,7 +1105,7 @@ function writeMcpPermissions() {
 // 确保 hook 已安装（幂等，可多次调用）
 export function ensureHookInstalled() {
   writeMcpPermissions();
-  writeTaskCompletedHookScript();
+  writeStopHookScript();
 }
 
 // 确保所有全局配置已写入（强制覆盖，不依赖智能体）

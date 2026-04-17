@@ -43,7 +43,7 @@ import {
   isHeadlessMode,
 } from '../headless-state.js';
 import { subscribeWecomMessageByCcId, WecomMessage } from '../message-bus.js';
-import { updateWechatModeConfig, loadWechatModeConfig, addPermissionHook, removePermissionHook, addTaskCompletedHook, removeTaskCompletedHook } from '../project-config.js';
+import { updateWechatModeConfig, loadWechatModeConfig, addPermissionHook, removePermissionHook, addStopHook, removeStopHook } from '../project-config.js';
 import { logger } from '../logger.js';
 
 // 辅助函数：从 ccId 获取客户端
@@ -542,8 +542,8 @@ npx @vrs-soft/wecom-aibot-mcp
       // 添加 PermissionRequest hook 到项目 settings.json
       const hookResult = addPermissionHook(projectDir);
 
-      // HTTP 模式添加 TaskCompleted hook（Channel 模式不需要，消息自动推送）
-      const taskCompletedHookResult = mode === 'http' ? addTaskCompletedHook(projectDir) : { added: false, message: 'Channel 模式不需要 TaskCompleted hook' };
+      // HTTP 模式添加 Stop hook（Channel 模式不需要，消息自动推送）
+      const stopHookResult = mode === 'http' ? addStopHook(projectDir) : { success: false as const, path: '' };
 
       // 发送确认消息（头部标注来源 ccId 和 mode）
       const modeDesc = mode === 'channel' ? 'Channel模式，消息自动推送' : 'HTTP模式，请定期轮询获取消息';
@@ -560,11 +560,11 @@ npx @vrs-soft/wecom-aibot-mcp
             agentName: effectiveAgentName,  // 返回使用的 agentName
             mode,
             hook: hookResult,
-            taskCompletedHook: taskCompletedHookResult,
+            stopHook: stopHookResult,
             skill: skillResult,  // skill 安装结果（如果 success=false，包含 skillUrl）
-            sseEndpoint: mode === 'channel' ? `http://127.0.0.1:18963/sse/${finalCcId}` : undefined,
+            sseEndpoint: mode === 'channel' ? `http://127.0.0.1:18963/sse/${finalCcId}?ccId=${finalCcId}` : undefined,
             message: mode === 'channel'
-              ? `连接 SSE endpoint: http://127.0.0.1:18963/sse/${finalCcId} 接收推送消息`
+              ? `连接 SSE endpoint: http://127.0.0.1:18963/sse/${finalCcId}?ccId=${finalCcId} 接收推送消息`
               : '已进入微信模式(HTTP)',
           }),
         }],
@@ -612,8 +612,8 @@ npx @vrs-soft/wecom-aibot-mcp
       // 删除 PermissionRequest hook 从项目 settings.json
       const hookResult = removePermissionHook(projectDir);
 
-      // 删除 TaskCompleted hook 从项目 settings.json
-      const taskCompletedHookResult = removeTaskCompletedHook(projectDir);
+      // 删除 Stop hook 从项目 settings.json
+      const stopHookResult = removeStopHook(projectDir);
 
       return {
         content: [{
@@ -623,7 +623,7 @@ npx @vrs-soft/wecom-aibot-mcp
             headless: false,
             robotName,
             hook: hookResult,
-            taskCompletedHook: taskCompletedHookResult,
+            stopHook: stopHookResult,
             message: '审批将使用默认 UI',
           }),
         }],

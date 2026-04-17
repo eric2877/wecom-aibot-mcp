@@ -207,7 +207,7 @@ describe('HTTP 服务器集成测试', () => {
       expect(result.status).toBe(503);
     });
 
-    it('GET /approval_status/:taskId 应该返回 pending', async () => {
+    it('GET /approval_status/:taskId 无效 taskId 应该返回 404', async () => {
       const result = await httpRequest({
         hostname: '127.0.0.1',
         port: TEST_PORT,
@@ -215,8 +215,8 @@ describe('HTTP 服务器集成测试', () => {
         method: 'GET',
       });
 
-      expect(result.status).toBe(200);
-      expect(result.data.status).toBe('pending');
+      expect(result.status).toBe(404);
+      expect(result.data.error).toBe('taskId not found');
     });
 
     it('OPTIONS 请求应该返回 200', async () => {
@@ -257,7 +257,24 @@ describe('HTTP 服务器集成测试', () => {
       expect(result.status).toBe(400);
     });
 
-    it('POST /push_notification 无 CCID 时应该返回 503', async () => {
+    it('POST /push_notification 无 MCP session 时应该返回 503', async () => {
+      const result = await httpRequest(
+        {
+          hostname: '127.0.0.1',
+          port: TEST_PORT,
+          path: '/push_notification',
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        },
+        JSON.stringify({ method: 'notifications/message', params: { level: 'info', data: 'test' } })
+      );
+
+      expect(result.status).toBe(503);
+      expect(result.data).toHaveProperty('error');
+      expect(result.data.error).toBe('无活跃 MCP session');
+    });
+
+    it('POST /push_notification 非白名单 method 应该返回 400', async () => {
       const result = await httpRequest(
         {
           hostname: '127.0.0.1',
@@ -269,8 +286,9 @@ describe('HTTP 服务器集成测试', () => {
         JSON.stringify({ method: 'test/method', params: { key: 'value' } })
       );
 
-      expect(result.status).toBe(503);
+      expect(result.status).toBe(400);
       expect(result.data).toHaveProperty('error');
+      expect(result.data.error).toContain('不允许的 method');
     });
   });
 
@@ -293,9 +311,11 @@ describe('HTTP 服务器集成测试', () => {
       expect(serverModule.HTTP_PORT).toBe(18963);
     });
 
-    it('HOOK_SCRIPT_PATH 应该包含正确路径', () => {
-      expect(serverModule.HOOK_SCRIPT_PATH).toContain('.wecom-aibot-mcp');
-      expect(serverModule.HOOK_SCRIPT_PATH).toContain('permission-hook.sh');
+    it('HOOK_SCRIPT_PATH 应该包含正确路径', async () => {
+      // HOOK_SCRIPT_PATH 现在从 index.ts 导出（作为 PERMISSION_HOOK_SCRIPT_PATH 的别名）
+      const indexModule = await import('../../src/index.js');
+      expect(indexModule.HOOK_SCRIPT_PATH).toContain('.wecom-aibot-mcp');
+      expect(indexModule.HOOK_SCRIPT_PATH).toContain('permission-hook.sh');
     });
   });
 
@@ -326,7 +346,7 @@ describe('HTTP 服务器集成测试', () => {
   });
 
   describe('HS-INT-007: 审批状态查询', () => {
-    it('无效 taskId 应该返回 pending', async () => {
+    it('无效 taskId 应该返回 404（修复后：让 Hook 能识别审批丢失）', async () => {
       const result = await httpRequest({
         hostname: '127.0.0.1',
         port: TEST_PORT,
@@ -334,8 +354,9 @@ describe('HTTP 服务器集成测试', () => {
         method: 'GET',
       });
 
-      expect(result.status).toBe(200);
-      expect(result.data.status).toBe('pending');
+      expect(result.status).toBe(404);
+      expect(result.data.error).toBe('taskId not found');
+      expect(result.data.taskId).toBe('invalid-task-id');
     });
   });
 

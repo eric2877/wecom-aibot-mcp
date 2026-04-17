@@ -305,25 +305,28 @@ export function getProjectSettingsPath(projectDir: string): string {
   return path.join(projectDir, '.claude', 'settings.json');
 }
 
+// ============================================
+// Hook 脚本路径（统一定义）
+// ============================================
+const CONFIG_DIR = path.join(os.homedir(), '.wecom-aibot-mcp');
+export const PERMISSION_HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.sh');
+export const STOP_HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'stop-hook.sh');
+
 /**
  * PermissionRequest hook 配置
  */
 const PERMISSION_HOOK = {
   matcher: '',
-  hooks: [{ type: 'command', command: '~/.wecom-aibot-mcp/permission-hook.sh' }],
+  hooks: [{ type: 'command', command: PERMISSION_HOOK_SCRIPT_PATH }],
 };
 
 /**
- * TaskCompleted hook 脚本路径
+ * Stop hook 配置
+ * 用于 HTTP 模式：阻止 Claude 停止，提示调用 get_pending_messages 恢复轮询
  */
-const TASK_COMPLETED_HOOK_SCRIPT_PATH = path.join(os.homedir(), '.wecom-aibot-mcp', 'task-completed-hook.sh');
-
-/**
- * TaskCompleted hook 配置
- */
-const TASK_COMPLETED_HOOK = {
+const STOP_HOOK = {
   matcher: '',
-  hooks: [{ type: 'command', command: TASK_COMPLETED_HOOK_SCRIPT_PATH }],
+  hooks: [{ type: 'command', command: STOP_HOOK_SCRIPT_PATH }],
 };
 
 /**
@@ -402,9 +405,10 @@ export function removePermissionHook(projectDir: string): { success: boolean; pa
 }
 
 /**
- * 添加 TaskCompleted hook 到项目 settings.json
+ * 添加 Stop hook 到项目 settings.json
+ * HTTP 模式使用：阻止 Claude 停止，提示调用 get_pending_messages 恢复轮询
  */
-export function addTaskCompletedHook(projectDir: string): { success: boolean; path: string } {
+export function addStopHook(projectDir: string): { success: boolean; path: string } {
   const settingsPath = getProjectSettingsPath(projectDir);
   const settingsDir = path.dirname(settingsPath);
 
@@ -424,27 +428,27 @@ export function addTaskCompletedHook(projectDir: string): { success: boolean; pa
     }
   }
 
-  // 添加 hooks.TaskCompleted
+  // 添加 hooks.Stop
   if (!settings.hooks) {
     settings.hooks = {};
   }
-  (settings.hooks as Record<string, unknown>).TaskCompleted = [TASK_COMPLETED_HOOK];
+  (settings.hooks as Record<string, unknown>).Stop = [STOP_HOOK];
 
   // 写入配置
   try {
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-    logger.log(`[project-config] 已添加 TaskCompleted hook: ${settingsPath}`);
+    logger.log(`[project-config] 已添加 Stop hook: ${settingsPath}`);
     return { success: true, path: settingsPath };
   } catch (err) {
-    logger.error(`[project-config] 添加 TaskCompleted hook 失败: ${err}`);
+    logger.error(`[project-config] 添加 Stop hook 失败: ${err}`);
     return { success: false, path: settingsPath };
   }
 }
 
 /**
- * 删除 TaskCompleted hook 从项目 settings.json
+ * 删除 Stop hook 从项目 settings.json
  */
-export function removeTaskCompletedHook(projectDir: string): { success: boolean; path: string; existed: boolean } {
+export function removeStopHook(projectDir: string): { success: boolean; path: string; existed: boolean } {
   const settingsPath = getProjectSettingsPath(projectDir);
 
   if (!fs.existsSync(settingsPath)) {
@@ -455,9 +459,9 @@ export function removeTaskCompletedHook(projectDir: string): { success: boolean;
     const content = fs.readFileSync(settingsPath, 'utf-8');
     const settings = JSON.parse(content);
 
-    // 删除 hooks.TaskCompleted
-    if (settings.hooks && (settings.hooks as Record<string, unknown>).TaskCompleted) {
-      delete (settings.hooks as Record<string, unknown>).TaskCompleted;
+    // 删除 hooks.Stop
+    if (settings.hooks && (settings.hooks as Record<string, unknown>).Stop) {
+      delete (settings.hooks as Record<string, unknown>).Stop;
 
       // 如果 hooks 为空，删除整个 hooks 字段
       if (Object.keys(settings.hooks as Record<string, unknown>).length === 0) {
@@ -466,12 +470,12 @@ export function removeTaskCompletedHook(projectDir: string): { success: boolean;
 
       // 写入配置
       fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-      logger.log(`[project-config] 已删除 TaskCompleted hook: ${settingsPath}`);
+      logger.log(`[project-config] 已删除 Stop hook: ${settingsPath}`);
       return { success: true, path: settingsPath, existed: true };
     }
     return { success: true, path: settingsPath, existed: false };
   } catch (err) {
-    logger.error(`[project-config] 删除 TaskCompleted hook 失败: ${err}`);
+    logger.error(`[project-config] 删除 Stop hook 失败: ${err}`);
     return { success: false, path: settingsPath, existed: false };
   }
 }

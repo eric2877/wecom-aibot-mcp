@@ -19,7 +19,7 @@ import {
   logReconnecting,
   logError,
 } from './connection-log.js';
-import { publishWecomMessage } from './message-bus.js';
+import { publishWecomMessage, publishApprovalEvent } from './message-bus.js';
 import { hashOperation } from './utils/hash.js';
 import { logger } from './logger.js';
 
@@ -44,6 +44,7 @@ interface ApprovalRecord {
   // 审批去重字段
   operationHash?: string;  // 操作哈希（用于去重）
   consumed?: boolean;      // 是否已消费（allow-once 只能消费一次）
+  ccId?: string;  // 关联的 ccId（用于 SSE 推送审批结果）
 }
 
 // 消息队列（用于等待用户回复）
@@ -274,9 +275,15 @@ class WecomClient extends EventEmitter {
     const taskId = cardEvent?.task_id;
     const eventKey = cardEvent?.event_key; // 用户点击的按钮 key
 
-    logger.log('wecom', `taskId=${taskId}, eventKey=${eventKey}, approvals keys: ${[...this.approvals.keys()].join(',')}`);
+    // 打印当前 approvals Map 的所有 keys（诊断用）
+    const allTaskIds = [...this.approvals.keys()];
+    logger.log('wecom', `审批响应详情: taskId=${taskId}, eventKey=${eventKey}`);
+    logger.log('wecom', `当前 approvals keys (${allTaskIds.length}个): ${allTaskIds.join(',')}`);
 
-    if (!taskId) return;
+    if (!taskId) {
+      logger.log('wecom', `taskId 为空，cardEvent: ${JSON.stringify(cardEvent)}`);
+      return;
+    }
 
     logger.log('wecom', `收到审批响应: taskId=${taskId}, key=${eventKey}`);
 
@@ -286,6 +293,16 @@ class WecomClient extends EventEmitter {
       approval.result = eventKey as 'allow-once' | 'allow-always' | 'deny';
       approval.timestamp = Date.now();
       this.emit('approval_resolved', { taskId, result: approval.result });
+      logger.log('wecom', `审批已解决: taskId=${taskId}, result=${approval.result}`);
+
+      // 发布审批事件到消息总线（用于 SSE 推送）
+      publishApprovalEvent({
+        robotName: this.robotName,
+        taskId,
+        result: approval.result,
+        ccId: approval.ccId,
+        timestamp: Date.now(),
+      });
 
       // 发送确认消息给用户
       const resultText = eventKey === 'allow-once' ? '✅ 已允许（本次）'
@@ -301,7 +318,7 @@ class WecomClient extends EventEmitter {
     } else if (approval && approval.resolved) {
       logger.log('wecom', `审批已解决，跳过点击: ${taskId}, resolved=${approval.resolved}, result=${approval.result}`);
     } else {
-      logger.log('wecom', `审批记录不存在: ${taskId}`);
+      logger.log('wecom', `审批记录不存在: ${taskId}, 可能原因: 1) taskId 不匹配 2) 审批已过期清理 3) 审批由其他 client 创建`);
     }
   }
 
@@ -450,6 +467,7 @@ class WecomClient extends EventEmitter {
       toolInput,
       description,  // 保存审批请求原文
       operationHash,
+      ccId,  // 保存 ccId，用于 SSE 推送审批结果
     });
 
     // 断线时将审批请求加入队列，等待重连后发送
@@ -465,13 +483,14 @@ class WecomClient extends EventEmitter {
       return taskId;
     }
 
-    // 发送模板卡片
+    // 发送模板卡片（在 description 中显示 taskId 便于用户识别）
+    const displayDesc = description + `\n\n📋 TaskID: ${taskId}`;
     await this.wsClient.sendMessage(userId, {
       msgtype: 'template_card',
       template_card: {
         card_type: 'button_interaction',
         main_title: { title },
-        sub_title_text: description,
+        sub_title_text: displayDesc,
         button_list: [
           { text: '允许', key: 'allow-once', style: 1 },
           { text: '默认', key: 'allow-always', style: 1 },
@@ -505,13 +524,14 @@ class WecomClient extends EventEmitter {
 
     const userId = targetUser || this.targetUserId;
 
-    // 发送模板卡片
+    // 发送模板卡片（在 description 中显示 taskId 便于用户识别）
+    const displayDesc = description + `\n\n📋 TaskID: ${taskId}`;
     await this.wsClient.sendMessage(userId, {
       msgtype: 'template_card',
       template_card: {
         card_type: 'button_interaction',
         main_title: { title },
-        sub_title_text: description,
+        sub_title_text: displayDesc,
         button_list: [
           { text: '允许', key: 'allow-once', style: 1 },
           { text: '默认', key: 'allow-always', style: 1 },
@@ -777,7 +797,7 @@ class WecomClient extends EventEmitter {
   }
 }
 
-// 单例实例
+// 单例实例（用于配置验证等场景）
 let instance: WecomClient | null = null;
 
 export function initClient(botId: string, secret: string, targetUserId: string, robotName: string): WecomClient {
@@ -789,11 +809,7 @@ export function initClient(botId: string, secret: string, targetUserId: string, 
   return instance;
 }
 
-export function getClient(): WecomClient {
-  if (!instance) {
-    throw new Error('WecomClient 未初始化，请先调用 initClient');
-  }
-  return instance;
-}
+// 注意：无参数版本的 getClient() 已删除
+// 请使用 connection-manager.ts 的 getClient(robotName) 获取已连接的客户端
 
 export { WecomClient, ApprovalRecord, MessageRecord, PendingMessage, MAX_PENDING_MESSAGES };

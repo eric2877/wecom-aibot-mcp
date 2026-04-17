@@ -24,7 +24,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { registerTools } from './tools/index.js';
 import { getClient, getConnectionState, getAllConnectionStates, connectAllRobots } from './connection-manager.js';
-import { subscribeWecomMessage, WecomMessage, getSubscriberCount } from './message-bus.js';
+import { subscribeWecomMessage, WecomMessage } from './message-bus.js';
 import { listAllRobots, VERSION, getAuthToken } from './config-wizard.js';
 import { logger } from './logger.js';
 
@@ -52,10 +52,21 @@ function sanitizeAgentName(agentName: string): string {
   return agentName.replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]/g, '').slice(0, 20);
 }
 
-// ccId 生成器（基于 agentName）- 不自动编号
+// ccId 生成器（基于 agentName）- 自动避免冲突
 export function generateCcId(agentName?: string): string {
-  const name = agentName ? sanitizeAgentName(agentName) : 'cc';
-  return name;  // 直接返回名称，不添加编号
+  const base = agentName ? sanitizeAgentName(agentName) : 'cc';
+
+  // 无冲突：直接使用
+  if (!ccIdRegistry.has(base)) return base;
+
+  // 有冲突：自动添加数字后缀（-2, -3, ...）
+  for (let i = 2; i <= 99; i++) {
+    const candidate = `${base}-${i}`;
+    if (!ccIdRegistry.has(candidate)) return candidate;
+  }
+
+  // 兜底：使用时间戳保证唯一性
+  return `${base}-${Date.now()}`;
 }
 
 // 推送微信消息到 MCP 客户端（通过 SSE notification）
@@ -248,10 +259,12 @@ interface ApprovalEntry {
   taskId: string;
   status: 'pending' | 'allow-once' | 'deny';
   timestamp: number;
+  createdAt: number;   // 写入时间，用于定时清理
   tool_name: string;
   tool_input: Record<string, unknown>;
   description: string;
   robotName: string;
+  ccId?: string;
 }
 
 // 使用 Map 存储多个待处理审批（按 taskId 索引）
@@ -282,6 +295,21 @@ function initMcpServer(): void {
   subscribeWecomMessage((msg: WecomMessage) => {
     handleWecomMessage(msg);
   });
+
+  // 定时清理过期审批条目（每 5 分钟清理超过 15 分钟的条目）
+  setInterval(() => {
+    const cutoff = Date.now() - 15 * 60 * 1000;
+    let cleaned = 0;
+    for (const [id, entry] of pendingApprovals) {
+      if (entry.createdAt < cutoff) {
+        pendingApprovals.delete(id);
+        cleaned++;
+      }
+    }
+    if (cleaned > 0) {
+      logger.log(`[http] 定时清理过期审批: ${cleaned} 条`);
+    }
+  }, 5 * 60 * 1000);
 }
 
 // 创建新的 MCP Server 实例
@@ -401,15 +429,16 @@ async function handleWecomMessage(msg: WecomMessage): Promise<void> {
     return;
   }
 
-  const subscriberCount = getSubscriberCount(msg.robotName);
-  logger.log(`[http] 机器人 ${msg.robotName} 订阅数: ${subscriberCount}`);
+  // HTTP 模式下检查是否有在线 CC（而非 subscriberCount，后者只对 Channel 模式有效）
+  const ccCount = getCCCount();
+  logger.log(`[http] 当前在线 CC 数: ${ccCount}`);
 
-  if (subscriberCount === 0) {
-    logger.log('[http] 无订阅者，跳过消息处理');
+  if (ccCount === 0) {
+    logger.log('[http] 无在线 CC，跳过消息处理');
     return;
   }
 
-  if (subscriberCount === 1) {
+  if (ccCount === 1) {
     // 只有一个订阅者，直接广播（SSE 检查已在前面完成）
     logger.log('[http] 单订阅者 HTTP 模式，直接广播');
     for (const [sessionId, sessEntry] of transports) {
@@ -559,7 +588,7 @@ ${onlineList.map(id => `• 【${id}】`).join('\n')}
 
 示例：引用【${onlineList[0]}】的消息后回复`;
 
-  await client.sendText(reply);
+  await client.sendText(reply, msg.chatid);  // 发送到原始会话（群聊或单聊）
 }
 
 export async function startHttpServer(
@@ -574,7 +603,9 @@ export async function startHttpServer(
 
   return new Promise((resolve, reject) => {
     const requestHandler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
-      res.setHeader('Access-Control-Allow-Origin', '*');
+      // CORS 设置：HTTPS 模式收紧为 'null'，HTTP 本地模式宽松为 '*'
+      const isPublicMode = !!httpsConfig;
+      res.setHeader('Access-Control-Allow-Origin', isPublicMode ? 'null' : '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
       // 必须暴露 Mcp-Session-Id 头，让客户端能看到
@@ -757,6 +788,25 @@ export async function startHttpServer(
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, ...result }));
         return;
+      }
+
+      // ============================================
+      // 调试端点统一拦截
+      // ============================================
+      if (url.startsWith('/debug/')) {
+        // 生产环境禁用所有 debug 端点
+        if (process.env.NODE_ENV === 'production') {
+          res.writeHead(404);
+          res.end();
+          return;
+        }
+
+        // debug/sampling 额外要求配置了 Auth Token
+        if (url === '/debug/sampling' && !getAuthToken()) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'debug/sampling 需要配置 Auth Token' }));
+          return;
+        }
       }
 
       // 临时调试端点：手动进入 headless 模式
@@ -1001,6 +1051,7 @@ async function handleApprovalRequest(req: http.IncomingMessage, res: http.Server
       taskId,
       status: 'pending',
       timestamp: Date.now(),
+      createdAt: Date.now(),   // 写入时间，用于定时清理
       tool_name,
       tool_input,
       description,
@@ -1029,6 +1080,11 @@ function handleApprovalStatus(_req: http.IncomingMessage, res: http.ServerRespon
         // 更新审批状态
         if (result !== 'pending') {
           entry.status = result as 'allow-once' | 'deny';
+          // 延迟 5 分钟删除，给 Hook 最后一次轮询窗口
+          setTimeout(() => {
+            pendingApprovals.delete(taskId);
+            logger.log(`[http] 审批条目已清理: taskId=${taskId}`);
+          }, 5 * 60 * 1000);
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: result, result }));
@@ -1043,9 +1099,10 @@ function handleApprovalStatus(_req: http.IncomingMessage, res: http.ServerRespon
     return;
   }
 
-  // 没找到对应的待处理审批，返回 pending
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ status: 'pending', result: 'pending' }));
+  // 未找到 → 返回 404，让 Hook 识别"审批已丢失"并退出
+  logger.log(`[http] pendingApprovals 中未找到 taskId=${taskId}`);
+  res.writeHead(404, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'taskId not found', taskId }));
 }
 
 async function handleApprovalTimeout(req: http.IncomingMessage, res: http.ServerResponse, url: string): Promise<void> {
@@ -1073,6 +1130,7 @@ async function handleApprovalTimeout(req: http.IncomingMessage, res: http.Server
     const success = client.setApprovalResult(taskId, result, reason);
     if (success) {
       entry.status = result as 'allow-once' | 'deny';
+      pendingApprovals.delete(taskId);   // 处理完立即删除
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: true, taskId, result }));
     } else {
@@ -1101,17 +1159,26 @@ function handleHealthCheck(_req: http.IncomingMessage, res: http.ServerResponse)
 }
 
 // SSE 连接处理（Channel 模式）
-function handleSSEConnect(req: http.IncomingMessage, res: http.ServerResponse, url: string): void {
-  const ccId = decodeURIComponent(url.replace('/sse/', ''));
-  const entry = getCCRegistryEntry(ccId);
+function handleSSEConnect(req: http.IncomingMessage, res: http.ServerResponse, _url: string): void {
+  const urlObj = new URL(req.url!, 'http://localhost');
+  const targetCcId = decodeURIComponent(urlObj.pathname.replace('/sse/', ''));
+  const requestCcId = urlObj.searchParams.get('ccId');  // 请求方声明的身份
 
+  const entry = getCCRegistryEntry(targetCcId);
   if (!entry) {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
-    res.end(`CC ${ccId} not found`);
+    res.end(`CC ${targetCcId} not found`);
     return;
   }
 
-  const clientId = `${ccId}_${Date.now()}`;
+  // 请求方 ccId 必须与目标 ccId 一致
+  if (requestCcId && requestCcId !== targetCcId) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: `无权订阅 ccId: ${targetCcId}` }));
+    return;
+  }
+
+  const clientId = `${targetCcId}_${Date.now()}`;
 
   // 设置 SSE headers
   res.writeHead(200, {
@@ -1124,13 +1191,13 @@ function handleSSEConnect(req: http.IncomingMessage, res: http.ServerResponse, u
   // 注册 SSE 客户端
   sseClients.set(clientId, {
     res,
-    ccId,
+    ccId: targetCcId,
     robotName: entry.robotName,
   });
-  logger.log(`[http] SSE 客户端连接: clientId=${clientId}, ccId=${ccId}, robotName=${entry.robotName}`);
+  logger.log(`[http] SSE 客户端连接: clientId=${clientId}, ccId=${targetCcId}, robotName=${entry.robotName}`);
 
   // 发送连接确认
-  res.write(`event: connected\ndata: {"clientId":"${clientId}","ccId":"${ccId}"}\n\n`);
+  res.write(`event: connected\ndata: {"clientId":"${clientId}","ccId":"${targetCcId}"}\n\n`);
 
   // 心跳机制：每 15 秒发送注释行保持连接活跃
   const heartbeatInterval = setInterval(() => {
@@ -1191,10 +1258,29 @@ async function handleNotify(req: http.IncomingMessage, res: http.ServerResponse)
   }
 }
 
+// push_notification 允许的 method 白名单
+const PUSH_NOTIFICATION_ALLOWED_METHODS = new Set([
+  'notifications/message',
+  'notifications/progress',
+  'notifications/resources/updated',
+  'notifications/tools/list_changed',
+]);
+
 async function handlePushNotification(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
     const body = await readRequestBody(req);
     const { method, params } = JSON.parse(body);
+
+    // method 白名单校验
+    const effectiveMethod = method || 'notifications/message';
+    if (!PUSH_NOTIFICATION_ALLOWED_METHODS.has(effectiveMethod)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: `不允许的 method: ${effectiveMethod}`,
+        allowed: Array.from(PUSH_NOTIFICATION_ALLOWED_METHODS),
+      }));
+      return;
+    }
 
     if (transports.size === 0) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
@@ -1207,7 +1293,7 @@ async function handlePushNotification(req: http.IncomingMessage, res: http.Serve
     for (const [sessionId, entry] of transports) {
       try {
         await entry.server.server.notification({
-          method: method || 'notifications/message',
+          method: effectiveMethod,
           params: params || {}
         });
         sent++;
@@ -1217,7 +1303,7 @@ async function handlePushNotification(req: http.IncomingMessage, res: http.Serve
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ success: true, method: method || 'notifications/message', sessions: sent }));
+    res.end(JSON.stringify({ success: true, method: effectiveMethod, sessions: sent }));
   } catch (err) {
     logger.error('[http] 推送通知失败:', err);
     res.writeHead(500, { 'Content-Type': 'application/json' });

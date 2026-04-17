@@ -1,5 +1,85 @@
 # wecom-aibot-mcp 设计变更记录
 
+---
+
+## v2.4.7 - 2026-04-17
+
+### 修复：channel 模式 enter_headless_mode 本地写入 PermissionRequest hook
+
+**问题**：channel 模式下，`enter_headless_mode` 没有在本地写入 PermissionRequest hook，导致审批机制不生效。
+
+**修复**：channel 模式也在项目目录写入 PermissionRequest hook（`{项目}/.claude/settings.json`）。
+
+---
+
+## v2.4.6 - 2026-04-17
+
+### 修复：permission hook 支持远程 channel 模式审批
+
+**问题**：permission hook 脚本在 channel 模式（远程访问）下无法正确发起审批请求。
+
+**修复**：hook 脚本增加对远程 channel 模式的支持，能正确向远端 MCP Server 发送审批请求并轮询结果。
+
+---
+
+## v2.4.5 - 2026-04-17
+
+### 修复：--start/--debug 加入 skipEnsure，防止服务端启动覆盖配置
+
+**问题**：服务端启动时会覆盖已有的自定义 MCP 配置。
+
+**修复**：`--start` / `--debug` 启动时加入 `skipEnsure`，不再写入 `~/.claude.json`。
+
+---
+
+## v2.4.3～v2.4.4 - 2026-04-16
+
+### 功能：server 安装流程拆分 + HTTPS 支持
+
+- `--setup` 命令新增 server 角色安装，独立于 client 角色
+- HTTPS 模式支持：向导显示默认证书位置并校验文件存在
+- `--setup --channel` 远程安装修复：重新输入 URL、写入完整 MCP 配置
+
+---
+
+## v2.4.2 - 2026-04-15
+
+### 修复：审批请求偶尔无法捕获及重复发送
+
+**问题**：审批卡片在某些场景下发送后无响应，或重复发送。
+
+**修复**：修复 `handleApprovalRequest` 中的竞态条件和重复发送逻辑。
+
+---
+
+## v2.4.0～v2.4.1 - 2026-04-14
+
+### Hook 架构重构
+
+- TaskCompleted hook → Stop hook（Claude Code 只有 Stop 事件）
+- Hook 脚本路径统一到 `project-config.ts` 的常量定义
+- 不再注册全局 hook，只在项目级 `{项目}/.claude/settings.json` 配置
+- HTTP 模式写入 PermissionRequest + Stop hook；channel 模式只写入 PermissionRequest hook
+
+### ccId 注册表内存化
+
+- 废弃文件方案（`cc-registry.json` + 文件锁），改为内存 Map（`http-server.ts`）
+- 过期阈值从 14 天改为 30 分钟（`CCID_STALE_TIMEOUT`）
+- `registerCcId` 不再拒绝冲突，同名后注册覆盖前者
+
+### 项目配置文件重命名
+
+- `wecom-config.json` → `wecom-aibot.json`（`WechatModeConfig`）
+- 新增 `headless.json`（`HeadlessState`，Hook 脚本检查此文件）
+
+### 新增 --setup 命令
+
+新增交互式安装向导，区分 server/client/full 安装角色。
+
+---
+
+## v2.3.4 - 2026-04-14
+
 ## v2.1 - 2026-04-12
 
 ---

@@ -32,6 +32,18 @@ export interface WecomMessage {
 }
 
 // ============================================
+// 审批事件结构
+// ============================================
+
+export interface ApprovalEvent {
+  robotName: string;      // 机器人名称
+  taskId: string;         // 审批任务 ID
+  result: 'allow-once' | 'allow-always' | 'deny';  // 审批结果
+  ccId?: string;          // 关联的 ccId（用于 SSE 推送）
+  timestamp: number;      // 事件时间
+}
+
+// ============================================
 // 订阅计数器（替代 tap 计数）
 // ============================================
 const subscriberCount = new Map<string, number>();  // robotName → 订阅数
@@ -57,6 +69,7 @@ function decrementSubscriberCount(robotName: string): void {
 // ============================================
 
 const wecomMessage$ = new Subject<WecomMessage>();
+const approvalEvent$ = new Subject<ApprovalEvent>();
 
 // ============================================
 // 发布/订阅接口
@@ -70,10 +83,24 @@ export function publishWecomMessage(msg: WecomMessage): void {
 }
 
 /**
+ * 发布审批事件（由 WecomClient 调用）
+ */
+export function publishApprovalEvent(event: ApprovalEvent): void {
+  approvalEvent$.next(event);
+}
+
+/**
  * 订阅所有微信消息
  */
 export function subscribeWecomMessage(callback: (msg: WecomMessage) => void) {
   return wecomMessage$.subscribe(callback);
+}
+
+/**
+ * 订阅所有审批事件
+ */
+export function subscribeApprovalEvent(callback: (event: ApprovalEvent) => void) {
+  return approvalEvent$.subscribe(callback);
 }
 
 /**

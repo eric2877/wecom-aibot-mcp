@@ -30,8 +30,8 @@ const HEADLESS_INDEX_FILE = path.join(CONFIG_DIR, 'headless-index.json');
 // 项目状态文件路径
 const PROJECT_STATE_FILE = 'headless.json';
 
-// Hook 脚本路径
-const HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.sh');
+// 注意：Hook 配置由 tools/index.ts 通过 project-config.ts 的函数统一管理
+// PERMISSION_HOOK_SCRIPT_PATH 定义在 project-config.ts 中
 
 /**
  * 确保配置目录存在
@@ -108,8 +108,7 @@ export function enterHeadlessMode(projectDir: string, agentName?: string, robotN
     writeHeadlessIndex(index);
   }
 
-  // 3. 写入项目级 Hook 配置
-  configureProjectHook(projectDir);
+  // 3. Hook 配置由 tools/index.ts 的 enter_headless_mode 工具调用 addPermissionHook 管理
 
   return state;
 }
@@ -143,8 +142,7 @@ export function exitHeadlessMode(projectDir?: string): HeadlessState | null {
   const newIndex = index.filter(p => p !== state.projectDir);
   writeHeadlessIndex(newIndex);
 
-  // 3. 清除项目级 Hook 配置
-  clearProjectHook(state.projectDir);
+  // 3. Hook 配置由 tools/index.ts 的 exit_headless_mode 工具调用 removePermissionHook 管理
 
   return state;
 }
@@ -198,87 +196,14 @@ export function isHeadlessMode(projectDir?: string): boolean {
   return fs.existsSync(getProjectHeadlessFile(dir));
 }
 
-/**
- * 配置项目级 Hook
- */
-function configureProjectHook(projectDir: string): void {
-  const settingsDir = path.join(projectDir, '.claude');
-  const settingsPath = path.join(settingsDir, 'settings.json');
-
-  // 确保目录存在
-  if (!fs.existsSync(settingsDir)) {
-    fs.mkdirSync(settingsDir, { recursive: true });
-  }
-
-  // 读取现有配置
-  let settings: any = {};
-  if (fs.existsSync(settingsPath)) {
-    try {
-      const content = fs.readFileSync(settingsPath, 'utf-8');
-      settings = JSON.parse(content);
-    } catch (err) {
-      logger.error(`[headless] 读取 settings.json 失败: ${settingsPath}`, err);
-    }
-  }
-
-  // 设置 PermissionRequest hook
-  if (!settings.hooks) {
-    settings.hooks = {};
-  }
-
-  settings.hooks['PermissionRequest'] = [
-    {
-      matcher: '',
-      hooks: [
-        {
-          type: 'command',
-          command: HOOK_SCRIPT_PATH,
-          timeout: 600,
-        },
-      ],
-    },
-  ];
-
-  // 写入配置
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-  logger.log(`[headless] 已配置项目 Hook: ${settingsPath}`);
-}
-
-/**
- * 清除项目级 Hook 配置
- */
-function clearProjectHook(projectDir: string): void {
-  const settingsPath = path.join(projectDir, '.claude', 'settings.json');
-
-  if (!fs.existsSync(settingsPath)) {
-    return;
-  }
-
-  try {
-    const content = fs.readFileSync(settingsPath, 'utf-8');
-    const settings = JSON.parse(content);
-
-    if (settings.hooks && settings.hooks['PermissionRequest']) {
-      delete settings.hooks['PermissionRequest'];
-
-      // 如果 hooks 对象为空，删除整个 hooks 字段
-      if (Object.keys(settings.hooks).length === 0) {
-        delete settings.hooks;
-      }
-
-      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-      logger.log(`[headless] 已清除项目 Hook: ${settingsPath}`);
-    }
-  } catch (err) {
-    logger.error(`[headless] 清除项目 Hook 失败: ${settingsPath}`, err);
-  }
-}
+// 注意：configureProjectHook 和 clearProjectHook 已移除
+// Hook 配置由 tools/index.ts 通过 project-config.ts 的函数统一管理
 
 /**
  * 清理所有孤儿状态文件
  *
  * 扫描全局索引，检查每个项目的状态文件是否存在
- * 如果状态文件不存在，从索引中移除并清理 Hook 配置
+ * 如果状态文件不存在，从索引中移除
  */
 export function cleanupOrphanFiles(): void {
   ensureConfigDir();
@@ -292,8 +217,7 @@ export function cleanupOrphanFiles(): void {
     if (fs.existsSync(stateFilePath)) {
       validProjects.push(projectDir);
     } else {
-      // 状态文件不存在，清理 Hook 配置
-      clearProjectHook(projectDir);
+      // 状态文件不存在，仅从索引移除，Hook 清理由用户手动处理
       logger.log(`[headless] 清理孤儿项目: ${projectDir}`);
     }
   }

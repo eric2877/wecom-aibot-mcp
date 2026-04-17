@@ -206,7 +206,8 @@ function connectSSE(ccId?: string): void {
   sseConnected = true;
   sseCurrentCcId = ccId;
 
-  const sseUrl = ccId ? `${MCP_URL}/sse/${ccId}` : `${MCP_URL}/sse`;
+  // SSE URL 添加 ccId 查询参数用于授权验证
+  const sseUrl = ccId ? `${MCP_URL}/sse/${ccId}?ccId=${ccId}` : `${MCP_URL}/sse`;
   logChannel('Connecting to SSE', { url: sseUrl, ccId, mcpServerReady: mcpServer ? 'yes' : 'no' });
 
   sseAbortController = new AbortController();
