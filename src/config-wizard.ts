@@ -690,9 +690,21 @@ case "$TOOL_NAME" in
     if [[ "$CMD" == *"$PROJECT_DIR"* ]]; then
       # 明确包含项目路径 → 项目内
       IS_IN_PROJECT=1
-    elif echo "$CMD" | grep -qE '(^|[ \\t])/[a-zA-Z0-9]'; then
-      # 含有其他绝对路径（非项目路径）→ 项目外
-      IS_IN_PROJECT=0
+    elif echo "$CMD" | grep -qE '(^|[ \t])/[a-zA-Z0-9]'; then
+      # 含有绝对路径：过滤掉项目路径和安全系统目录，看是否还有真正的项目外路径
+      OUTSIDE=$(echo "$CMD" | grep -oE '(^| )/[a-zA-Z0-9][^ \t>|;&]*' | tr -d ' ' \
+        | grep -v "^$PROJECT_DIR" \
+        | grep -vE '^(/tmp/|/var/tmp/|/dev/null|/dev/stdin|/dev/stdout|/dev/stderr|/dev/fd/)')
+      if [[ -z "$OUTSIDE" ]]; then
+        # 绝对路径全是项目内或安全临时目录 → 以执行位置为准
+        log_debug "[$(date)] Only safe abs paths, checking EXEC_CWD: $EXEC_CWD"
+        if [[ "$EXEC_CWD" == "$PROJECT_DIR"* ]]; then
+          IS_IN_PROJECT=1
+        fi
+      else
+        log_debug "[$(date)] Outside abs path detected: $OUTSIDE"
+        IS_IN_PROJECT=0
+      fi
     else
       # 无绝对路径（相对路径或纯命令如 npm/git）→ 以执行位置为准
       log_debug "[$(date)] No absolute path, checking EXEC_CWD: $EXEC_CWD"
