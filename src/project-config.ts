@@ -28,6 +28,7 @@ export interface WechatModeConfig {
   autoApprove?: boolean;
   autoApproveTimeout?: number; // 超时时间（秒）
   heartbeatJobId?: string;  // 心跳定时任务 job ID（HTTP 模式，由 agent 写入）
+  mode?: 'channel' | 'http';  // 运行模式
 }
 
 // 配置文件路径

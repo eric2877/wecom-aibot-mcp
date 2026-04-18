@@ -534,6 +534,7 @@ npx @vrs-soft/wecom-aibot-mcp
         ccId: finalCcId,
         autoApprove: auto_approve,
         autoApproveTimeout: auto_approve_timeout,
+        mode,
       });
 
       // 注册 PID → projectDir（供 permission hook 通过进程树匹配项目）
