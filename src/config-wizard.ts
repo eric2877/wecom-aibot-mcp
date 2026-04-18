@@ -656,12 +656,14 @@ fi
 # 规则：删除命令→拒绝，项目内操作→允许，项目外操作→拒绝
 log_debug "[$(date)] Executing smart auto-approval"
 
-# 检查是否是删除命令
+# 检查是否是删除命令（仅匹配命令行本身，不匹配 heredoc 内容）
 IS_DELETE=0
 if [[ "$TOOL_NAME" == "Bash" ]]; then
-  CMD=$(echo "$TOOL_INPUT" | jq -r '.command // empty')
-  log_debug "[$(date)] Checking delete: CMD=$CMD"
-  if [[ "$CMD" == rm* ]] || [[ "$CMD" == *" rm "* ]] || [[ "$CMD" == *"-rf"* ]]; then
+  # 只取命令的第一行（避免 heredoc 内容干扰）
+  FIRST_LINE=$(echo "$TOOL_INPUT" | jq -r '.command // empty' | head -1)
+  log_debug "[$(date)] Checking delete: FIRST_LINE=$FIRST_LINE"
+  if [[ "$FIRST_LINE" == rm\\ * ]] || [[ "$FIRST_LINE" == rm ]] \\
+     || echo "$FIRST_LINE" | grep -qE '(^|[;&|(] *)(rm |rmdir )'; then
     IS_DELETE=1
   fi
 fi
@@ -683,10 +685,20 @@ IS_IN_PROJECT=0
 case "$TOOL_NAME" in
   Bash)
     CMD=$(echo "$TOOL_INPUT" | jq -r '.command // empty')
-    # 只有明确在项目目录内操作才认为是项目内操作
-    # 相对路径 ./ 或包含项目目录路径
-    if [[ "$CMD" == *"$PROJECT_DIR"* ]] || [[ "$CMD" == ./* ]]; then
+    EXEC_CWD=$(pwd)
+    log_debug "[$(date)] Bash CMD=$CMD, EXEC_CWD=$EXEC_CWD"
+    if [[ "$CMD" == *"$PROJECT_DIR"* ]]; then
+      # 明确包含项目路径 → 项目内
       IS_IN_PROJECT=1
+    elif echo "$CMD" | grep -qE '(^|[ \\t])/[a-zA-Z0-9]'; then
+      # 含有其他绝对路径（非项目路径）→ 项目外
+      IS_IN_PROJECT=0
+    else
+      # 无绝对路径（相对路径或纯命令如 npm/git）→ 以执行位置为准
+      log_debug "[$(date)] No absolute path, checking EXEC_CWD: $EXEC_CWD"
+      if [[ "$EXEC_CWD" == "$PROJECT_DIR"* ]]; then
+        IS_IN_PROJECT=1
+      fi
     fi
     ;;
   Write|Edit)
