@@ -319,7 +319,7 @@ export const STOP_HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'stop-hook.sh');
  */
 const PERMISSION_HOOK = {
   matcher: '',
-  hooks: [{ type: 'command', command: PERMISSION_HOOK_SCRIPT_PATH }],
+  hooks: [{ type: 'command', command: PERMISSION_HOOK_SCRIPT_PATH, timeout: 3600 }],
 };
 
 /**

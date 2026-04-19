@@ -446,7 +446,7 @@ npx @vrs-soft/wecom-aibot-mcp
       mode: z.enum(['channel', 'http']).optional().default('http')
         .describe('运行模式：channel=SSE推送(推荐)，http=轮询(兼容)'),
       auto_approve: z.boolean().optional().default(true).describe('超时自动审批（默认 true）'),
-      auto_approve_timeout: z.number().optional().default(600).describe('自动审批超时时间（秒，默认 600 即 10 分钟）'),
+      auto_approve_timeout: z.number().optional().default(300).describe('自动审批超时时间（秒，默认 300 即 5 分钟）'),
     },
     async ({ agent_name, cc_id, robot_id, project_dir, mode, auto_approve, auto_approve_timeout }, extra) => {
       // 获取项目目录
