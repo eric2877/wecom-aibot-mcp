@@ -55,6 +55,8 @@ vi.mock('../../src/project-config.js', () => ({
   removePermissionHook: vi.fn(),
   addStopHook: vi.fn(),
   removeStopHook: vi.fn(),
+  registerActiveProject: vi.fn(),
+  unregisterActiveProject: vi.fn(),
 }));
 
 vi.mock('../../src/message-bus.js', () => ({
