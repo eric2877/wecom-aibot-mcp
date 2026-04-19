@@ -45,6 +45,36 @@ interface ApprovalRecord {
   operationHash?: string;  // 操作哈希（用于去重）
   consumed?: boolean;      // 是否已消费（allow-once 只能消费一次）
   ccId?: string;  // 关联的 ccId（用于 SSE 推送审批结果）
+  detailUrl?: string;  // 卡片详情页 h5 链接（供排队重发复用）
+}
+
+// 审批卡片正文长度上限；超过则截断，余下由详情链接承接
+const APPROVAL_DESC_MAX = 200;
+
+// 构建审批卡片 payload（发首次审批 + 排队重发共用）
+function buildApprovalCard(title: string, description: string, taskId: string, detailUrl?: string) {
+  const truncated = description.length > APPROVAL_DESC_MAX
+    ? description.slice(0, APPROVAL_DESC_MAX) + '…（已截断，点击「详情」查看完整内容）'
+    : description;
+
+  const subTitle = truncated + `\n\n📋 TaskID: ${taskId}`;
+
+  const card = {
+    card_type: 'button_interaction',
+    main_title: { title },
+    sub_title_text: subTitle,
+    button_list: [
+      { text: '允许', key: 'allow-once', style: 1 },
+      { text: '默认', key: 'allow-always', style: 1 },
+      { text: '拒绝', key: 'deny', style: 2 },
+    ],
+    task_id: taskId,
+    ...(detailUrl
+      ? { horizontal_content_list: [{ keyname: '详情', value: '查看完整命令', type: 1 as const, url: detailUrl }] }
+      : {}),
+  };
+
+  return { msgtype: 'template_card' as const, template_card: card };
 }
 
 // 消息队列（用于等待用户回复）
@@ -437,7 +467,8 @@ class WecomClient extends EventEmitter {
     requestId: string,
     targetUser?: string,
     toolInput?: Record<string, unknown>,  // v3.0: 用于去重
-    ccId?: string                         // v3.0: 参与哈希，防止跨 CC 复用审批
+    ccId?: string,                        // v3.0: 参与哈希，防止跨 CC 复用审批
+    detailUrlBase?: string                // 详情页 h5 链接的 base（最终 URL = base/taskId）
   ): Promise<string> {
     const userId = targetUser || this.targetUserId;
 
@@ -457,6 +488,7 @@ class WecomClient extends EventEmitter {
 
     const taskId = `approval_${requestId}_${Date.now()}`;
     const operationHash = toolInput && toolName ? hashOperation(ccId ?? '', toolName, toolInput) : undefined;
+    const detailUrl = detailUrlBase ? `${detailUrlBase}/${taskId}` : undefined;
 
     // 始终存储审批记录（断线时也需要，让 Hook 能轮询到）
     this.approvals.set(taskId, {
@@ -468,6 +500,7 @@ class WecomClient extends EventEmitter {
       description,  // 保存审批请求原文
       operationHash,
       ccId,  // 保存 ccId，用于 SSE 推送审批结果
+      detailUrl, // 供排队重发时复用
     });
 
     // 断线时将审批请求加入队列，等待重连后发送
@@ -483,22 +516,7 @@ class WecomClient extends EventEmitter {
       return taskId;
     }
 
-    // 发送模板卡片（在 description 中显示 taskId 便于用户识别）
-    const displayDesc = description + `\n\n📋 TaskID: ${taskId}`;
-    await this.wsClient.sendMessage(userId, {
-      msgtype: 'template_card',
-      template_card: {
-        card_type: 'button_interaction',
-        main_title: { title },
-        sub_title_text: displayDesc,
-        button_list: [
-          { text: '允许', key: 'allow-once', style: 1 },
-          { text: '默认', key: 'allow-always', style: 1 },
-          { text: '拒绝', key: 'deny', style: 2 },
-        ],
-        task_id: taskId,
-      },
-    });
+    await this.wsClient.sendMessage(userId, buildApprovalCard(title, description, taskId, detailUrl));
 
     logger.log(`[wecom] 已发送审批请求到 ${userId}: ${taskId}`);
     return taskId;
@@ -524,22 +542,7 @@ class WecomClient extends EventEmitter {
 
     const userId = targetUser || this.targetUserId;
 
-    // 发送模板卡片（在 description 中显示 taskId 便于用户识别）
-    const displayDesc = description + `\n\n📋 TaskID: ${taskId}`;
-    await this.wsClient.sendMessage(userId, {
-      msgtype: 'template_card',
-      template_card: {
-        card_type: 'button_interaction',
-        main_title: { title },
-        sub_title_text: displayDesc,
-        button_list: [
-          { text: '允许', key: 'allow-once', style: 1 },
-          { text: '默认', key: 'allow-always', style: 1 },
-          { text: '拒绝', key: 'deny', style: 2 },
-        ],
-        task_id: taskId,
-      },
-    });
+    await this.wsClient.sendMessage(userId, buildApprovalCard(title, description, taskId, approval.detailUrl));
 
     logger.log(`[wecom] 已发送排队审批请求到 ${userId}: ${taskId}`);
     return true;

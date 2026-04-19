@@ -265,6 +265,7 @@ interface ApprovalEntry {
   description: string;
   robotName: string;
   ccId?: string;
+  projectDir?: string;  // 用于 h5 详情页展示
 }
 
 // 使用 Map 存储多个待处理审批（按 taskId 索引）
@@ -747,6 +748,11 @@ export async function startHttpServer(
         return;
       }
 
+      if (req.method === 'GET' && url.startsWith('/approval/')) {
+        handleApprovalDetail(req, res, url);
+        return;
+      }
+
       if (req.method === 'POST' && url.startsWith('/approval_timeout/')) {
         await handleApprovalTimeout(req, res, url);
         return;
@@ -1030,7 +1036,7 @@ async function handleApprovalRequest(req: http.IncomingMessage, res: http.Server
       return;
     }
 
-    const { tool_name, tool_input } = request;
+    const { tool_name, tool_input, projectDir } = request;
     let description = '';
     if (tool_name === 'Bash') {
       description = `执行命令: ${(tool_input?.command as string) || '(unknown)'}`;
@@ -1042,9 +1048,17 @@ async function handleApprovalRequest(req: http.IncomingMessage, res: http.Server
 
     const title = `【待审批】${tool_name}`;
     const requestId = `hook_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const taskId = await client.sendApprovalRequest(title, description, requestId, undefined, tool_input, ccId);
 
-    logger.log(`[http] 审批请求已发送: ${taskId} (机器人: ${robotName})`);
+    // 构建卡片"详情"链接的 base（同源，从本请求的 Host/scheme 推断）
+    const scheme = (req.socket as { encrypted?: boolean }).encrypted ? 'https' : 'http';
+    const host = req.headers.host || `127.0.0.1:${HTTP_PORT}`;
+    const detailUrlBase = `${scheme}://${host}/approval`;
+
+    const taskId = await client.sendApprovalRequest(
+      title, description, requestId, undefined, tool_input, ccId, detailUrlBase
+    );
+
+    logger.log(`[http] 审批请求已发送: ${taskId} (机器人: ${robotName}) 详情页: ${detailUrlBase}/${taskId}`);
 
     // 存储审批并启动超时计时器
     const entry: ApprovalEntry = {
@@ -1056,6 +1070,8 @@ async function handleApprovalRequest(req: http.IncomingMessage, res: http.Server
       tool_input,
       description,
       robotName,
+      ccId,
+      projectDir,
     };
 
     pendingApprovals.set(taskId, entry);
@@ -1067,6 +1083,88 @@ async function handleApprovalRequest(req: http.IncomingMessage, res: http.Server
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: (err as Error).message }));
   }
+}
+
+function escapeHtml(raw: string): string {
+  return raw
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function handleApprovalDetail(_req: http.IncomingMessage, res: http.ServerResponse, url: string): void {
+  const taskId = url.replace('/approval/', '');
+  const entry = pendingApprovals.get(taskId);
+
+  const respondHtml = (status: number, body: string) => {
+    res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(body);
+  };
+
+  if (!entry) {
+    respondHtml(404, `<!doctype html><meta charset="utf-8"><title>审批不存在</title>
+<body style="font-family:-apple-system,system-ui,sans-serif;padding:24px;color:#333">
+<h2>审批已过期或不存在</h2>
+<p>TaskID: <code>${escapeHtml(taskId)}</code></p>
+<p>此条记录可能已被清理（用户已决策或超时）。</p>
+</body>`);
+    return;
+  }
+
+  const inputPretty = (() => {
+    try { return JSON.stringify(entry.tool_input ?? {}, null, 2); }
+    catch { return String(entry.tool_input); }
+  })();
+
+  const statusLabel = {
+    'pending': '⏳ 待审批',
+    'allow-once': '✅ 已允许',
+    'deny': '❌ 已拒绝',
+  }[entry.status] ?? entry.status;
+
+  const html = `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>审批详情 · ${escapeHtml(entry.tool_name)}</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         max-width: 780px; margin: 0 auto; padding: 16px; color: #222; background: #f7f7f9; }
+  h1 { font-size: 20px; margin: 8px 0 16px; }
+  .meta { background: #fff; border-radius: 8px; padding: 12px 16px; margin-bottom: 12px;
+          box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  .meta .row { display: flex; padding: 4px 0; border-bottom: 1px dashed #eee; }
+  .meta .row:last-child { border-bottom: none; }
+  .meta .k { width: 96px; color: #888; flex-shrink: 0; }
+  .meta .v { flex: 1; word-break: break-all; }
+  pre { background: #fff; border-radius: 8px; padding: 12px 16px;
+        overflow-x: auto; font-size: 13px; line-height: 1.5;
+        box-shadow: 0 1px 2px rgba(0,0,0,.04); white-space: pre-wrap; word-break: break-all; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px;
+         background: #eef; color: #446; }
+  footer { color: #aaa; font-size: 12px; text-align: center; margin-top: 16px; }
+</style>
+</head>
+<body>
+<h1>审批详情</h1>
+<div class="meta">
+  <div class="row"><div class="k">状态</div><div class="v">${statusLabel}</div></div>
+  <div class="row"><div class="k">工具</div><div class="v"><span class="tag">${escapeHtml(entry.tool_name)}</span></div></div>
+  <div class="row"><div class="k">概要</div><div class="v">${escapeHtml(entry.description)}</div></div>
+  ${entry.projectDir ? `<div class="row"><div class="k">项目目录</div><div class="v">${escapeHtml(entry.projectDir)}</div></div>` : ''}
+  ${entry.ccId ? `<div class="row"><div class="k">CC</div><div class="v">${escapeHtml(entry.ccId)}</div></div>` : ''}
+  <div class="row"><div class="k">TaskID</div><div class="v"><code>${escapeHtml(taskId)}</code></div></div>
+</div>
+<h3>完整参数</h3>
+<pre>${escapeHtml(inputPretty)}</pre>
+<footer>此页面随审批记录自动过期清理 · 请回到企业微信卡片点击审批按钮</footer>
+</body>
+</html>`;
+
+  respondHtml(200, html);
 }
 
 function handleApprovalStatus(_req: http.IncomingMessage, res: http.ServerResponse, url: string): void {
