@@ -374,10 +374,13 @@ async function main() {
   // --channel: 作为 Channel MCP 代理运行，不应改写全局配置
   // --reinstall / --http-only: 有自己的处理逻辑
   // --version / -v: 只查版本，不写配置
+  // --stop / --status / --list / --clean-cache / --set-token / --config: 管理命令，不应改写配置
   const skipEnsure = args.includes('--reinstall') || args.includes('--http-only') ||
     args.includes('--setup') || args.includes('--channel') ||
     args.includes('--version') || args.includes('-v') ||
-    args.includes('--start') || args.includes('--debug');
+    args.includes('--start') || args.includes('--debug') ||
+    args.includes('--stop') || args.includes('--status') || args.includes('--list') ||
+    args.includes('--clean-cache') || args.includes('--set-token') || args.includes('--config');
   if (!skipEnsure) {
     // 强制覆盖所有全局配置（不依赖智能体）
     ensureGlobalConfigs(installMode);
