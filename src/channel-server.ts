@@ -17,7 +17,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { VERSION } from './config-wizard.js';
-import { addPermissionHook } from './project-config.js';
+import { addPermissionHook, registerActiveProject, unregisterActiveProject } from './project-config.js';
 
 const MCP_URL = process.env.MCP_URL || 'http://127.0.0.1:18963';
 const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
@@ -513,6 +513,10 @@ function registerChannelTools(server: McpServer) {
               const hookResult = addPermissionHook(localProjectDir);
               logChannel('本地 PermissionRequest hook 已写入', { path: hookResult.path, success: hookResult.success });
 
+              // 注册本地 PID → projectDir（供本地 permission-hook.sh 通过进程树匹配项目）
+              registerActiveProject(process.ppid ?? process.pid, localProjectDir);
+              logChannel('本地 active-projects 已注册', { pid: process.ppid ?? process.pid, projectDir: localProjectDir });
+
               // Channel 模式：过滤 heartbeat 信息，简化消息
               if (mode === 'channel' || parsed.mode === 'channel') {
                 delete parsed.heartbeat;  // Channel 模式不需要 heartbeat loop
@@ -542,6 +546,8 @@ function registerChannelTools(server: McpServer) {
       project_dir: z.string().optional().describe('项目目录路径（用于更新配置文件）'),
     },
     async ({ cc_id, project_dir }) => {
+      const localProjectDir = project_dir || process.cwd();
+
       // 断开 SSE 连接（abort 后重连逻辑不会触发）
       if (sseAbortController) {
         sseAbortController.abort();
@@ -551,7 +557,11 @@ function registerChannelTools(server: McpServer) {
         logChannel('SSE disconnected', { cc_id });
       }
 
-      return forwardToHttpMcp('exit_headless_mode', { cc_id, project_dir: project_dir || process.cwd() });
+      // 注销本地 active-projects 记录
+      unregisterActiveProject(localProjectDir);
+      logChannel('本地 active-projects 已注销', { projectDir: localProjectDir });
+
+      return forwardToHttpMcp('exit_headless_mode', { cc_id, project_dir: localProjectDir });
     }
   );
 
