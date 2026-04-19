@@ -724,7 +724,7 @@ export async function startChannelServer(): Promise<void> {
       tools: {},
     },
     // 告知 Claude 如何处理 channel 事件
-    instructions: '企业微信消息通过 <channel> 标签推送。属性说明：from=发送者userid, chatid=会话ID(单聊=用户ID,群聊=群ID), chattype=single|group, cc_id=当前会话标识。收到消息后：1) 发送确认 send_message(cc_id, "收到...", target_user=chatid)；2) 处理任务；3) 发送结果 send_message(cc_id, "【完成】...", target_user=chatid)。',
+    instructions: '企业微信消息通过 <channel> 标签推送。属性说明：from=发送者userid, chatid=会话ID(单聊=用户ID,群聊=群ID), chattype=single|group, cc_id=当前会话标识。【强制规则】收到任何用户消息后，必须先执行步骤1再执行步骤2，禁止跳过：1) 立即发送确认 send_message(cc_id, "收到，正在处理...", target_user=chatid)；2) 处理任务；3) 发送结果 send_message(cc_id, "【完成】...", target_user=chatid)。',
   });
 
   // 注册工具
