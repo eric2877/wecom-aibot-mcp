@@ -450,22 +450,6 @@ MCP_PORT=18963
 # 先保存输入（只能读一次）
 INPUT=$(cat)
 
-# 全局状态（供信号处理器使用）
-TASK_ID=""
-AUTH_ARGS=()
-
-# 信号处理：Claude 因 hook 超时终止进程时，输出 deny 确保不卡死
-_on_sigterm() {
-  if [[ -n "\$TASK_ID" && -n "\$MCP_BASE_URL" ]]; then
-    curl -s -m 5 -X POST "\$MCP_BASE_URL/approval_timeout/\$TASK_ID" "\${AUTH_ARGS[@]}" \\
-      -H "Content-Type: application/json" \\
-      -d '{"result":"deny","reason":"hook进程被中断"}' > /dev/null 2>&1 &
-  fi
-  printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"审批超时被中断，请重新执行命令"}}}'
-  exit 0
-}
-trap '_on_sigterm' TERM INT
-
 # 日志输出：--debug 模式下输出到 stderr，否则静默
 DEBUG_FILE="$HOME/.wecom-aibot-mcp/debug"
 log_debug() {
