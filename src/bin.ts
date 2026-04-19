@@ -10,7 +10,7 @@
  * - 不再使用 projectDir
  */
 
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -196,44 +196,82 @@ function isServerRunning(): boolean {
   }
 }
 
-// 停止服务
-function stopServer(): boolean {
-  if (!fs.existsSync(PID_FILE)) {
-    console.log('[mcp] 服务未运行');
-    return false;
-  }
+// 通过端口查找进程 PID（fallback，当 PID 文件不存在时）
+function findPidByPort(port: number): number | null {
+  try {
+    // Linux: ss -tlnp | grep :18963
+    const output = execSync(`ss -tlnp 2>/dev/null | grep ':${port}'`, { encoding: 'utf-8' });
+    const match = output.match(/pid=(\d+)/);
+    if (match) return parseInt(match[1]);
+  } catch { /* ignore */ }
 
   try {
-    const pid = parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim());
-    process.kill(pid, 'SIGTERM');
+    // macOS: lsof -ti :18963
+    const output = execSync(`lsof -ti :${port} 2>/dev/null`, { encoding: 'utf-8' }).trim();
+    if (output) return parseInt(output.split('\n')[0]);
+  } catch { /* ignore */ }
 
-    // 等待进程退出
-    let attempts = 0;
-    while (attempts < 10) {
-      try {
-        process.kill(pid, 0);
-        // 进程还存在，等待
-        setTimeout(() => {}, 500);
-        attempts++;
-      } catch {
-        // 进程已退出
-        break;
-      }
-    }
+  return null;
+}
 
-    // 进程退出后删除 PID 文件（如果还存在）
-    if (fs.existsSync(PID_FILE)) {
+// 停止服务
+function stopServer(): boolean {
+  let pid: number | null = null;
+
+  // 优先从 PID 文件获取
+  if (fs.existsSync(PID_FILE)) {
+    pid = parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim());
+
+    // 检查进程是否存在
+    try {
+      process.kill(pid, 0);
+    } catch {
+      // PID 文件残留但进程已死，清理 PID 文件
+      console.log('[mcp] PID 文件残留，进程已退出，清理中...');
       fs.unlinkSync(PID_FILE);
+      pid = null;
     }
+  }
+
+  // PID 文件不存在或残留：通过端口查找
+  if (pid === null) {
+    pid = findPidByPort(HTTP_PORT);
+    if (pid === null) {
+      console.log('[mcp] 服务未运行');
+      return false;
+    }
+    console.log(`[mcp] 通过端口 ${HTTP_PORT} 找到进程 PID: ${pid}`);
+  }
+
+  // 发送 SIGTERM
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    // ESRCH: 进程不存在，清理即可
+    if (fs.existsSync(PID_FILE)) fs.unlinkSync(PID_FILE);
     console.log('[mcp] 服务已停止');
     return true;
-  } catch (err) {
-    logger.error('[mcp] 停止服务失败:', err);
-    if (fs.existsSync(PID_FILE)) {
-      fs.unlinkSync(PID_FILE);
-    }
-    return false;
   }
+
+  // 等待进程退出（最多 5 秒）
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+      // 进程还在，同步等待 100ms
+      const waitUntil = Date.now() + 100;
+      while (Date.now() < waitUntil) { /* busy wait */ }
+    } catch {
+      break;
+    }
+  }
+
+  // 清理 PID 文件
+  if (fs.existsSync(PID_FILE)) {
+    fs.unlinkSync(PID_FILE);
+  }
+  console.log('[mcp] 服务已停止');
+  return true;
 }
 
 // 等待连接验证（用于配置向导验证凭证）
