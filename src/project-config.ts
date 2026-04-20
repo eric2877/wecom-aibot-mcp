@@ -337,7 +337,6 @@ const STOP_HOOK = {
 const DEFAULT_MCP_ALLOW = [
   'mcp__wecom-aibot__*',
   'mcp__wecom-aibot-channel__*',
-  'mcp__wecom-doc__*',
 ];
 
 /**
