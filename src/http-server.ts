@@ -620,9 +620,9 @@ export async function startHttpServer(
 
       const url = req.url || '/';
 
-      // Auth token 校验（排除 /health）
+      // Auth token 校验（排除 /health 和 /approval/ 详情页，后者由浏览器直接访问）
       const authToken = getAuthToken();
-      if (authToken && url !== '/health') {
+      if (authToken && url !== '/health' && !url.startsWith('/approval/')) {
         const authHeader = req.headers['authorization'];
         if (authHeader !== `Bearer ${authToken}`) {
           res.writeHead(401, { 'Content-Type': 'application/json' });
