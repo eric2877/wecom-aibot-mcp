@@ -443,7 +443,7 @@ function writeHookScript() {
 # HTTP Transport 版本
 #
 # 固定端口: 18963
-# 检查 $(pwd)/.claude/wecom-aibot.json 的 wechatMode 和 autoApprove 字段
+# 通过 PID 树查 ~/.wecom-aibot-mcp/active-projects.json 匹配项目，读 wechatMode 开关
 
 MCP_PORT=18963
 
@@ -624,37 +624,10 @@ while [[ $POLL_COUNT -lt $MAX_POLL ]]; do
   fi
 done
 
-log_debug "[$(date)] Timeout reached, checking autoApprove setting"
+log_debug "[$(date)] Timeout reached, executing smart auto-approval"
 
-# 超时处理：根据 autoApprove 决定行为
-# autoApprove: false → 继续等待（无限轮询）
-# autoApprove: true → 智能代批
-
-AUTO_APPROVE=$(jq -r '.autoApprove // false' "$CONFIG_FILE" 2>/dev/null)
-log_debug "[$(date)] autoApprove: $AUTO_APPROVE"
-if [[ "$AUTO_APPROVE" != "true" ]]; then
-  log_debug "[$(date)] autoApprove off, entering infinite wait"
-  # autoApprove 关闭，继续无限等待用户响应
-  while true; do
-    sleep 2
-    STATUS=$(curl -s -m 3 "\${AUTH_ARGS[@]}" "$MCP_BASE_URL/approval_status/$TASK_ID" 2>/dev/null)
-    RESULT=$(echo "$STATUS" | jq -r '.result // empty')
-
-    if [[ "$RESULT" == "allow-once" || "$RESULT" == "allow-always" ]]; then
-      log_debug "[$(date)] Approved by user (infinite wait)"
-      printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
-      exit 0
-    elif [[ "$RESULT" == "deny" ]]; then
-      log_debug "[$(date)] Denied by user (infinite wait)"
-      printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"用户拒绝"}}}'
-      exit 0
-    fi
-  done
-fi
-
-# autoApprove: true，执行智能代批
+# 超时处理：必须立即决策，Claude Code 的 hook timeout 会杀掉阻塞进程。
 # 规则：删除命令→拒绝，项目内操作→允许，项目外操作→拒绝
-log_debug "[$(date)] Executing smart auto-approval"
 
 # 检查是否是删除命令（仅匹配命令行本身，不匹配 heredoc 内容）
 IS_DELETE=0
@@ -758,7 +731,7 @@ function writeStopHookScript() {
 # HTTP 模式使用：阻止 Claude 停止，提示调用 get_pending_messages 恢复轮询
 #
 # 固定端口: 18963
-# 检查 $(pwd)/.claude/wecom-aibot.json 的 wechatMode 和 autoApprove 字段
+# 只检查 $(pwd)/.claude/wecom-aibot.json 的 wechatMode 字段
 
 MCP_PORT=18963
 
@@ -792,14 +765,6 @@ WECHAT_MODE=$(jq -r '.wechatMode // false' "$CONFIG_FILE" 2>/dev/null)
 log_debug "[$(date)] wechatMode: $WECHAT_MODE"
 if [[ "$WECHAT_MODE" != "true" ]]; then
   log_debug "[$(date)] wechatMode not true, exit 0 (allow stop)"
-  exit 0
-fi
-
-# 检查 autoApprove 是否为 true（需要恢复轮询的模式）
-AUTO_APPROVE=$(jq -r '.autoApprove // false' "$CONFIG_FILE" 2>/dev/null)
-log_debug "[$(date)] autoApprove: $AUTO_APPROVE"
-if [[ "$AUTO_APPROVE" != "true" ]]; then
-  log_debug "[$(date)] autoApprove not true, exit 0 (allow stop)"
   exit 0
 fi
 
@@ -842,7 +807,7 @@ if [[ -z "$CC_ID" ]]; then
   exit 0
 fi
 
-# 处于微信模式且 autoApprove 为 true，需要恢复轮询
+# 处于微信模式，需要恢复轮询
 # 使用 exit code 2 阻止停止，并提示 Claude 调用 MCP 工具
 log_debug "[$(date)] ✅ WeChat mode active, blocking stop to resume polling"
 log_debug "[$(date)] ccId=$CC_ID, will prompt Claude to call get_pending_messages"

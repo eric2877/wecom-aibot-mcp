@@ -1,24 +1,4 @@
-/**
- * MCP 工具注册入口
- *
- * 注册以下工具：
- * - send_message: 发送消息
- * - send_approval_request: 发送审批请求
- * - get_approval_result: 获取审批结果
- * - check_connection: 检查连接状态
- * - get_pending_messages: 获取待处理消息
- * - get_setup_guide: 获取安装指南
- * - add_robot_config: 添加机器人配置
- * - list_robots: 列出所有机器人
- * - get_robot_status: 获取机器人状态
- * - enter_headless_mode: 进入微信模式
- * - exit_headless_mode: 退出微信模式
- * - detect_user_from_message: 从消息识别用户
- *
- * v2.0 架构变更：
- * - 不再使用 projectDir 参数
- * - 从 Session 自动获取 robotName
- */
+// MCP 工具注册入口。完整工具清单见 design/tools-api.md。
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
@@ -37,11 +17,6 @@ import {
   getProjectDirByCcId,
   generateCcId,
 } from '../http-server.js';
-import {
-  enterHeadlessMode,
-  exitHeadlessMode,
-  isHeadlessMode,
-} from '../headless-state.js';
 import { subscribeWecomMessageByCcId, WecomMessage } from '../message-bus.js';
 import { updateWechatModeConfig, loadWechatModeConfig, addPermissionHook, removePermissionHook, addStopHook, removeStopHook, registerActiveProject, unregisterActiveProject } from '../project-config.js';
 import { logger } from '../logger.js';
@@ -445,10 +420,9 @@ npx @vrs-soft/wecom-aibot-mcp
       project_dir: z.string().optional().describe('项目目录路径（用于写入配置文件）'),
       mode: z.enum(['channel', 'http']).optional().default('http')
         .describe('运行模式：channel=SSE推送(推荐)，http=轮询(兼容)'),
-      auto_approve: z.boolean().optional().default(true).describe('超时自动审批（默认 true）'),
-      auto_approve_timeout: z.number().optional().default(300).describe('自动审批超时时间（秒，默认 300 即 5 分钟）'),
+      auto_approve_timeout: z.number().optional().default(300).describe('超时自动决策等待时间（秒，默认 300 即 5 分钟）'),
     },
-    async ({ agent_name, cc_id, robot_id, project_dir, mode, auto_approve, auto_approve_timeout }, extra) => {
+    async ({ agent_name, cc_id, robot_id, project_dir, mode, auto_approve_timeout }, extra) => {
       // 获取项目目录
       const projectDir = project_dir || process.cwd();
 
@@ -532,7 +506,6 @@ npx @vrs-soft/wecom-aibot-mcp
         wechatMode: true,
         robotName: selectedRobot.name,
         ccId: finalCcId,
-        autoApprove: auto_approve,
         autoApproveTimeout: auto_approve_timeout,
         mode,
       });

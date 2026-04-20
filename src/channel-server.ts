@@ -483,10 +483,9 @@ function registerChannelTools(server: McpServer) {
       project_dir: z.string().optional().describe('项目目录路径（用于写入配置文件）'),
       mode: z.enum(['channel', 'http']).optional().default('http')
         .describe('运行模式：channel=SSE推送(推荐)，http=轮询(兼容)'),
-      auto_approve: z.boolean().optional().default(true).describe('超时自动审批（默认 true）'),
-      auto_approve_timeout: z.number().optional().default(600).describe('自动审批超时时间（秒，默认 600 即 10 分钟）'),
+      auto_approve_timeout: z.number().optional().default(600).describe('超时自动决策等待时间（秒，默认 600 即 10 分钟）'),
     },
-    async ({ agent_name, cc_id, robot_id, project_dir, mode, auto_approve, auto_approve_timeout }) => {
+    async ({ agent_name, cc_id, robot_id, project_dir, mode, auto_approve_timeout }) => {
       // 转发请求
       const result = await forwardToHttpMcp('enter_headless_mode', {
         agent_name,
@@ -494,7 +493,6 @@ function registerChannelTools(server: McpServer) {
         robot_id,
         project_dir: project_dir || process.cwd(),
         mode,
-        auto_approve,
         auto_approve_timeout,
       });
 
