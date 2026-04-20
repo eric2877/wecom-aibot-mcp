@@ -331,6 +331,16 @@ const STOP_HOOK = {
 };
 
 /**
+ * 进入微信模式时默认预批的 MCP 工具通配（避免每次都走 hook 增加延迟）
+ * hook 本身对 mcp__* 也会放行，加入 allow 只是让 Claude Code 跳过 hook。
+ */
+const DEFAULT_MCP_ALLOW = [
+  'mcp__wecom-aibot__*',
+  'mcp__wecom-aibot-channel__*',
+  'mcp__wecom-doc__*',
+];
+
+/**
  * 添加 PermissionRequest hook 到项目 settings.json
  */
 export function addPermissionHook(projectDir: string): { success: boolean; path: string } {
@@ -358,6 +368,16 @@ export function addPermissionHook(projectDir: string): { success: boolean; path:
     settings.hooks = {};
   }
   (settings.hooks as Record<string, unknown>).PermissionRequest = [PERMISSION_HOOK];
+
+  // 合并默认 MCP 通配到 permissions.allow（去重保序）
+  const perms = (settings.permissions as Record<string, unknown> | undefined) ?? {};
+  const existingAllow = Array.isArray(perms.allow) ? (perms.allow as string[]) : [];
+  const merged = [...existingAllow];
+  for (const entry of DEFAULT_MCP_ALLOW) {
+    if (!merged.includes(entry)) merged.push(entry);
+  }
+  perms.allow = merged;
+  settings.permissions = perms;
 
   // 写入配置
   try {
