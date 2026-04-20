@@ -226,6 +226,23 @@ function connectSSE(ccId?: string): void {
     if (!res.ok) {
       logChannel('SSE connect failed', { status: res.status });
       sseConnected = false;
+      // server 重启后 ccId 注册丢失（404），需重新注册再重连
+      if (!sseAbortController?.signal.aborted) {
+        const delay = res.status === 404 ? 5000 : 3000;
+        logChannel(`SSE 连接失败(${res.status})，${delay / 1000} 秒后重连`, { ccId });
+        setTimeout(async () => {
+          httpSessionId = null;  // 重置 session，防止使用 server 重启前的旧 session
+          if (ccId) {
+            // 重新调 enter_headless_mode 恢复 server 端 ccId 注册
+            await forwardToHttpMcp('enter_headless_mode', {
+              cc_id: ccId,
+              mode: 'channel',
+              project_dir: process.cwd(),
+            }).catch((e) => logChannel('重注册 ccId 失败', { error: String(e) }));
+          }
+          connectSSE(ccId);
+        }, delay);
+      }
       return;
     }
 
@@ -256,7 +273,7 @@ function connectSSE(ccId?: string): void {
         // 非主动断开时自动重连
         if (!sseAbortController?.signal.aborted) {
           logChannel('SSE 断线，3 秒后重连', { ccId });
-          setTimeout(() => connectSSE(ccId), 3000);
+          setTimeout(() => { httpSessionId = null; connectSSE(ccId); }, 3000);
         }
         break;
       }
@@ -331,7 +348,7 @@ function connectSSE(ccId?: string): void {
     // 非主动断开时自动重连
     if (!sseAbortController?.signal.aborted) {
       logChannel('SSE 出错，3 秒后重连', { ccId });
-      setTimeout(() => connectSSE(ccId), 3000);
+      setTimeout(() => { httpSessionId = null; connectSSE(ccId); }, 3000);
     }
   });
 }
