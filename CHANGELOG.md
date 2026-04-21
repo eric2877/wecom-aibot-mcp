@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.19] - 2026-04-21
+
+### Fixed
+- Approval result message no longer shows duplicate label prefix (e.g. `执行命令: 执行命令: ...`) — the label is now output once from the stored description
+- Timeout auto-approval result no longer shows `**执行命令**` header before the command block
+- Approval card subtitle no longer shows `📋 TaskID` — taskId remains visible on the detail page
+
 ## [2.4.17] - 2026-04-21
 
 ### Fixed
