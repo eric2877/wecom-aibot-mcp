@@ -58,6 +58,10 @@ let sseAbortController: AbortController | null = null;
 let mcpServer: McpServer | null = null;
 let sseCurrentCcId: string | undefined = undefined;
 
+// 保存首次 enter_headless_mode 的参数，重连时原样复用
+let sseRobotId: string | undefined = undefined;
+let sseProjectDir: string | undefined = undefined;
+
 // HTTP MCP session ID（需要在转发请求前初始化）
 let httpSessionId: string | null = null;
 
@@ -236,8 +240,9 @@ function connectSSE(ccId?: string): void {
             // 重新调 enter_headless_mode 恢复 server 端 ccId 注册
             await forwardToHttpMcp('enter_headless_mode', {
               cc_id: ccId,
+              robot_id: sseRobotId,
               mode: 'channel',
-              project_dir: process.cwd(),
+              project_dir: sseProjectDir || process.cwd(),
             }).catch((e) => logChannel('重注册 ccId 失败', { error: String(e) }));
           }
           connectSSE(ccId);
@@ -521,6 +526,9 @@ function registerChannelTools(server: McpServer) {
             const parsed = JSON.parse(content[0].text);
             if (parsed.ccId) {
               logChannel('Got ccId, connecting SSE', { ccId: parsed.ccId, mode });
+              // 保存连接参数供重连复用
+              sseRobotId = robot_id || parsed.robotName;
+              sseProjectDir = project_dir || process.cwd();
               connectSSE(parsed.ccId);
 
               // Channel 模式：在本地项目写入 PermissionRequest hook
