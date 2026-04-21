@@ -297,9 +297,9 @@ function initMcpServer(): void {
     handleWecomMessage(msg);
   });
 
-  // 定时清理过期审批条目（每 5 分钟清理超过 15 分钟的条目）
+  // 定时清理过期审批条目（每 5 分钟清理超过 30 分钟的条目）
   setInterval(() => {
-    const cutoff = Date.now() - 15 * 60 * 1000;
+    const cutoff = Date.now() - 30 * 60 * 1000;
     let cleaned = 0;
     for (const [id, entry] of pendingApprovals) {
       if (entry.createdAt < cutoff) {
@@ -1160,7 +1160,7 @@ function handleApprovalDetail(_req: http.IncomingMessage, res: http.ServerRespon
 </div>
 <h3>完整参数</h3>
 <pre>${escapeHtml(inputPretty)}</pre>
-<footer>此页面随审批记录自动过期清理 · 请回到企业微信卡片点击审批按钮</footer>
+<footer>审批记录保留 30 分钟后自动清理 · 请回到企业微信卡片点击审批按钮</footer>
 </body>
 </html>`;
 
@@ -1228,7 +1228,11 @@ async function handleApprovalTimeout(req: http.IncomingMessage, res: http.Server
     const success = client.setApprovalResult(taskId, result, reason);
     if (success) {
       entry.status = result as 'allow-once' | 'deny';
-      pendingApprovals.delete(taskId);   // 处理完立即删除
+      // 保留 30 分钟供事后查看详情，不立即删除
+      setTimeout(() => {
+        pendingApprovals.delete(taskId);
+        logger.log(`[http] 超时审批条目已清理: taskId=${taskId}`);
+      }, 30 * 60 * 1000);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: true, taskId, result }));
     } else {
