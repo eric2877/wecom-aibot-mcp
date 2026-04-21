@@ -6,9 +6,11 @@
 
 **核心功能**：
 - 远程审批敏感操作（Bash/Write/Edit），微信卡片一键通过/拒绝
+- 审批卡片支持「查看完整命令」详情链接，浏览器直接打开查看完整内容
 - 离开电脑后通过微信下达任务，实时接收进度通知
 - 支持群聊 @机器人，多机器人、多用户并发
 - 代理企业微信文档 MCP，支持文档和智能表格操作
+- Channel 模式断线后自动重连，服务端重启后无需手动恢复
 
 ---
 
@@ -28,6 +30,7 @@
 
 - Claude 执行每一步操作前发送审批请求到微信
 - 你在手机上点击**允许 / 拒绝**，Claude 实时响应
+- 命令过长时点击卡片「查看完整命令」在浏览器中查看完整内容
 - 设置超时自动审批（`autoApproveTimeout`），无人值守时自动处理项目内操作
 
 ### 场景二：微信直接下达任务
@@ -93,6 +96,7 @@ npx @vrs-soft/wecom-aibot-mcp --stop    # 停止
 | 消息接收 | SSE 自动推送唤醒 | `/loop` 心跳轮询 |
 | 响应延迟 | 即时 | ≤1 分钟 |
 | 账号要求 | claude.ai 直连 | 任意（含 API 中转）|
+| 断线恢复 | 自动重连（含服务端重启） | 心跳自动恢复 |
 
 使用微信模式时告诉 Claude「**现在开始通过微信联系**」，会自动触发 `headless-mode` skill。
 
@@ -134,12 +138,18 @@ curl http://127.0.0.1:18963/health
 # Channel 不可用（"Channels are not currently available"）
 # → 使用 API Key 或中转服务，改用 HTTP 模式
 
+# Channel 断线后无法重连
+# → 服务端重启后 Channel 会在 5 秒内自动重连并重新注册，无需手动操作
+
 # 端口占用
 lsof -i :18963 | grep LISTEN
 kill <PID>
 
 # 清理断线残留的 ccId 注册
 npx @vrs-soft/wecom-aibot-mcp --clean-cache
+
+# 审批详情页打开显示 Unauthorized
+# → 确认使用 v2.4.14 及以上版本，详情页已排除鉴权
 ```
 
 ---

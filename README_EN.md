@@ -8,32 +8,40 @@ Enterprise WeChat AI Bot MCP Service - Remote Approval Channel for Claude Code
 
 ## Features
 
-- 🔐 **Remote Approval**: Approve/deny sensitive operations via WeChat cards
+- 🔐 **Remote Approval**: Approve/deny sensitive operations (Bash/Write/Edit) via WeChat cards
+- 🔍 **Full Command View**: Approval cards include a detail link — open in browser to view the complete command
 - 💬 **Bidirectional Communication**: Real-time task progress notifications
 - 📱 **Headless Mode**: Switch to WeChat interaction when leaving terminal
-- 🤖 **Multi-bot Support**: Multiple bots for team scenarios
-- 🌐 **HTTP Transport**: HTTP-based MCP for shared service instances
+- 🤖 **Multi-bot Support**: Multiple bots for team and group chat scenarios
+- 🌐 **Remote Deployment**: MCP server can be deployed on a remote host with Bearer Token auth
+- 🔄 **Auto-reconnect**: Channel mode automatically reconnects after network interruption or server restart
 
 ## Architecture
 
 ```
-┌─────────────────┐      MCP (HTTP)       ┌──────────────────┐
-│  Claude Code    │  ──────────────────▶  │  wecom-aibot-mcp │
-│  (MCP Client)   │  ◀──────────────────  │  MCP Server      │
-└─────────────────┘                       └──────────────────┘
-                                                   │
-                                           WebSocket Connection
-                                                   ↓
-                                          ┌───────────────────┐
-                                          │  Enterprise WeChat │
-                                          │  Server            │
-                                          └───────────────────┘
-                                                   │
-                                                   ↓
-                                          ┌───────────────────┐
-                                          │  User WeChat Client│
-                                          │  (Mobile/Desktop)  │
-                                          └───────────────────┘
+┌─────────────────┐      MCP (stdio)      ┌──────────────────────┐
+│  Claude Code    │  ──────────────────▶  │  Channel MCP Proxy   │
+│  (MCP Client)   │  ◀──────────────────  │  (local, SSE client) │
+└─────────────────┘                       └──────────────────────┘
+                                                    │ SSE
+                                                    ▼
+                                          ┌─────────────────────┐
+                                          │  wecom-aibot-mcp    │
+                                          │  HTTP MCP Server    │
+                                          │  (local or remote)  │
+                                          └─────────────────────┘
+                                                    │
+                                            WebSocket Connection
+                                                    ↓
+                                          ┌─────────────────────┐
+                                          │  Enterprise WeChat  │
+                                          └─────────────────────┘
+                                                    │
+                                                    ↓
+                                          ┌─────────────────────┐
+                                          │  User WeChat Client │
+                                          │  (Mobile/Desktop)   │
+                                          └─────────────────────┘
 ```
 
 ## Installation
@@ -58,56 +66,57 @@ Enterprise WeChat AI Bot MCP Service - Remote Approval Channel for Claude Code
 ### Step 2: Run Configuration Wizard
 
 ```bash
-npx @vrs-soft/wecom-aibot-mcp
+npx @vrs-soft/wecom-aibot-mcp --setup
 ```
 
-The wizard will guide you through:
-1. Enter bot name (for identification)
-2. Enter Bot ID
-3. Enter Secret
-4. Send a message to the bot in WeChat to auto-detect user ID
+Choose the appropriate role flag:
 
-Configuration will automatically:
-- Write bot config to `~/.wecom-aibot-mcp/config.json`
-- Write MCP config to `~/.claude.json`
-- Register PermissionRequest hook to `~/.claude/settings.local.json`
-- Install headless-mode skill to `~/.claude/skills/`
-- Start MCP service in background
+| Command | Role | Description |
+|---------|------|-------------|
+| `--setup` | Interactive | Guides through local or remote setup |
+| `--setup --server` | Server-side | Configure bot + Token, no local MCP config |
+| `--setup --channel` | Channel client | Connect to remote server, write Channel MCP config |
+| `--setup --server --channel` | Full local | HTTP + Channel full install |
+
+**Start server after setup**:
+
+```bash
+npx @vrs-soft/wecom-aibot-mcp --http-only --start
+```
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `npx @vrs-soft/wecom-aibot-mcp` | First-time configuration wizard |
-| `npx @vrs-soft/wecom-aibot-mcp --start` | Start MCP service in background |
-| `npx @vrs-soft/wecom-aibot-mcp --stop` | Stop MCP service |
-| `npx @vrs-soft/wecom-aibot-mcp --status` | View service status |
-| `npx @vrs-soft/wecom-aibot-mcp --config` | Modify configuration |
-| `npx @vrs-soft/wecom-aibot-mcp --add` | Add new bot |
-| `npx @vrs-soft/wecom-aibot-mcp --delete` | Delete bot config |
-| `npx @vrs-soft/wecom-aibot-mcp --uninstall` | Complete uninstall |
-| `npx @vrs-soft/wecom-aibot-mcp --debug` | Start in foreground (debug mode) |
-| `npx @vrs-soft/wecom-aibot-mcp --upgrade` | Force upgrade global configs |
+| `--start / --stop` | Start/stop background service |
+| `--status` | View service status and bot list |
+| `--config` | Modify default bot configuration |
+| `--add / --delete` | Add/delete bot |
+| `--set-token [token]` | Set Auth Token (for remote deployment) |
+| `--set-token --clear` | Clear Auth Token |
+| `--debug` | Start in foreground with debug output |
+| `--http-only` | Start HTTP MCP Server only (server-side use) |
+| `--channel-only` | Configure Channel MCP only (requires `MCP_URL`) |
+| `--clean-cache` | Clear CC registry cache |
+| `--upgrade` | Force upgrade global configs |
+| `--uninstall` | Complete uninstall |
 
-## Quick Start
+## Run Modes
 
-### Start Service
+| | Channel Mode | HTTP Mode |
+|-|-------------|-----------|
+| Message delivery | SSE push (instant) | `/loop` heartbeat polling |
+| Latency | Immediate | ≤1 minute |
+| Claude account | claude.ai direct only | Any (including API relay) |
+| Reconnect | Auto (including server restart) | Auto via heartbeat |
+
+To enter WeChat mode, tell Claude: **"Now contact me via WeChat"** — this triggers the `headless-mode` skill automatically.
+
+**Claude startup command for Channel mode**:
 
 ```bash
-npx @vrs-soft/wecom-aibot-mcp --start
+claude --dangerously-load-development-channels server:wecom-aibot-channel
 ```
-
-Output:
-```
-[mcp] MCP Server started in background
-[mcp] HTTP endpoint: http://127.0.0.1:18963/mcp
-[mcp] Health check: curl http://127.0.0.1:18963/health
-[mcp] Stop service: npx @vrs-soft/wecom-aibot-mcp --stop
-```
-
-### Restart Claude Code
-
-Run `/mcp` command and select "Reconnect" to reconnect MCP service.
 
 ## Usage Example
 
@@ -116,92 +125,77 @@ Run `/mcp` command and select "Reconnect" to reconnect MCP service.
 ```
 You: Now contact me via WeChat
 
-Claude: Entered WeChat mode, all interactions will go through Enterprise WeChat.
-WeChat receives: [cc-1] Entered WeChat mode, using bot "Work Bot".
+Claude: Entered WeChat mode. All interactions will go through Enterprise WeChat.
 
-[You leave computer, Claude needs to delete files]
+[You leave the computer. Claude needs to run a command.]
 
 WeChat receives approval card:
-┌─────────────────────────┐
-│ 【Pending】Bash          │
-│ Command: rm -rf dist     │
-│ [Allow Once] [Deny]      │
-└─────────────────────────┘
+┌──────────────────────────────┐
+│ 【Pending Approval】Bash      │
+│ Command: npm run build...    │
+│ 📋 TaskID: approval_xxx      │
+│ [Allow Once] [Default] [Deny]│
+│ Details: View full command   │
+└──────────────────────────────┘
 
-[You tap "Allow Once" on phone]
+[Tap "Allow Once" on phone, or open "View full command" to see complete output]
 
-Claude continues execution, sends result to WeChat.
+Claude continues execution and sends the result to WeChat.
 
 You: I'm back
 
-Claude: Exited WeChat mode, restored terminal interaction.
+Claude: Exited WeChat mode.
 ```
 
-### Timeout Approval Configuration
+### Timeout Auto-Approval
 
-Configure approval timeout in `~/.wecom-aibot-mcp/config.json`:
+Configure in the bot config file or via `wecom-aibot.json`:
 
 ```json
 {
-  "botId": "bot-xxx",
-  "secret": "sec-yyy",
-  "targetUserId": "user1",
-  "nameTag": "Bot 1",
   "autoApproveTimeout": 600
 }
 ```
 
 - `autoApproveTimeout`: Timeout in seconds (default 600s = 10 minutes)
-- After timeout: operations in project directory are auto-allowed, operations outside are auto-denied
+- After timeout: operations **within** the project directory are auto-allowed; operations outside or delete commands are auto-denied
 
-### Debug Mode
-
-Use `--debug` to view hook script logs in terminal:
+## Troubleshooting
 
 ```bash
-npx @vrs-soft/wecom-aibot-mcp --debug
+# Check if service is running
+curl http://127.0.0.1:18963/health
+
+# Channel unavailable ("Channels are not currently available")
+# → Using API key or relay service? Switch to HTTP mode instead.
+
+# Channel fails to reconnect after server restart
+# → Auto-reconnect triggers within 5 seconds; no manual action needed.
+#    Requires v2.4.13 or later.
+
+# Approval detail page shows "Unauthorized"
+# → Upgrade to v2.4.14 or later; the /approval/ path is now auth-exempt.
+
+# Port conflict
+lsof -i :18963 | grep LISTEN
+kill <PID>
+
+# Clean up stale ccId registrations after disconnect
+npx @vrs-soft/wecom-aibot-mcp --clean-cache
 ```
 
 ## MCP Tools
 
-| Tool | Description | Parameters |
-|------|-------------|------------|
-| `send_message` | Send message to WeChat | `content`, `target_user` |
-| `get_pending_messages` | Get pending messages (long poll) | `clear`, `timeout_ms` |
-| `enter_headless_mode` | Enter WeChat mode | `agent_name`, `robot_id` |
-| `exit_headless_mode` | Exit WeChat mode | `agent_name` |
-| `check_connection` | Check connection status | - |
-| `list_robots` | List all bots | - |
-| `get_connection_stats` | Get connection stats | `recent_logs` |
-
-## Troubleshooting
-
-### Authentication Failed (Error 40058)
-
-1. New bot needs ~2 minutes to sync
-2. Complete authorization: Bot details → Available permissions → Authorize
-3. Verify Bot ID and Secret
-
-### Connection Issues
-
-```bash
-# Check service status
-curl http://127.0.0.1:18963/health
-
-# View logs
-tail -f ~/.wecom-aibot-mcp/connection.log
-
-# Restart service
-npx @vrs-soft/wecom-aibot-mcp --stop
-npx @vrs-soft/wecom-aibot-mcp --start
-```
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `send_message` | Send message to WeChat | `content`, `cc_id`, `target_user` |
+| `get_pending_messages` | Get pending messages (long poll) | `cc_id`, `timeout_ms` |
+| `enter_headless_mode` | Enter WeChat mode | `cc_id`, `robot_id`, `mode` |
+| `exit_headless_mode` | Exit WeChat mode | `cc_id` |
+| `check_connection` | Check WebSocket connection status | - |
+| `list_robots` | List all configured bots | - |
+| `get_connection_stats` | Get connection stats and logs | `recent_logs` |
 
 ## License
 
-MIT
-
-## Related Links
-
-- [Enterprise WeChat Smart Bot Documentation](https://developer.work.weixin.qq.com/document/path/101039)
-- [Claude Code Documentation](https://docs.anthropic.com/claude-code)
-- [MCP Protocol Specification](https://modelcontextprotocol.io)
+MIT · [Enterprise WeChat Bot Docs](https://developer.work.weixin.qq.com/document/path/101039) · [Channels Reference](https://code.claude.com/docs/en/channels-reference)
