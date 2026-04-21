@@ -1,159 +1,201 @@
-# @vrs-soft/wecom-aibot-mcp
+# wecom-aibot-mcp
 
-中文 | [English](README_EN.md)
+English | [中文文档](README_ZH.md)
 
-企业微信智能机器人 MCP 服务 - 让 Claude Code 通过微信远程审批和交互。
+Enterprise WeChat AI Bot MCP Service - Remote Approval Channel for Claude Code
 
-**核心功能**：
-- 远程审批敏感操作（Bash/Write/Edit），微信卡片一键通过/拒绝
-- 审批卡片支持「查看完整命令」详情链接，浏览器直接打开查看完整内容
-- 离开电脑后通过微信下达任务，实时接收进度通知
-- 支持群聊 @机器人，多机器人、多用户并发
-- 代理企业微信文档 MCP，支持文档和智能表格操作
-- Channel 模式断线后自动重连，服务端重启后无需手动恢复
+> Handle Claude Code approval requests via WeChat, even when away from your computer.
 
----
+## Features
 
-## 效果预览
+- 🔐 **Remote Approval**: Approve/deny sensitive operations (Bash/Write/Edit) via WeChat cards
+- 🔍 **Full Command View**: Approval cards include a detail link — open in browser to view the complete command
+- 💬 **Bidirectional Communication**: Real-time task progress notifications
+- 📱 **Headless Mode**: Switch to WeChat interaction when leaving terminal
+- 🤖 **Multi-bot Support**: Multiple bots for team and group chat scenarios
+- 🌐 **Remote Deployment**: MCP server can be deployed on a remote host with Bearer Token auth
+- 🔄 **Auto-reconnect**: Channel mode automatically reconnects after network interruption or server restart
 
-<img src="docs/approval-card.png" width="320" alt="微信审批卡片" />
+## Architecture
 
-每次 Claude 执行敏感操作（Bash 命令、编辑文件等）时，企业微信会推送审批卡片，点击**允许**或**拒绝**即可实时控制执行权限。超时未响应时，根据配置自动代批（允许项目内操作，拒绝删除命令）。
+```
+┌─────────────────┐      MCP (stdio)      ┌──────────────────────┐
+│  Claude Code    │  ──────────────────▶  │  Channel MCP Proxy   │
+│  (MCP Client)   │  ◀──────────────────  │  (local, SSE client) │
+└─────────────────┘                       └──────────────────────┘
+                                                    │ SSE
+                                                    ▼
+                                          ┌─────────────────────┐
+                                          │  wecom-aibot-mcp    │
+                                          │  HTTP MCP Server    │
+                                          │  (local or remote)  │
+                                          └─────────────────────┘
+                                                    │
+                                            WebSocket Connection
+                                                    ↓
+                                          ┌─────────────────────┐
+                                          │  Enterprise WeChat  │
+                                          └─────────────────────┘
+                                                    │
+                                                    ↓
+                                          ┌─────────────────────┐
+                                          │  User WeChat Client │
+                                          │  (Mobile/Desktop)   │
+                                          └─────────────────────┘
+```
 
----
+## Installation
 
-## 使用场景
+### Prerequisites
 
-### 场景一：离开电脑，微信远程监督
+- **Node.js >= 18**
+- Enterprise WeChat account (with bot creation permission)
+- Claude Code
 
-出门开会或离开座位时，告诉 Claude「现在开始通过微信联系」，进入微信模式后：
+### Step 1: Create Enterprise WeChat Bot
 
-- Claude 执行每一步操作前发送审批请求到微信
-- 你在手机上点击**允许 / 拒绝**，Claude 实时响应
-- 命令过长时点击卡片「查看完整命令」在浏览器中查看完整内容
-- 设置超时自动审批（`autoApproveTimeout`），无人值守时自动处理项目内操作
+1. Login to WeChat Work admin portal: https://work.weixin.qq.com
+2. Go to "Management Tools" → "Smart Bot"
+3. Click "Create Bot" → "Manual Creation"
+4. Fill in bot name (e.g., "Claude Approval Assistant")
+5. In "API Configuration":
+   - Select "Use Long Connection"
+   - Click "Get Secret"
+6. Record **Bot ID** and **Secret**
 
-### 场景二：微信直接下达任务
-
-不在电脑前，直接在企业微信给机器人发消息：
-
-- 「帮我跑一下单元测试，把结果发给我」
-- 「把 src/index.ts 里的 TODO 都处理掉」
-- 「最近有什么错误日志？」
-
-Claude 执行完成后自动回复进度和结果到微信。
-
-### 场景三：团队共享机器人，群聊协作
-
-在企业微信群中 @机器人，多个成员可以同时：
-
-- 查询项目状态
-- 触发 CI 任务
-- 审批自己负责的操作（审批请求精确路由到对应 Claude 窗口）
-
----
-
-## 前置条件
-
-企业微信管理后台创建智能机器人，连接方式选「使用长连接」，记录 **Bot ID** 和 **Secret** 以及 **DocURL**（文档url）。
-
----
-
-## 安装
+### Step 2: Run Configuration Wizard
 
 ```bash
 npx @vrs-soft/wecom-aibot-mcp --setup
 ```
 
-根据部署角色选择参数：
+Choose the appropriate role flag:
 
-| 命令 | 角色 | 说明 |
-|------|------|------|
-| `--setup` | 交互式 | 询问本地 / 远程，自动引导 |
-| `--setup --server` | 服务器端 | 配置机器人 + Token，不写本机 MCP 配置 |
-| `--setup --channel` | Channel 客户端 | 连接远程 Server，写入 Channel MCP |
-| `--setup --server --channel` | 本地完整 | HTTP + Channel 全安装 |
+| Command | Role | Description |
+|---------|------|-------------|
+| `--setup` | Interactive | Guides through local or remote setup |
+| `--setup --server` | Server-side | Configure bot + Token, no local MCP config |
+| `--setup --channel` | Channel client | Connect to remote server, write Channel MCP config |
+| `--setup --server --channel` | Full local | HTTP + Channel full install |
 
-**Server 端安装后启动**：
+**Start server after setup**:
 
 ```bash
 npx @vrs-soft/wecom-aibot-mcp --http-only --start
 ```
 
-**后台启动 / 停止（本地或 Server 端）**：
+## Commands
 
-```bash
-npx @vrs-soft/wecom-aibot-mcp --start   # 后台启动
-npx @vrs-soft/wecom-aibot-mcp --stop    # 停止
-```
+| Command | Description |
+|---------|-------------|
+| `--start / --stop` | Start/stop background service |
+| `--status` | View service status and bot list |
+| `--config` | Modify default bot configuration |
+| `--add / --delete` | Add/delete bot |
+| `--set-token [token]` | Set Auth Token (for remote deployment) |
+| `--set-token --clear` | Clear Auth Token |
+| `--debug` | Start in foreground with debug output |
+| `--http-only` | Start HTTP MCP Server only (server-side use) |
+| `--channel-only` | Configure Channel MCP only (requires `MCP_URL`) |
+| `--clean-cache` | Clear CC registry cache |
+| `--upgrade` | Force upgrade global configs |
+| `--uninstall` | Complete uninstall |
 
----
+## Run Modes
 
-## 运行模式对比
+| | Channel Mode | HTTP Mode |
+|-|-------------|-----------|
+| Message delivery | SSE push (instant) | `/loop` heartbeat polling |
+| Latency | Immediate | ≤1 minute |
+| Claude account | claude.ai direct only | Any (including API relay) |
+| Reconnect | Auto (including server restart) | Auto via heartbeat |
 
-| | Channel 模式 | HTTP 模式 |
-|-|-------------|----------|
-| 消息接收 | SSE 自动推送唤醒 | `/loop` 心跳轮询 |
-| 响应延迟 | 即时 | ≤1 分钟 |
-| 账号要求 | claude.ai 直连 | 任意（含 API 中转）|
-| 断线恢复 | 自动重连（含服务端重启） | 心跳自动恢复 |
+To enter WeChat mode, tell Claude: **"Now contact me via WeChat"** — this triggers the `headless-mode` skill automatically.
 
-使用微信模式时告诉 Claude「**现在开始通过微信联系**」，会自动触发 `headless-mode` skill。
-
-**Channel 模式下 Claude 的启动命令**：
+**Claude startup command for Channel mode**:
 
 ```bash
 claude --dangerously-load-development-channels server:wecom-aibot-channel
 ```
 
----
+## Usage Example
 
-## 常用命令
+### Headless Mode (Remote Approval)
 
-| 命令 | 说明 |
-|------|------|
-| `--start / --stop` | 启动/停止后台服务 |
-| `--status` | 查看服务状态和机器人列表 |
-| `--config` | 修改默认机器人配置 |
-| `--add / --delete` | 添加/删除机器人 |
-| `--set-token [token]` | 设置 Auth Token（远程部署用） |
-| `--set-token --clear` | 清除 Auth Token |
-| `--debug` | 前台启动，输出调试日志 |
-| `--http-only` | 仅启动 HTTP MCP Server（服务器端用） |
-| `--channel-only` | 仅配置 Channel MCP（需 `MCP_URL` 环境变量） |
-| `--clean-cache` | 清空 CC 注册表缓存 |
-| `--upgrade` | 强制升级全局配置 |
-| `--uninstall` | 完全卸载 |
+```
+You: Now contact me via WeChat
 
-超时自动审批（默认 10 分钟）：在机器人配置中设置 `"autoApproveTimeout": 600`。
+Claude: Entered WeChat mode. All interactions will go through Enterprise WeChat.
 
----
+[You leave the computer. Claude needs to run a command.]
 
-## 故障排查
+WeChat receives approval card:
+┌──────────────────────────────┐
+│ 【Pending Approval】Bash      │
+│ Command: npm run build...    │
+│ 📋 TaskID: approval_xxx      │
+│ [Allow Once] [Default] [Deny]│
+│ Details: View full command   │
+└──────────────────────────────┘
+
+[Tap "Allow Once" on phone, or open "View full command" to see complete output]
+
+Claude continues execution and sends the result to WeChat.
+
+You: I'm back
+
+Claude: Exited WeChat mode.
+```
+
+### Timeout Auto-Approval
+
+Configure in the bot config file or via `wecom-aibot.json`:
+
+```json
+{
+  "autoApproveTimeout": 600
+}
+```
+
+- `autoApproveTimeout`: Timeout in seconds (default 600s = 10 minutes)
+- After timeout: operations **within** the project directory are auto-allowed; operations outside or delete commands are auto-denied
+
+## Troubleshooting
 
 ```bash
-# 检查服务是否运行
+# Check if service is running
 curl http://127.0.0.1:18963/health
 
-# Channel 不可用（"Channels are not currently available"）
-# → 使用 API Key 或中转服务，改用 HTTP 模式
+# Channel unavailable ("Channels are not currently available")
+# → Using API key or relay service? Switch to HTTP mode instead.
 
-# Channel 断线后无法重连
-# → 服务端重启后 Channel 会在 5 秒内自动重连并重新注册，无需手动操作
+# Channel fails to reconnect after server restart
+# → Auto-reconnect triggers within 5 seconds; no manual action needed.
+#    Requires v2.4.13 or later.
 
-# 端口占用
+# Approval detail page shows "Unauthorized"
+# → Upgrade to v2.4.14 or later; the /approval/ path is now auth-exempt.
+
+# Port conflict
 lsof -i :18963 | grep LISTEN
 kill <PID>
 
-# 清理断线残留的 ccId 注册
+# Clean up stale ccId registrations after disconnect
 npx @vrs-soft/wecom-aibot-mcp --clean-cache
-
-# 审批详情页打开显示 Unauthorized
-# → 确认使用 v2.4.14 及以上版本，详情页已排除鉴权
 ```
 
----
+## MCP Tools
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `send_message` | Send message to WeChat | `content`, `cc_id`, `target_user` |
+| `get_pending_messages` | Get pending messages (long poll) | `cc_id`, `timeout_ms` |
+| `enter_headless_mode` | Enter WeChat mode | `cc_id`, `robot_id`, `mode` |
+| `exit_headless_mode` | Exit WeChat mode | `cc_id` |
+| `check_connection` | Check WebSocket connection status | - |
+| `list_robots` | List all configured bots | - |
+| `get_connection_stats` | Get connection stats and logs | `recent_logs` |
 
 ## License
 
-MIT · [企业微信机器人文档](https://developer.work.weixin.qq.com/document/path/101039) · [Channels 文档](https://code.claude.com/docs/en/channels-reference)
+MIT · [Enterprise WeChat Bot Docs](https://developer.work.weixin.qq.com/document/path/101039) · [Channels Reference](https://code.claude.com/docs/en/channels-reference)
