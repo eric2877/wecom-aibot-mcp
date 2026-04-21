@@ -57,7 +57,7 @@ function buildApprovalCard(title: string, description: string, taskId: string, d
     ? description.slice(0, APPROVAL_DESC_MAX) + '…（已截断，点击「详情」查看完整内容）'
     : description;
 
-  const subTitle = truncated + `\n\n📋 TaskID: ${taskId}`;
+  const subTitle = truncated;
 
   const card = {
     card_type: 'button_interaction',
@@ -340,7 +340,7 @@ class WecomClient extends EventEmitter {
         : '❌ 已拒绝';
       const toolInfo = approval.toolName ? `: ${approval.toolName}` : '';
       const desc = approval.description || '';
-      const descSnippet = desc ? `\n执行命令: ${desc.slice(0, 100)}${desc.length > 100 ? '…' : ''}` : '';
+      const descSnippet = desc ? `\n${desc.slice(0, 100)}${desc.length > 100 ? '…' : ''}` : '';
       const content = `**审批结果**${toolInfo}\n\n${resultText}${descSnippet}`;
 
       this.sendText(content).catch(err => {
@@ -583,7 +583,7 @@ class WecomClient extends EventEmitter {
     const reasonText = reason ? `\n\n原因：${reason}` : '';
     const toolInfo = approval.toolName ? `: ${approval.toolName}` : '';
     const desc = approval.description || '';
-    const descBlock = desc ? `\n\n**执行命令**\n\`\`\`\n${desc}\n\`\`\`` : '';
+    const descBlock = desc ? `\n\n\`\`\`\n${desc}\n\`\`\`` : '';
 
     this.sendText(`**审批结果（超时自动决策）**${toolInfo}\n\n${resultText}${reasonText}${descBlock}`).catch(err => {
       logger.error('[wecom] 发送审批确认失败:', err);
