@@ -339,8 +339,7 @@ class WecomClient extends EventEmitter {
         : eventKey === 'allow-always' ? '✅ 已允许（永久）'
         : '❌ 已拒绝';
       const toolInfo = approval.toolName ? `: ${approval.toolName}` : '';
-      const descInfo = approval.description ? `\n\n> ${approval.description}` : '';
-      const content = `**审批结果**${toolInfo}\n\n${resultText}${descInfo}`;
+      const content = `**审批结果**${toolInfo}\n\n${resultText}`;
 
       this.sendText(content).catch(err => {
         logger.error('wecom', `发送审批确认失败: ${err}`);
@@ -581,9 +580,8 @@ class WecomClient extends EventEmitter {
     const resultText = result === 'deny' ? '❌ 已拒绝' : '✅ 已允许';
     const reasonText = reason ? `\n\n原因：${reason}` : '';
     const toolInfo = approval.toolName ? `: ${approval.toolName}` : '';
-    const descInfo = approval.description ? `\n\n> ${approval.description}` : '';
 
-    this.sendText(`**审批结果（超时自动决策）**${toolInfo}\n\n${resultText}${reasonText}${descInfo}`).catch(err => {
+    this.sendText(`**审批结果（超时自动决策）**${toolInfo}\n\n${resultText}${reasonText}`).catch(err => {
       logger.error('[wecom] 发送审批确认失败:', err);
     });
 
