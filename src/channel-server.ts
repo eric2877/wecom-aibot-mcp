@@ -16,8 +16,8 @@ import { z } from 'zod';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { VERSION } from './config-wizard.js';
-import { addPermissionHook, registerActiveProject, unregisterActiveProject } from './project-config.js';
+import { VERSION, installSkill } from './config-wizard.js';
+import { addPermissionHook, registerActiveProject, unregisterActiveProject, updateWechatModeConfig } from './project-config.js';
 
 const MCP_URL = process.env.MCP_URL || 'http://127.0.0.1:18963';
 const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
@@ -539,6 +539,20 @@ function registerChannelTools(server: McpServer) {
               // 注册本地 PID → projectDir（供本地 permission-hook.sh 通过进程树匹配项目）
               registerActiveProject(process.ppid ?? process.pid, localProjectDir);
               logChannel('本地 active-projects 已注册', { pid: process.ppid ?? process.pid, projectDir: localProjectDir });
+
+              // 写入本地 wecom-aibot.json（远程 HTTP MCP 写在远端 fs，agent 本地需要自己落地）
+              updateWechatModeConfig(localProjectDir, {
+                wechatMode: true,
+                robotName: parsed.robotName,
+                ccId: parsed.ccId,
+                mode: parsed.mode || mode,
+                autoApproveTimeout: auto_approve_timeout,
+              });
+              logChannel('本地 wecom-aibot.json 已写入', { projectDir: localProjectDir, robotName: parsed.robotName, ccId: parsed.ccId });
+
+              // 安装 skill 到本地（同上）
+              const skillResult = installSkill(localProjectDir);
+              logChannel('本地 skill 安装', { success: skillResult.success, skillUrl: skillResult.skillUrl });
 
               // Channel 模式：过滤 heartbeat 信息，简化消息
               if (mode === 'channel' || parsed.mode === 'channel') {

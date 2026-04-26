@@ -2,7 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
-## [2.4.19] - 2026-04-21
+## [2.4.20] - 2026-04-26
+
+### Fixed
+- Channel server now writes `wecom-aibot.json` and installs the headless-mode skill into the agent's local project directory after `enter_headless_mode`. Previously these file operations ran on the HTTP MCP host, so in remote deployments the agent's project was missing both files — the permission hook would `exit 0` (silently bypassing approval) and the agent had no skill template to follow
+
+
 
 ### Fixed
 - Approval result message no longer shows duplicate label prefix (e.g. `执行命令: 执行命令: ...`) — the label is now output once from the stored description

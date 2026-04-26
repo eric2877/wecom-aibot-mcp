@@ -2,6 +2,29 @@
 
 ---
 
+## v2.4.20 - 2026-04-26
+
+### 修复：channel 模式本地落盘缺失（remote 部署 agent 端文件丢失）
+
+**问题**：远程部署场景下（HTTP MCP 在远端），channel-server 转发 `enter_headless_mode` 后，`updateWechatModeConfig` 和 `installSkill` 在 HTTP MCP 端执行，文件落到远端 fs，agent 项目目录缺失 `wecom-aibot.json` 和 `skills/headless-mode/SKILL.md`。
+
+**后果**：
+- `permission-hook.sh` 找不到本地 `wecom-aibot.json` → `exit 0` 直接放行，**完全绕过审批**
+- agent 没有 skill，无法按流程操作
+
+**修复**：channel-server 在拦截响应后，独立调用 `updateWechatModeConfig(localProjectDir, ...)` 和 `installSkill(localProjectDir)`，与现有的 `addPermissionHook` / `registerActiveProject` 形成完整四件套。
+
+**职责划分（修复后）**：
+
+| 模式 | agent 端本地副作用由谁负责 |
+|------|------|
+| HTTP-only | HTTP MCP（要求 server 与 agent 同机） |
+| Channel | channel-server（独立于 HTTP MCP，远端无关） |
+
+HTTP MCP 端的写操作保留不动，HTTP-only 模式行为不变。
+
+---
+
 ## v2.4.7 - 2026-04-17
 
 ### 修复：channel 模式 enter_headless_mode 本地写入 PermissionRequest hook
