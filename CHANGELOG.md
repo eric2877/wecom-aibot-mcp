@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.21] - 2026-04-28
+
+### Changed
+- License changed from MIT to GPL-3.0; LICENSE file added with the official text from https://www.gnu.org/licenses/gpl-3.0.txt
+
+### Added
+- DESIGN.md "待完成设计" section now lists three known design gaps surfaced by the v2.4.20 incident: daemon-level WebSocket auto-reconnect on `onClose`, per-CC `check_connection`, and an admin endpoint to unregister a single ccId
+
 ## [2.4.20] - 2026-04-26
 
 ### Fixed

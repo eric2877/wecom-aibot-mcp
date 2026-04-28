@@ -1,6 +1,6 @@
 {
   "name": "@vrs-soft/wecom-aibot-mcp",
-  "version": "2.4.20",
+  "version": "2.4.21",
   "description": "企业微信智能机器人 MCP 服务 - Claude Code 审批通道",
   "type": "module",
   "main": "dist/index.js",
@@ -31,7 +31,7 @@
     "智能机器人"
   ],
   "author": "",
-  "license": "MIT",
+  "license": "GPL-3.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/eric2877/wecom-aibot-mcp.git"

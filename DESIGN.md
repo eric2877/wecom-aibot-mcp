@@ -370,6 +370,36 @@ ccId 自动编号（cc-1, cc-2）不符合用户预期。
 
 ## 待完成设计
 
+### v2.4.20 事故暴露的设计缺陷（2026-04-26）
+
+**背景**：用户更新 CC robot 的 docMcp 配置后，wecom 服务端踢掉了旧 WebSocket，daemon 内部 connectionPool 里 CC 的 entry 处于 disconnected 状态但**没有任何代码路径会主动重连**。地质软件的 SSE 通道仍然活着，但 wecom 不再向 CC bot 推送 → agent 收不到消息。最终通过用 cc_id="地质软件" 调用 send_message 触发 `getClient("CC")` 内部重连解决。
+
+#### 1. WebSocket 缺乏 daemon 级自动重连（重要）
+
+**现状**：`WecomClient` 的 `onClose` 不调度重连定时器；重连只发生在 `getClient(robotName)` 被调用且 `state.client.isConnected() === false` 时。
+
+**后果**：被服务端单方面踢掉的 WebSocket 会永久卡住，直到有人触发 `getClient`。
+
+**修法**：在 `WecomClient` 的 onClose 处理中调度重连（指数退避，避免风暴），并在 `connection-manager.ts` 维护对应状态。
+
+#### 4. `check_connection` 语义模糊
+
+**现状**：`getConnectionState()` 返回 `connectionPool` 里第一个 `isConnected()` 的连接，与调用方 ccId 无关。
+
+**后果**：多 robot 场景下，所有 CC 看到相同结果，agent 据此误判（之前事故中导致 agent 误以为自己 robot 错了，触发"自救"重连，连锁污染）。
+
+**修法**：`check_connection` 接受 `cc_id` 参数，返回**该 CC 对应 robot** 的连接状态；保留无参版本作向后兼容（返回旧行为 + 警告）。
+
+#### 6. ccId 注册表无单条注销接口
+
+**现状**：内存注册表只有 `clearAllCcIds`，无法删除单个 ccId 而不影响其他。
+
+**后果**：想做精细化外科操作（如让单个 CC 重新走 enter_headless_mode 流程触发 connectRobot）必须 clearAll 或重启 daemon。
+
+**修法**：新增内部管理端点 `DELETE /admin/ccid/:id`（受 auth token 保护），允许在不重启的前提下清掉某个 ccId 的注册，使其下次 SSE 重连返回 404，进而触发 channel-server 的 re-call enter_headless_mode 路径。
+
+---
+
 ### enter_headless_mode 职责拆分
 
 **问题**: 职责不清晰，混杂注册和连接。

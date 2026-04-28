@@ -198,4 +198,4 @@ npx @vrs-soft/wecom-aibot-mcp --clean-cache
 
 ## License
 
-MIT · [Enterprise WeChat Bot Docs](https://developer.work.weixin.qq.com/document/path/101039) · [Channels Reference](https://code.claude.com/docs/en/channels-reference)
+GPL-3.0 · [Enterprise WeChat Bot Docs](https://developer.work.weixin.qq.com/document/path/101039) · [Channels Reference](https://code.claude.com/docs/en/channels-reference)

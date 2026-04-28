@@ -156,4 +156,4 @@ npx @vrs-soft/wecom-aibot-mcp --clean-cache
 
 ## License
 
-MIT · [企业微信机器人文档](https://developer.work.weixin.qq.com/document/path/101039) · [Channels 文档](https://code.claude.com/docs/en/channels-reference)
+GPL-3.0 · [企业微信机器人文档](https://developer.work.weixin.qq.com/document/path/101039) · [Channels 文档](https://code.claude.com/docs/en/channels-reference)
