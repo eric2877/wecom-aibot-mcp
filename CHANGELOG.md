@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.23] - 2026-05-06
+
+### Added
+- Unified file-based logger with log levels (`error` / `info` / `debug`), JSON Lines format, and automatic 10MB × 5 rotation
+- `--start` daemon now writes to `~/.wecom-aibot-mcp/server.log` (info level always, debug level only with `--debug`)
+- `--channel` MCP proxy now writes to `~/.wecom-aibot-mcp/channel.log` (info always, debug when debug marker exists)
+- Daemon startup/shutdown, ccId registration/unregistration/cleanup, and robot connect/disconnect events are now permanently logged at `info` level
+- README/README_ZH and `--help` now include a "Logs" / "日志" section listing log files, levels, and rotation policy
+
+### Changed
+- `--debug` no longer requires pairing with `--start` (it's a self-contained foreground start command); help text clarified
+- `--http-only` is documented as deprecated (functionally equivalent to `--start`)
+- Existing `logChannel()` calls in channel-server now route through `logger.debug` by default; key events explicitly elevated to `logger.info`
+
 ## [2.4.22] - 2026-05-06
 
 ### Fixed

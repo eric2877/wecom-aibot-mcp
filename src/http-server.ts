@@ -193,7 +193,7 @@ function cleanStaleCcIds(): void {
   for (const [id, entry] of ccIdRegistry) {
     if (now - entry.lastOnline > CCID_STALE_TIMEOUT) {
       ccIdRegistry.delete(id);
-      logger.log(`[ccid] 清理超时条目: ${id} (离线 ${Math.round((now - entry.lastOnline) / 60000)} 分钟)`);
+      logger.info('ccId stale cleanup', { ccId: id, offlineMins: Math.round((now - entry.lastOnline) / 60000) });
     }
   }
 }
@@ -203,11 +203,11 @@ function cleanStaleCcIds(): void {
 export function registerCcId(ccId: string, robotName: string, agentName?: string, mode?: 'channel' | 'http', projectDir?: string, isReconnect?: boolean): { success: boolean; ccId: string } {
   if (isReconnect || ccIdRegistry.has(ccId)) {
     // 重连：直接覆盖，更新 lastOnline
-    logger.log(`[ccid] 重连: ${ccId} → ${robotName}`);
+    logger.info('ccId reconnect', { ccId, robotName });
   } else {
     // 首次注册：先清理超时条目
     cleanStaleCcIds();
-    logger.log(`[ccid] 注册: ${ccId} → ${robotName} (${agentName || 'unknown'}, mode: ${mode || 'http'})`);
+    logger.info('ccId registered', { ccId, robotName, agentName: agentName || null, mode: mode || 'http' });
   }
   ccIdRegistry.set(ccId, { robotName, agentName, mode, projectDir, lastOnline: Date.now() });
   return { success: true, ccId };
@@ -215,13 +215,13 @@ export function registerCcId(ccId: string, robotName: string, agentName?: string
 
 export function unregisterCcId(ccId: string): void {
   ccIdRegistry.delete(ccId);
-  logger.log(`[ccid] 注销: ${ccId}`);
+  logger.info('ccId unregistered', { ccId });
 }
 
 export function clearCcIdRegistry(): { cleared: number; entries: string[] } {
   const entries = Array.from(ccIdRegistry.keys());
   ccIdRegistry.clear();
-  logger.log(`[ccid] 清空注册表: 共清理 ${entries.length} 条 (${entries.join(', ')})`);
+  logger.info('ccId registry cleared', { count: entries.length, entries });
   return { cleared: entries.length, entries };
 }
 

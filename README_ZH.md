@@ -77,7 +77,7 @@ npx @vrs-soft/wecom-aibot-mcp --setup
 **Server 端安装后启动**：
 
 ```bash
-npx @vrs-soft/wecom-aibot-mcp --http-only --start
+npx @vrs-soft/wecom-aibot-mcp --start
 ```
 
 **后台启动 / 停止（本地或 Server 端）**：
@@ -118,14 +118,34 @@ claude --dangerously-load-development-channels server:wecom-aibot-channel
 | `--add / --delete` | 添加/删除机器人 |
 | `--set-token [token]` | 设置 Auth Token（远程部署用） |
 | `--set-token --clear` | 清除 Auth Token |
-| `--debug` | 前台启动，输出调试日志 |
-| `--http-only` | 仅启动 HTTP MCP Server（服务器端用） |
+| `--debug` | 前台启动 + debug 级日志（同时落 server.log，stdout 实时打印） |
+| `--http-only` | 已废弃；功能等同 `--start` |
 | `--channel-only` | 仅配置 Channel MCP（需 `MCP_URL` 环境变量） |
 | `--clean-cache` | 清空 CC 注册表缓存 |
 | `--upgrade` | 强制升级全局配置 |
 | `--uninstall` | 完全卸载 |
 
 超时自动审批（默认 10 分钟）：在机器人配置中设置 `"autoApproveTimeout": 600`。
+
+---
+
+## 日志
+
+所有日志写入 `~/.wecom-aibot-mcp/`，JSON Lines 格式（每行一个 JSON 对象）：
+
+| 文件 | 写入方 | 级别 | 滚动策略 |
+|------|--------|------|----------|
+| `server.log` | `--start` / `--debug` daemon | `info` 永久；`debug` 仅 `--debug` 时 | 10MB × 5 |
+| `channel.log` | `--channel` MCP 代理（每个 agent 一份） | 同上（debug 由 marker 文件控制） | 10MB × 5 |
+| `connection.log` | WebSocket 层（connect/disconnect/auth） | 专用 | 追加写 |
+| `debug` 标记文件 | `--debug` 创建；channel-server 读取后启用 debug | — | — |
+
+快速查看：
+
+```bash
+tail -f ~/.wecom-aibot-mcp/server.log | jq .
+grep -h '"level":"error"' ~/.wecom-aibot-mcp/server.log*
+```
 
 ---
 

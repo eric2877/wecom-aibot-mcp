@@ -64,11 +64,11 @@ function showHelp() {
   --setup --server --channel  本地完整安装（HTTP + Channel）
   --upgrade       强制升级全局配置（覆盖 MCP 配置、权限、skill）
   --reinstall     重新安装全局配置（删除后重新写入，保留机器人配置）
-  --start         启动 MCP Server（后台服务模式）
+  --start         启动 HTTP MCP Server（后台守护进程，日志写 server.log）
   --stop          停止 MCP Server
-  --debug         前台启动 MCP Server（日志直接输出到终端，用于调试）
-  --channel       启动 Channel MCP Proxy（stdio 代理 + SSE 唤醒）
-  --http-only     仅启动 HTTP Server（远程部署场景，不安装 Channel MCP 配置）
+  --debug         前台启动 + debug 级日志（日志同时落 server.log，stdout 实时打印）
+  --channel       启动 Channel MCP Proxy（stdio 代理 + SSE 唤醒，日志写 channel.log）
+  --http-only     仅写 HTTP-only 配置（已废弃；--start 默认就是 daemon-only 行为）
   --channel-only  仅配置 Channel MCP（本地连接远程 HTTP Server）
   --status        显示服务状态和机器人配置
   --config        重新配置默认机器人（修改 Bot ID / Secret / 目标用户）
@@ -117,6 +117,24 @@ MCP 配置（默认安装同时配置两种模式）:
   Channel 模式优势：微信消息自动唤醒 agent，无需主动轮询
   启动 Channel 模式（研究预览）：
     claude --dangerously-load-development-channels server:wecom-aibot-channel
+
+日志:
+
+  Daemon (HTTP MCP):
+    ~/.wecom-aibot-mcp/server.log         info 级（永久）+ debug 级（仅 --debug 时写）
+    ~/.wecom-aibot-mcp/server.log.1..5    自动滚动备份（每份 ≤10MB，共保留 5 份）
+
+  Channel MCP:
+    ~/.wecom-aibot-mcp/channel.log        info 级（永久）+ debug 级（仅 debug 模式时写）
+    ~/.wecom-aibot-mcp/channel.log.1..5   自动滚动备份
+
+  WebSocket 连接事件:
+    ~/.wecom-aibot-mcp/connection.log     专用文件（connect/disconnect/auth 事件）
+
+  Debug 标记:
+    ~/.wecom-aibot-mcp/debug              存在则启用 debug 级输出（--debug 时自动创建）
+
+  日志格式: JSON Lines，每行一个 {ts, level, msg, data?}，方便 jq/grep 检索
 
 更多信息: https://github.com/eric2877/wecom-aibot-mcp
 `);
@@ -308,6 +326,10 @@ async function startMcpServerForeground(isDebug: boolean = false): Promise<void>
     console.log('[mcp] Debug 标记文件已创建');
   }
 
+  // 配置统一日志输出到文件（JSON Lines + 自动滚动）
+  logger.setLogFile(path.join(os.homedir(), '.wecom-aibot-mcp', 'server.log'));
+  if (isDebug) logger.setDebug(true);
+
   // 确保 hook 已安装
   ensureHookInstalled();
 
@@ -344,9 +366,13 @@ async function startMcpServerForeground(isDebug: boolean = false): Promise<void>
   logger.log(`[mcp] 微信模式：enter_headless_mode 时建立连接`);
   logger.log(`[mcp] PID: ${process.pid}`);
 
+  // 写入启动事件到 server.log（永久记录）
+  logger.info('daemon started', { version: VERSION, port: HTTP_PORT, protocol, pid: process.pid, debug: isDebug });
+
   // 退出处理
   const gracefulShutdown = () => {
     console.log('[mcp] 正在关闭...');
+    logger.info('daemon shutdown', { pid: process.pid });
     stopKeepaliveMonitor();
     stopHttpServer();
     if (fs.existsSync(PID_FILE)) {
@@ -758,6 +784,10 @@ async function main() {
         fs.writeFileSync(debugFile, 'true');
       }
     }
+
+    // 配置统一日志输出到文件（每个 channel-server 进程都写同一份 channel.log，多进程并发追加）
+    logger.setLogFile(path.join(os.homedir(), '.wecom-aibot-mcp', 'channel.log'));
+    if (isDebug) logger.setDebug(true);
 
     console.log('[channel] Starting Channel MCP Proxy...');
     const { startChannelServer } = await import('./channel-server.js');

@@ -154,7 +154,7 @@ export async function connectRobot(
 
   connectionPool.set(robot.name, state);
 
-  logger.log(`[connection] 已连接机器人: ${robot.name}`);
+  logger.info('robot connected', { robotName: robot.name });
 
   return {
     success: true,
@@ -170,7 +170,7 @@ export function disconnectRobot(robotName: string): void {
   if (state) {
     state.client.disconnect();
     connectionPool.delete(robotName);
-    logger.log(`[connection] 已断开机器人: ${robotName}`);
+    logger.info('robot disconnected', { robotName });
   }
 }
 
@@ -192,7 +192,7 @@ export async function getClient(robotName: string): Promise<WecomClient | null> 
   // 断开了，尝试重连
   const robot = await findRobotConfig(state.robotName);
   if (robot) {
-    logger.log(`[connection] 重连机器人: ${robot.name}`);
+    logger.info('robot reconnecting', { robotName: robot.name });
     const oldClient = state.client;
 
     // 迁移旧 client 的未解决审批记录和待发送审批消息
@@ -219,10 +219,10 @@ export async function getClient(robotName: string): Promise<WecomClient | null> 
 
     const connected = await waitForConnection(state.client, 5000);
     if (connected) {
-      logger.log(`[connection] 重连成功: ${robot.name}`);
+      logger.info('robot reconnected', { robotName: robot.name });
       return state.client;
     } else {
-      logger.log(`[connection] 重连失败: ${robot.name}`);
+      logger.error('robot reconnect failed', { robotName: robot.name });
       return null;
     }
   }

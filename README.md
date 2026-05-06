@@ -94,12 +94,30 @@ npx @vrs-soft/wecom-aibot-mcp --http-only --start
 | `--add / --delete` | Add/delete bot |
 | `--set-token [token]` | Set Auth Token (for remote deployment) |
 | `--set-token --clear` | Clear Auth Token |
-| `--debug` | Start in foreground with debug output |
-| `--http-only` | Start HTTP MCP Server only (server-side use) |
+| `--debug` | Start in foreground with debug-level logging (writes to `server.log` + stdout) |
+| `--http-only` | Deprecated; identical to `--start` |
 | `--channel-only` | Configure Channel MCP only (requires `MCP_URL`) |
 | `--clean-cache` | Clear CC registry cache |
 | `--upgrade` | Force upgrade global configs |
 | `--uninstall` | Complete uninstall |
+
+## Logs
+
+All logs are written to `~/.wecom-aibot-mcp/` as JSON Lines (one JSON object per line):
+
+| File | Producer | Levels | Rotation |
+|------|----------|--------|----------|
+| `server.log` | `--start` / `--debug` daemon | `info` always, `debug` when `--debug` | 10MB × 5 |
+| `channel.log` | `--channel` MCP proxy (per agent) | `info` always, `debug` when debug marker exists | 10MB × 5 |
+| `connection.log` | WebSocket layer (connect/disconnect/auth) | n/a | append-only |
+| `debug` (marker file) | `--debug` creates it; channel-server reads it | — | — |
+
+Quick inspection:
+
+```bash
+tail -f ~/.wecom-aibot-mcp/server.log | jq .
+grep -h '"level":"error"' ~/.wecom-aibot-mcp/server.log*
+```
 
 ## Run Modes
 
