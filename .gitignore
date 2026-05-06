@@ -11,3 +11,4 @@ design/
 dist/
 node_modules/
 coverage/
+.playwright-mcp/
