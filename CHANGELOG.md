@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.22] - 2026-05-06
+
+### Fixed
+- `--setup` remote install wizard no longer writes the HTTP MCP client config when the user picks Channel mode. Remote mode now strictly separates daemon (HTTP) from client (Channel only), aligning with the original split-deployment design intent. The `'remote-channel'` install mode now writes only `wecom-aibot-channel` and removes any leftover `wecom-aibot` HTTP MCP entry on the client
+- Remote install wizard menu rewritten: option 1 is now "Channel MCP (recommended)", option 2 is "HTTP MCP" — both single-transport, never dual
+
+### Changed
+- All "start daemon" hints in help text and wizards now use `--start` instead of `--http-only --start` (behavior was already identical, docs simplified)
+- Fixed `@anthropic/wecom-aibot-mcp` typo in remote-server install completion hint (correct package is `@vrs-soft/wecom-aibot-mcp`)
+
 ## [2.4.21] - 2026-04-28
 
 ### Changed

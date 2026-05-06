@@ -92,8 +92,8 @@ function showHelp() {
 拆分部署（远程 HTTP + 本地 Channel）:
 
   远程服务器:
-    npx @vrs-soft/wecom-aibot-mcp --http-only --start
-    # 只启动 HTTP Server，不写入本地 MCP 配置
+    npx @vrs-soft/wecom-aibot-mcp --start
+    # 启动 HTTP Server（daemon 不会写本地 client MCP 配置）
 
   本地机器:
     MCP_URL=http://远程IP:18963 npx @vrs-soft/wecom-aibot-mcp --channel-only
@@ -687,7 +687,7 @@ async function main() {
       }
 
       console.log('\n[setup] Server 配置完成！');
-      console.log('  启动: npx @vrs-soft/wecom-aibot-mcp --http-only --start');
+      console.log('  启动: npx @vrs-soft/wecom-aibot-mcp --start');
       console.log('\n[setup] ─── 步骤 2/2：配置企业微信机器人 ───\n');
       await addMcpConfig();
 
@@ -778,7 +778,7 @@ async function main() {
   if (args.includes('--http-only') && !args.includes('--start')) {
     console.log('[mcp] HTTP-only 模式：仅启动 HTTP Server');
     console.log('[mcp] 不写入 MCP 配置（远程部署场景）');
-    console.log('[mcp] 使用 --http-only --start 启动服务');
+    console.log('[mcp] 使用 --start 启动服务');
     process.exit(0);
   }
 

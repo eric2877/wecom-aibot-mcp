@@ -370,33 +370,63 @@ ccId 自动编号（cc-1, cc-2）不符合用户预期。
 
 ## 待完成设计
 
-### v2.4.20 事故暴露的设计缺陷（2026-04-26）
+### v2.5.0 计划修复（v2.4.20 事故暴露的设计缺陷）
 
 **背景**：用户更新 CC robot 的 docMcp 配置后，wecom 服务端踢掉了旧 WebSocket，daemon 内部 connectionPool 里 CC 的 entry 处于 disconnected 状态但**没有任何代码路径会主动重连**。地质软件的 SSE 通道仍然活着，但 wecom 不再向 CC bot 推送 → agent 收不到消息。最终通过用 cc_id="地质软件" 调用 send_message 触发 `getClient("CC")` 内部重连解决。
 
-#### 1. WebSocket 缺乏 daemon 级自动重连（重要）
+下一版本（v2.5.0）将一次性修复以下三项相互关联的问题。建议按 1 → 6 → 4 顺序实施（前两项是核心机制，第三项是诊断辅助）。
+
+#### 修复点 1：WebSocket daemon 级自动重连（核心，最高优先级）
 
 **现状**：`WecomClient` 的 `onClose` 不调度重连定时器；重连只发生在 `getClient(robotName)` 被调用且 `state.client.isConnected() === false` 时。
 
 **后果**：被服务端单方面踢掉的 WebSocket 会永久卡住，直到有人触发 `getClient`。
 
-**修法**：在 `WecomClient` 的 onClose 处理中调度重连（指数退避，避免风暴），并在 `connection-manager.ts` 维护对应状态。
+**修法**：
+- `client.ts` 的 `onClose` 处理中加入自动重连调度（指数退避：5s → 10s → 30s → 60s 上限）
+- 重连逻辑封装在 `WecomClient` 内部，`connection-manager.ts` 不变更接口
+- 重连成功后通过事件通知上层（用于日志和 connection-stats 更新）
+- 增加重连最大次数（如 100 次后放弃，留待人工介入）
+- 单元测试：mock WebSocket onClose，验证重试调度
 
-#### 4. `check_connection` 语义模糊
+**测试验证**：远端手动 kill CC 的 WebSocket（`ss -K`），daemon 应在 5-30 秒内自动重连，无需任何外部触发。
 
-**现状**：`getConnectionState()` 返回 `connectionPool` 里第一个 `isConnected()` 的连接，与调用方 ccId 无关。
-
-**后果**：多 robot 场景下，所有 CC 看到相同结果，agent 据此误判（之前事故中导致 agent 误以为自己 robot 错了，触发"自救"重连，连锁污染）。
-
-**修法**：`check_connection` 接受 `cc_id` 参数，返回**该 CC 对应 robot** 的连接状态；保留无参版本作向后兼容（返回旧行为 + 警告）。
-
-#### 6. ccId 注册表无单条注销接口
+#### 修复点 6：ccId 单条注销 admin 端点
 
 **现状**：内存注册表只有 `clearAllCcIds`，无法删除单个 ccId 而不影响其他。
 
 **后果**：想做精细化外科操作（如让单个 CC 重新走 enter_headless_mode 流程触发 connectRobot）必须 clearAll 或重启 daemon。
 
-**修法**：新增内部管理端点 `DELETE /admin/ccid/:id`（受 auth token 保护），允许在不重启的前提下清掉某个 ccId 的注册，使其下次 SSE 重连返回 404，进而触发 channel-server 的 re-call enter_headless_mode 路径。
+**修法**：
+- 在 `http-server.ts` 新增 `DELETE /admin/ccid/:id` 端点
+- 强制要求 Authorization Bearer Token（即使 daemon 没设全局 token，admin 路径必须有专用 admin_token）
+- 端点行为：调用 `unregisterCcId(id)` 后立即关闭对应 ccId 的所有 SSE 客户端连接
+- 这样下一次 SSE 重连会拿 404，触发 channel-server 的 re-call enter_headless_mode → connectRobot
+- 配套 CLI：`npx @vrs-soft/wecom-aibot-mcp --admin-unregister-cc <ccId>`
+
+**测试验证**：调用此端点后，对应 CC 的 channel-server 在几秒内自动 re-enter，wecom WebSocket 也跟着恢复（如果原本是死的）。
+
+#### 修复点 4：`check_connection` 语义改为 per-CC
+
+**现状**：`getConnectionState()` 返回 `connectionPool` 里第一个 `isConnected()` 的连接，与调用方 ccId 无关。
+
+**后果**：多 robot 场景下，所有 CC 看到相同结果，agent 据此误判（之前事故中导致 agent 误以为自己 robot 错了，触发"自救"重连，连锁污染）。
+
+**修法**：
+- `check_connection` 工具新增 `cc_id` 可选参数（之前完全无参）
+- 传入 `cc_id` 时：通过 `getRobotByCcId(cc_id)` 找到 robot，返回该 robot 在 `connectionPool` 中的状态
+- 不传 `cc_id` 时：保留旧行为但在响应里加 `warning: "请传入 cc_id 获取该 CC 对应 robot 的状态，无参版本将在 v3.0 移除"`
+- SKILL.md 同步更新：要求 agent 调用时必传 `cc_id`
+
+**测试验证**：3 个 CC 同时调用 `check_connection`，返回各自 robot 状态，互不相同。
+
+---
+
+### 已知但暂不修复的项（用户判断不必要）
+
+- 配置文件 watcher：用户偏好显式 daemon 重启而非热重载，避免 race
+- 启动时主动连所有 robot：保持懒连接策略（lazy connection on enter_headless_mode）
+- permission hook 在 config 缺失时改为拒绝：会阻断未启用微信模式的项目，太激进
 
 ---
 

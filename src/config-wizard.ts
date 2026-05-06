@@ -1187,7 +1187,8 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
     return { upgraded, previousVersion };
   }
 
-  // remote-channel 模式：写入远程 HTTP MCP（带 token）+ Channel MCP
+  // remote-channel 模式：远程部署的 Channel 客户端——只写 Channel MCP，不写 HTTP MCP
+  // （HTTP MCP daemon 在远端，本地不需要 HTTP transport client config）
   if (mode === 'remote-channel') {
     if (!remoteOptions?.url) {
       console.log('[config] ❌ 远程模式需要提供 URL');
@@ -1199,13 +1200,7 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
     }
     if (!claudeConfig.mcpServers) claudeConfig.mcpServers = {};
 
-    // HTTP MCP 配置（带 token，可选）
-    const mcpEndpointUrl = remoteOptions.url.replace(/\/+$/, '') + '/mcp';
-    const httpMcpConfig: any = { type: 'http', url: mcpEndpointUrl };
-    if (remoteOptions.token) httpMcpConfig.headers = { Authorization: `Bearer ${remoteOptions.token}` };
-    claudeConfig.mcpServers['wecom-aibot'] = httpMcpConfig;
-
-    // Channel MCP 配置（带 MCP_URL + MCP_AUTH_TOKEN）
+    // 只写 Channel MCP 配置（带 MCP_URL + MCP_AUTH_TOKEN），HTTP MCP 由远端 daemon 提供，本地无需 client 配置
     const channelEnvRemote: any = { MCP_URL: remoteOptions.url.replace(/\/+$/, '') };
     if (remoteOptions.token) channelEnvRemote.MCP_AUTH_TOKEN = remoteOptions.token;
     claudeConfig.mcpServers['wecom-aibot-channel'] = {
@@ -1214,8 +1209,14 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
       env: channelEnvRemote,
     };
 
+    // 移除可能残留的 HTTP MCP client 配置（远程模式 HTTP/Channel 完全分离）
+    if (claudeConfig.mcpServers['wecom-aibot']) {
+      delete claudeConfig.mcpServers['wecom-aibot'];
+      console.log('[config] 已移除残留的 HTTP MCP client 配置（远程模式只用 Channel）');
+    }
+
     fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
-    console.log('[config] remote-channel 模式：已写入 HTTP MCP + Channel MCP 配置（带 Token）');
+    console.log('[config] remote-channel 模式：仅写入 Channel MCP 配置');
 
     // Channel 模式需要权限配置
     writeMcpPermissions();
@@ -1322,7 +1323,7 @@ export async function runRemoteInstallWizard(): Promise<'remote' | 'remote-chann
       // Server 不写入 ~/.claude.json，只提示启动命令
       console.log('\n─────────────────────────────────────');
       console.log('Server 安装完成！');
-      console.log('  启动命令: npx @anthropic/wecom-aibot-mcp --http-only --start');
+      console.log('  启动命令: npx @vrs-soft/wecom-aibot-mcp --start');
       console.log('  或者:     npm run start:http');
       console.log('─────────────────────────────────────\n');
       console.log('[config] Client 端请在其他机器运行安装程序连接本服务器\n');
@@ -1330,13 +1331,14 @@ export async function runRemoteInstallWizard(): Promise<'remote' | 'remote-chann
     }
 
     // Client 安装模式：本机有 ~/.claude.json，作为客户端
+    // 远程模式 = HTTP/Channel 完全分离：本地只装 Client 配置，daemon 在远端
     console.log('\n检测到本机有 ~/.claude.json → Client 安装模式\n');
     console.log('  请选择连接远程服务器的方式：\n');
-    console.log('  1. 仅 HTTP MCP（轮询模式）');
-    console.log('  2. HTTP MCP + Channel MCP（推荐，消息自动唤醒）\n');
+    console.log('  1. Channel MCP（推荐：SSE 自动推送，消息到达立即唤醒 agent）');
+    console.log('  2. HTTP MCP（轮询模式，兼容不支持 Channel 的 Claude Code）\n');
 
     const choice = await question(rl, '请选择 (1/2): ');
-    const mode = choice === '2' ? 'remote-channel' : 'remote';
+    const mode = choice === '2' ? 'remote' : 'remote-channel';
 
     let serverUrl = await question(rl, '远程服务器地址（如 https://your-server:18963）: ');
     while (!serverUrl) {
@@ -1358,13 +1360,14 @@ export async function runRemoteInstallWizard(): Promise<'remote' | 'remote-chann
 
     console.log('\n─────────────────────────────────────');
     console.log('Client 配置完成！');
-    console.log(`  模式:       ${mode === 'remote-channel' ? 'HTTP + Channel' : '仅 HTTP'}`);
+    console.log(`  模式:       ${mode === 'remote-channel' ? 'Channel（仅 Channel MCP）' : 'HTTP（仅 HTTP MCP）'}`);
     console.log(`  服务器:     ${serverUrl}`);
     console.log(`  Auth Token: ${token.slice(0, 8)}...${token.slice(-4)}`);
     console.log('─────────────────────────────────────\n');
 
     if (mode === 'remote-channel') {
-      console.log('Channel 模式优势：微信消息自动唤醒 agent，无需主动轮询');
+      console.log('Channel 模式优势：微信消息通过 SSE 自动唤醒 agent，无需主动轮询');
+      console.log('启动方式：claude --dangerously-load-development-channels server:wecom-aibot-channel');
     }
 
     console.log('[config] 请重启 Claude Code 以加载最新配置\n');
