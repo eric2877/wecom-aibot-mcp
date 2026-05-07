@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.25] - 2026-05-07
+
+### Added
+- `--config` wizard now offers to redetect the default contact (`targetUserId`) when modifying an existing robot. When the user answers Y, a temporary client connects to the bot and waits for an incoming user message (same flow as `--add`), then the sender's userid becomes the new `targetUserId`. Answering N (default) keeps the original value untouched
+
 ## [2.4.24] - 2026-05-07
 
 ### Fixed

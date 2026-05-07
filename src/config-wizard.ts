@@ -1566,14 +1566,53 @@ export async function runConfigWizard(): Promise<{ config: WecomConfig; instance
       console.log('[config] 保持原文档 MCP URL');
     }
 
-    // 第六步：目标用户（稍后通过消息自动识别）
+    // 第六步：目标用户（默认联系人）
+    // 修改场景：询问是否要重新识别；选 Y 则连接 bot 等待用户消息（与 --add 一致）；选 N 保持原值
+    let targetUserId = targetRobot?.targetUserId || '';
+    if (targetRobot) {
+      console.log(`\n当前默认联系人（targetUserId）: ${targetUserId || '（未设置）'}`);
+      const changeContact = await question(rl, '是否重新识别？(y/N): ');
+      if (changeContact.toLowerCase() === 'y') {
+        // 临时连接 bot 等待用户消息以识别 userid
+        console.log('\n[config] 正在连接企业微信验证凭证...');
+        const { initClient } = await import('./client.js');
+        const tmpClient = initClient(botId, secret, 'placeholder', 'config-detect');
+
+        // 等待连接（最多10秒）
+        const connected = await new Promise<boolean>((resolve) => {
+          const start = Date.now();
+          const iv = setInterval(() => {
+            if (tmpClient.isConnected()) { clearInterval(iv); resolve(true); }
+            else if (Date.now() - start > 10000) { clearInterval(iv); resolve(false); }
+          }, 500);
+        });
+
+        if (!connected) {
+          console.log('[config] ❌ 连接失败（Bot ID/Secret 可能有误），保持原默认联系人');
+          tmpClient.disconnect();
+        } else {
+          const detectedUserId = await detectUserIdFromMessage(tmpClient, 180);
+          tmpClient.disconnect();
+          if (detectedUserId) {
+            targetUserId = detectedUserId;
+            console.log(`[config] ✅ 默认联系人已更新: ${targetUserId}`);
+          } else {
+            console.log('[config] 未识别到用户消息，保持原默认联系人');
+          }
+        }
+      } else {
+        console.log('[config] 保持原默认联系人');
+      }
+    }
+
+    // 第七步：确认
     console.log('\n─────────────────────────────────────');
     console.log('配置确认：');
-    console.log(`  机器人名称: ${robotName}`);
-    console.log(`  Bot ID:     ${botId}`);
-    console.log(`  Secret:     ${secret.slice(0, 8)}...${secret.slice(-4)}`);
-    console.log(`  文档 MCP:   ${docMcpUrl ? '✅ 已配置' : '（未配置）'}`);
-    console.log(`  目标用户:   （将通过消息自动识别）`);
+    console.log(`  机器人名称:   ${robotName}`);
+    console.log(`  Bot ID:       ${botId}`);
+    console.log(`  Secret:       ${secret.slice(0, 8)}...${secret.slice(-4)}`);
+    console.log(`  文档 MCP:     ${docMcpUrl ? '✅ 已配置' : '（未配置）'}`);
+    console.log(`  默认联系人:   ${targetUserId || '（将通过消息自动识别）'}`);
     console.log('─────────────────────────────────────\n');
 
     const confirm = await question(rl, '确认配置？(Y/n): ');
@@ -1583,11 +1622,11 @@ export async function runConfigWizard(): Promise<{ config: WecomConfig; instance
       process.exit(0);
     }
 
-    // 返回临时配置（targetUserId 稍后填充）
+    // 返回最终配置
     const config: WecomConfig = {
       botId,
       secret,
-      targetUserId: targetRobot?.targetUserId || '',  // 修改时保留原值，新建时稍后识别
+      targetUserId,  // 修改时保留 / 已变更，新建时为空（稍后识别）
       nameTag: robotName,
       ...(docMcpUrl ? { doc_mcp_url: docMcpUrl } : {}),
     };
