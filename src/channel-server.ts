@@ -16,9 +16,47 @@ import { z } from 'zod';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execSync } from 'child_process';
 import { VERSION, installSkill } from './config-wizard.js';
 import { addPermissionHook, registerActiveProject, unregisterActiveProject, updateWechatModeConfig } from './project-config.js';
 import { logger } from './logger.js';
+
+/**
+ * 沿进程树向上查找 Claude Code TUI 的 PID。
+ *
+ * 背景：本地 dev (`command: "node"`) 时 channel-server 是 Claude TUI 的直接子进程，
+ *   process.ppid = Claude TUI ✓
+ * 但 npx 部署 (`command: "npx"`) 时多了一层 npx：
+ *   Claude TUI → npx → node bin.js (channel-server)
+ *   process.ppid = npx ❌
+ * permission-hook.sh 从 hook 自身向上查 active-projects.json 时只能命中 Claude TUI
+ * 这条祖先链。如果注册的是 npx 的 PID，hook 永远找不到 → 静默 exit 0 → 跳过审批。
+ *
+ * 此函数从 startPid 起向上遍历，找到第一个命令名为 "claude" 的进程，返回其 PID。
+ * 找不到时回退到 startPid（保持旧行为，至少 dev 场景不退化）。
+ */
+function findClaudePid(startPid: number): number {
+  let pid = startPid;
+  for (let i = 0; i < 8; i++) {
+    if (!pid || pid <= 1) break;
+    try {
+      const comm = execSync(`ps -p ${pid} -o comm=`, { stdio: ['ignore', 'pipe', 'ignore'] })
+        .toString()
+        .trim();
+      // ps comm= 返回执行文件 basename。Claude Code TUI 安装名就是 "claude"
+      if (comm === 'claude' || comm.endsWith('/claude')) return pid;
+      const ppidStr = execSync(`ps -p ${pid} -o ppid=`, { stdio: ['ignore', 'pipe', 'ignore'] })
+        .toString()
+        .trim();
+      const ppid = parseInt(ppidStr, 10);
+      if (!ppid || ppid === pid) break;
+      pid = ppid;
+    } catch {
+      break;
+    }
+  }
+  return startPid;
+}
 
 const MCP_URL = process.env.MCP_URL || 'http://127.0.0.1:18963';
 const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
@@ -527,9 +565,16 @@ function registerChannelTools(server: McpServer) {
               const hookResult = addPermissionHook(localProjectDir);
               logger.info('本地 PermissionRequest hook 已写入', { path: hookResult.path, success: hookResult.success });
 
-              // 注册本地 PID → projectDir（供本地 permission-hook.sh 通过进程树匹配项目）
-              registerActiveProject(process.ppid ?? process.pid, localProjectDir);
-              logger.info('本地 active-projects 已注册', { pid: process.ppid ?? process.pid, projectDir: localProjectDir });
+              // 注册 Claude TUI 的 PID（不能用 process.ppid，npx 部署时 ppid 是 npx 不是 Claude）
+              const startPid = process.ppid ?? process.pid;
+              const claudePid = findClaudePid(startPid);
+              registerActiveProject(claudePid, localProjectDir);
+              logger.info('本地 active-projects 已注册', {
+                pid: claudePid,
+                rawPpid: startPid,
+                resolvedClaudePid: claudePid !== startPid,
+                projectDir: localProjectDir,
+              });
 
               // 写入本地 wecom-aibot.json（远程 HTTP MCP 写在远端 fs，agent 本地需要自己落地）
               updateWechatModeConfig(localProjectDir, {

@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.24] - 2026-05-07
+
+### Fixed
+- `active-projects.json` registered the wrong PID under npx-based deployments, causing the permission hook to silently fall through (exit 0) and skip approvals. The channel-server now walks up the process tree to find the actual Claude Code TUI PID instead of blindly using `process.ppid`. Local dev installs (where Claude TUI directly spawns `node bin.js`) continue to work as before; npx installs (where `npx` is interposed between Claude TUI and `node bin.js`) are now correctly resolved
+
 ## [2.4.23] - 2026-05-06
 
 ### Added
