@@ -315,7 +315,7 @@ describe('HTTP 服务器集成测试', () => {
       // HOOK_SCRIPT_PATH 现在从 index.ts 导出（作为 PERMISSION_HOOK_SCRIPT_PATH 的别名）
       const indexModule = await import('../../src/index.js');
       expect(indexModule.HOOK_SCRIPT_PATH).toContain('.wecom-aibot-mcp');
-      expect(indexModule.HOOK_SCRIPT_PATH).toContain('permission-hook.sh');
+      expect(indexModule.HOOK_SCRIPT_PATH).toContain('permission-hook.js');
     });
   });
 

@@ -28,8 +28,11 @@ const VERSION_FILE = path.join(CONFIG_DIR, 'version.json');
 const SERVER_CONFIG_FILE = path.join(CONFIG_DIR, 'server.json');  // HTTP Server 配置（auth token 等）
 const CLAUDE_CONFIG_FILE = path.join(os.homedir(), '.claude.json');
 const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.local.json');
-const HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.sh');
-const STOP_HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'stop-hook.sh');
+// v3.0+：hook 改用 Node.js（跨平台）。旧路径仅用于 --upgrade / --uninstall 清理。
+const HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.js');
+const STOP_HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'stop-hook.js');
+const LEGACY_HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.sh');
+const LEGACY_STOP_HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'stop-hook.sh');
 
 // Skill 模板路径（包内）- 使用 fileURLToPath 确保跨平台兼容
 const __filename = fileURLToPath(import.meta.url);
@@ -241,10 +244,12 @@ export function deleteHook() {
         fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(settings, null, 2));
       }
 
-      // 删除 hook 脚本文件
-      if (fs.existsSync(HOOK_SCRIPT_PATH)) {
-        fs.unlinkSync(HOOK_SCRIPT_PATH);
-        console.log('[config] 已删除 hook 脚本文件');
+      // 删除 hook 脚本文件（含旧版 .sh 残留）
+      for (const p of [HOOK_SCRIPT_PATH, STOP_HOOK_SCRIPT_PATH, LEGACY_HOOK_SCRIPT_PATH, LEGACY_STOP_HOOK_SCRIPT_PATH]) {
+        if (fs.existsSync(p)) {
+          fs.unlinkSync(p);
+          console.log(`[config] 已删除 hook 文件: ${path.basename(p)}`);
+        }
       }
     }
   } catch (err) {
@@ -462,388 +467,33 @@ export function uninstall() {
   console.log('[config] 如需重新安装，请运行: npx @vrs-soft/wecom-aibot-mcp\n');
 }
 
-// 生成并写入 hook 脚本（HTTP Transport 版本）
+// 拷贝包内编译后的 hook 脚本到 ~/.wecom-aibot-mcp/permission-hook.js
+function copyHook(srcRelative: string, dest: string, label: string) {
+  const src = path.join(__dirname, srcRelative);
+  if (!fs.existsSync(src)) {
+    logger.error(`[config] hook 源文件不存在: ${src}`);
+    return false;
+  }
+  ensureConfigDir();
+  fs.copyFileSync(src, dest);
+  console.log(`[config] ${label} 已写入: ${dest}`);
+  return true;
+}
+
+// 安装 hook 脚本（v3.0+ 改用 Node.js，跨平台）
 function writeHookScript() {
-  const script = `#!/bin/bash
-# wecom-aibot-mcp PermissionRequest hook
-# HTTP Transport 版本
-#
-# 固定端口: 18963
-# 通过 PID 树查 ~/.wecom-aibot-mcp/active-projects.json 匹配项目，读 wechatMode 开关
-
-MCP_PORT=18963
-
-# 先保存输入（只能读一次）
-INPUT=$(cat)
-
-# 日志输出：--debug 模式下输出到 stderr，否则静默
-DEBUG_FILE="$HOME/.wecom-aibot-mcp/debug"
-log_debug() {
-  if [[ -f "$DEBUG_FILE" ]]; then
-    echo "$1" >&2
-  fi
+  if (fs.existsSync(LEGACY_HOOK_SCRIPT_PATH)) {
+    try { fs.unlinkSync(LEGACY_HOOK_SCRIPT_PATH); console.log('[config] 已清理旧版 permission-hook.sh'); } catch { /* ignore */ }
+  }
+  copyHook(path.join('hooks', 'permission-hook.js'), HOOK_SCRIPT_PATH, 'PermissionRequest hook');
 }
 
-log_debug "[$(date)] Hook called. TOOL_NAME: $(echo "$INPUT" | jq -r '.tool_name')"
-
-TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
-
-# MCP 工具本身不需要拦截
-if [[ "$TOOL_NAME" == mcp__* ]]; then
-  log_debug "[$(date)] Allowed: MCP tool"
-  printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
-  exit 0
-fi
-
-# 只读工具不需要拦截
-case "$TOOL_NAME" in
-  Read|Glob|Grep|LS|TaskList|TaskGet|TaskOutput|TaskStop|CronList|CronCreate|CronDelete|AskUserQuestion|Skill|ListMcpResourcesTool|EnterPlanMode|ExitPlanMode|WebSearch|WebFetch|NotebookEdit)
-    log_debug "[$(date)] Allowed: read-only tool"
-    printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
-    exit 0
-    ;;
-esac
-
-# 通过进程树匹配活跃项目（以 Claude 进程为准，不依赖 pwd）
-ACTIVE_INDEX="$HOME/.wecom-aibot-mcp/active-projects.json"
-log_debug "[$(date)] Checking active-projects index via PID tree (pid=$$, ppid=$PPID)"
-
-if [[ ! -f "$ACTIVE_INDEX" ]]; then
-  log_debug "[$(date)] No active-projects index, exit 0"
-  exit 0
-fi
-
-# 沿进程树向上查找，深度 8 层
-PROJECT_DIR=""
-SEARCH_PID=$PPID
-for i in {1..8}; do
-  if [[ -z "$SEARCH_PID" ]] || [[ "$SEARCH_PID" -le 1 ]]; then
-    break
-  fi
-  MATCH=$(jq -r --argjson p "$SEARCH_PID" '.[] | select(.pid==$p) | .projectDir' "$ACTIVE_INDEX" 2>/dev/null)
-  if [[ -n "$MATCH" ]]; then
-    PROJECT_DIR="$MATCH"
-    log_debug "[$(date)] Found project via PID $SEARCH_PID (depth $i): $PROJECT_DIR"
-    break
-  fi
-  SEARCH_PID=$(ps -o ppid= -p "$SEARCH_PID" 2>/dev/null | tr -d ' ')
-done
-
-if [[ -z "$PROJECT_DIR" ]]; then
-  log_debug "[$(date)] No PID match in process tree, exit 0"
-  exit 0
-fi
-
-CONFIG_FILE="$PROJECT_DIR/.claude/wecom-aibot.json"
-log_debug "[$(date)] Found project: $PROJECT_DIR"
-
-# 配置文件不存在，不在微信模式
-if [[ ! -f "$CONFIG_FILE" ]]; then
-  log_debug "[$(date)] No wecom-aibot.json config, exit 0"
-  exit 0
-fi
-
-# 检查 wechatMode 是否为 true（微信模式开关）
-WECHAT_MODE=$(jq -r '.wechatMode // false' "$CONFIG_FILE" 2>/dev/null)
-log_debug "[$(date)] wechatMode: $WECHAT_MODE"
-if [[ "$WECHAT_MODE" != "true" ]]; then
-  log_debug "[$(date)] wechatMode not true, exit 0"
-  exit 0
-fi
-
-# 确定 MCP Server 地址
-# channel 模式直接使用远程地址，http 模式先试本地再回退远程
-MODE=$(jq -r '.mode // "http"' "$CONFIG_FILE" 2>/dev/null)
-MCP_BASE_URL="http://127.0.0.1:$MCP_PORT"
-AUTH_ARGS=()
-
-_try_remote() {
-  CLAUDE_JSON="$HOME/.claude.json"
-  if [[ ! -f "$CLAUDE_JSON" ]]; then
-    log_debug "[$(date)] No ~/.claude.json found, exit 0"
-    exit 0
-  fi
-  REMOTE_URL=$(jq -r '.mcpServers["wecom-aibot-channel"].env.MCP_URL // empty' "$CLAUDE_JSON" 2>/dev/null)
-  REMOTE_TOKEN=$(jq -r '.mcpServers["wecom-aibot-channel"].env.MCP_AUTH_TOKEN // empty' "$CLAUDE_JSON" 2>/dev/null)
-  if [[ -z "$REMOTE_URL" ]]; then
-    log_debug "[$(date)] No remote URL configured, exit 0"
-    exit 0
-  fi
-  REMOTE_HEALTH=$(curl -s -m 5 \${REMOTE_TOKEN:+-H "Authorization: Bearer $REMOTE_TOKEN"} "$REMOTE_URL/health" 2>/dev/null)
-  log_debug "[$(date)] Remote health check ($REMOTE_URL): $REMOTE_HEALTH"
-  if echo "$REMOTE_HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
-    MCP_BASE_URL="$REMOTE_URL"
-    [[ -n "$REMOTE_TOKEN" ]] && AUTH_ARGS=(-H "Authorization: Bearer $REMOTE_TOKEN")
-    log_debug "[$(date)] Using remote server: $MCP_BASE_URL"
-  else
-    log_debug "[$(date)] Remote health check failed, exit 0"
-    exit 0
-  fi
-}
-
-if [[ "$MODE" == "channel" ]]; then
-  # channel 模式：直接使用远程地址，跳过本地检查
-  log_debug "[$(date)] Channel mode, using remote server directly"
-  _try_remote
-else
-  # http 模式：本地优先，失败则尝试远程
-  HEALTH=$(curl -s -m 2 "$MCP_BASE_URL/health" 2>/dev/null)
-  log_debug "[$(date)] Local health check: $HEALTH"
-  if ! echo "$HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
-    log_debug "[$(date)] Local server not available, trying remote channel config..."
-    _try_remote
-  fi
-fi
-
-# 读取当前项目使用的机器人名称和 ccId
-ROBOT_NAME=$(jq -r '.robotName // empty' "$CONFIG_FILE" 2>/dev/null)
-CC_ID=$(jq -r '.ccId // empty' "$CONFIG_FILE" 2>/dev/null)
-
-# 发送审批请求（使用 pwd 作为 projectDir）
-TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}')
-BODY=$(jq -n --arg tool_name "$TOOL_NAME" --argjson tool_input "$TOOL_INPUT" --arg project_dir "$PROJECT_DIR" --arg robot_name "$ROBOT_NAME" --arg cc_id "$CC_ID" \\
-  '{"tool_name":$tool_name,"tool_input":$tool_input,"projectDir":$project_dir,"robotName":$robot_name,"ccId":$cc_id}')
-
-log_debug "[$(date)] Sending approval request..."
-RESPONSE=$(curl -s -m 10 -X POST "$MCP_BASE_URL/approve" \\
-  "\${AUTH_ARGS[@]}" \\
-  -H "Content-Type: application/json" \\
-  -d "$BODY")
-
-log_debug "[$(date)] Approval response: $RESPONSE"
-TASK_ID=$(echo "$RESPONSE" | jq -r '.taskId // empty')
-if [[ -z "$TASK_ID" ]]; then
-  log_debug "[$(date)] No taskId, exit 0"
-  exit 0
-fi
-
-log_debug "[$(date)] Waiting for approval, taskId: $TASK_ID"
-
-# 轮询审批结果（带超时：从配置读取）
-AUTO_APPROVE_TIMEOUT=$(jq -r '.autoApproveTimeout // 300' "$CONFIG_FILE" 2>/dev/null)
-# 超时时间（秒），转换为轮询次数（每次 sleep 2秒）
-# 使用向上取整补偿整数截断：MAX_POLL = ceil(timeout/2) = (timeout+1)/2
-MAX_POLL=$(( (AUTO_APPROVE_TIMEOUT + 1) / 2 ))
-if [[ $MAX_POLL -lt 1 ]]; then
-  MAX_POLL=1
-fi
-POLL_COUNT=0
-
-log_debug "[$(date)] autoApproveTimeout: $AUTO_APPROVE_TIMEOUT seconds, MAX_POLL: $MAX_POLL (actual wait: ~$((MAX_POLL * 2))s)"
-
-while [[ $POLL_COUNT -lt $MAX_POLL ]]; do
-  sleep 2
-  POLL_COUNT=$((POLL_COUNT + 1))
-
-  STATUS=$(curl -s -m 3 "\${AUTH_ARGS[@]}" "$MCP_BASE_URL/approval_status/$TASK_ID" 2>/dev/null)
-  RESULT=$(echo "$STATUS" | jq -r '.result // empty')
-  log_debug "[$(date)] Poll $POLL_COUNT/$MAX_POLL: result=$RESULT"
-
-  if [[ "$RESULT" == "allow-once" || "$RESULT" == "allow-always" ]]; then
-    log_debug "[$(date)] Approved by user"
-    printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
-    exit 0
-  elif [[ "$RESULT" == "deny" ]]; then
-    log_debug "[$(date)] Denied by user"
-    printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"用户拒绝"}}}'
-    exit 0
-  fi
-done
-
-log_debug "[$(date)] Timeout reached, executing smart auto-approval"
-
-# 超时处理：必须立即决策，Claude Code 的 hook timeout 会杀掉阻塞进程。
-# 规则：删除命令→拒绝，项目内操作→允许，项目外操作→拒绝
-
-# 检查是否是删除命令（仅匹配命令行本身，不匹配 heredoc 内容）
-IS_DELETE=0
-if [[ "$TOOL_NAME" == "Bash" ]]; then
-  # 只取命令的第一行（避免 heredoc 内容干扰）
-  FIRST_LINE=$(echo "$TOOL_INPUT" | jq -r '.command // empty' | head -1)
-  log_debug "[$(date)] Checking delete: FIRST_LINE=$FIRST_LINE"
-  if [[ "$FIRST_LINE" == rm\\ * ]] || [[ "$FIRST_LINE" == rm ]] \\
-     || echo "$FIRST_LINE" | grep -qE '(^|[;&|(] *)(rm |rmdir )'; then
-    IS_DELETE=1
-  fi
-fi
-
-log_debug "[$(date)] IS_DELETE: $IS_DELETE"
-
-# 删除操作 → 永远拒绝
-if [[ $IS_DELETE -eq 1 ]]; then
-  log_debug "[$(date)] Auto-deny: delete operation"
-  # 通知 MCP Server 发送微信消息
-  curl -s -m 5 -X POST "$MCP_BASE_URL/approval_timeout/$TASK_ID" "\${AUTH_ARGS[@]}" -H "Content-Type: application/json" -d '{"result":"deny","reason":"超时自动拒绝：删除操作需人工确认"}' > /dev/null 2>&1 &
-  printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"超时自动拒绝：删除操作需人工确认"}}}'
-  exit 0
-fi
-
-# 检查操作路径是否在项目内
-IS_IN_PROJECT=0
-
-case "$TOOL_NAME" in
-  Bash)
-    CMD=$(echo "$TOOL_INPUT" | jq -r '.command // empty')
-    EXEC_CWD=$(pwd)
-    log_debug "[$(date)] Bash CMD=$CMD, EXEC_CWD=$EXEC_CWD"
-    if [[ "$CMD" == *"$PROJECT_DIR"* ]]; then
-      # 明确包含项目路径 → 项目内
-      IS_IN_PROJECT=1
-    elif echo "$CMD" | grep -qE '(^|[ \t])/[a-zA-Z0-9]'; then
-      # 含有绝对路径：过滤掉项目路径和安全系统目录，看是否还有真正的项目外路径
-      OUTSIDE=$(echo "$CMD" | grep -oE '(^| )/[a-zA-Z0-9][^ \t>|;&]*' | tr -d ' ' \
-        | grep -v "^$PROJECT_DIR" \
-        | grep -vE '^(/tmp/|/var/tmp/|/dev/null|/dev/stdin|/dev/stdout|/dev/stderr|/dev/fd/)')
-      if [[ -z "$OUTSIDE" ]]; then
-        # 绝对路径全是项目内或安全临时目录 → 以执行位置为准
-        log_debug "[$(date)] Only safe abs paths, checking EXEC_CWD: $EXEC_CWD"
-        if [[ "$EXEC_CWD" == "$PROJECT_DIR"* ]]; then
-          IS_IN_PROJECT=1
-        fi
-      else
-        log_debug "[$(date)] Outside abs path detected: $OUTSIDE"
-        IS_IN_PROJECT=0
-      fi
-    else
-      # 无绝对路径（相对路径或纯命令如 npm/git）→ 以执行位置为准
-      log_debug "[$(date)] No absolute path, checking EXEC_CWD: $EXEC_CWD"
-      if [[ "$EXEC_CWD" == "$PROJECT_DIR"* ]]; then
-        IS_IN_PROJECT=1
-      fi
-    fi
-    ;;
-  Write|Edit)
-    FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
-    if [[ "$FILE_PATH" == "$PROJECT_DIR"* ]] || [[ "$FILE_PATH" != /* ]]; then
-      IS_IN_PROJECT=1
-    fi
-    ;;
-  *)
-    FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // .path // .directory // empty')
-    if [[ -n "$FILE_PATH" ]]; then
-      if [[ "$FILE_PATH" == "$PROJECT_DIR"* ]] || [[ "$FILE_PATH" != /* ]]; then
-        IS_IN_PROJECT=1
-      fi
-    fi
-    ;;
-esac
-
-log_debug "[$(date)] IS_IN_PROJECT: $IS_IN_PROJECT"
-
-# 根据项目内/外决策
-if [[ $IS_IN_PROJECT -eq 1 ]]; then
-  log_debug "[$(date)] Auto-allow: project operation"
-  # 通知 MCP Server 发送微信消息
-  curl -s -m 5 -X POST "$MCP_BASE_URL/approval_timeout/$TASK_ID" "\${AUTH_ARGS[@]}" -H "Content-Type: application/json" -d '{"result":"allow-once","reason":"超时自动允许：项目内操作"}' > /dev/null 2>&1 &
-  printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","message":"超时自动允许：项目内操作"}}}'
-else
-  log_debug "[$(date)] Auto-deny: outside project"
-  # 通知 MCP Server 发送微信消息
-  curl -s -m 5 -X POST "$MCP_BASE_URL/approval_timeout/$TASK_ID" "\${AUTH_ARGS[@]}" -H "Content-Type: application/json" -d '{"result":"deny","reason":"超时自动拒绝：项目外操作需人工确认"}' > /dev/null 2>&1 &
-  printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"超时自动拒绝：项目外操作需人工确认"}}}'
-fi
-`;
-
-  ensureConfigDir();
-  fs.writeFileSync(HOOK_SCRIPT_PATH, script, { mode: 0o755 });
-  console.log(`[config] Hook 脚本已写入: ${HOOK_SCRIPT_PATH}`);
-}
-
-// 生成并写入 Stop hook 脚本
-// HTTP 模式使用：阻止 Claude 停止，提示调用 get_pending_messages 恢复轮询
+// 安装 Stop hook 脚本（v3.0+ Node.js）
 function writeStopHookScript() {
-  const script = `#!/bin/bash
-# wecom-aibot-mcp Stop hook
-# HTTP 模式使用：阻止 Claude 停止，提示调用 get_pending_messages 恢复轮询
-#
-# 固定端口: 18963
-# 只检查 $(pwd)/.claude/wecom-aibot.json 的 wechatMode 字段
-
-MCP_PORT=18963
-
-# 先保存输入（Stop 事件数据）
-INPUT=$(cat)
-
-# 日志输出：--debug 模式下输出到 stderr，否则静默
-DEBUG_FILE="$HOME/.wecom-aibot-mcp/debug"
-log_debug() {
-  if [[ -f "$DEBUG_FILE" ]]; then
-    echo "$1" >&2
-  fi
-}
-
-log_debug "[$(date)] Stop hook called. INPUT: \${INPUT:0:200}"
-
-# 检查项目目录的微信模式配置文件
-PROJECT_DIR=$(pwd)
-CONFIG_FILE="$PROJECT_DIR/.claude/wecom-aibot.json"
-
-log_debug "[$(date)] Checking config: $CONFIG_FILE"
-
-# 配置文件不存在，不在微信模式，允许停止
-if [[ ! -f "$CONFIG_FILE" ]]; then
-  log_debug "[$(date)] No config file, exit 0 (allow stop)"
-  exit 0
-fi
-
-# 检查 wechatMode 是否为 true（微信模式开关）
-WECHAT_MODE=$(jq -r '.wechatMode // false' "$CONFIG_FILE" 2>/dev/null)
-log_debug "[$(date)] wechatMode: $WECHAT_MODE"
-if [[ "$WECHAT_MODE" != "true" ]]; then
-  log_debug "[$(date)] wechatMode not true, exit 0 (allow stop)"
-  exit 0
-fi
-
-# 确定 MCP Server 地址（本地优先，失败则尝试远程 channel 配置）
-MCP_BASE_URL="http://127.0.0.1:$MCP_PORT"
-AUTH_ARGS=()
-
-HEALTH=$(curl -s -m 2 "$MCP_BASE_URL/health" 2>/dev/null)
-log_debug "[$(date)] Local health check: $HEALTH"
-if ! echo "$HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
-  CLAUDE_JSON="$HOME/.claude.json"
-  if [[ -f "$CLAUDE_JSON" ]]; then
-    REMOTE_URL=$(jq -r '.mcpServers["wecom-aibot-channel"].env.MCP_URL // empty' "$CLAUDE_JSON" 2>/dev/null)
-    REMOTE_TOKEN=$(jq -r '.mcpServers["wecom-aibot-channel"].env.MCP_AUTH_TOKEN // empty' "$CLAUDE_JSON" 2>/dev/null)
-    if [[ -n "$REMOTE_URL" ]]; then
-      REMOTE_HEALTH=$(curl -s -m 5 \${REMOTE_TOKEN:+-H "Authorization: Bearer $REMOTE_TOKEN"} "$REMOTE_URL/health" 2>/dev/null)
-      if echo "$REMOTE_HEALTH" | jq -e '.status == "ok"' > /dev/null 2>&1; then
-        MCP_BASE_URL="$REMOTE_URL"
-        [[ -n "$REMOTE_TOKEN" ]] && AUTH_ARGS=(-H "Authorization: Bearer $REMOTE_TOKEN")
-        log_debug "[$(date)] Using remote server: $MCP_BASE_URL"
-      else
-        log_debug "[$(date)] MCP Server offline, exit 0 (allow stop)"
-        exit 0
-      fi
-    else
-      log_debug "[$(date)] MCP Server offline, exit 0 (allow stop)"
-      exit 0
-    fi
-  else
-    log_debug "[$(date)] MCP Server offline, exit 0 (allow stop)"
-    exit 0
-  fi
-fi
-
-# 获取 ccId
-CC_ID=$(jq -r '.ccId // empty' "$CONFIG_FILE" 2>/dev/null)
-log_debug "[$(date)] ccId: $CC_ID"
-if [[ -z "$CC_ID" ]]; then
-  log_debug "[$(date)] No ccId in config, exit 0 (allow stop)"
-  exit 0
-fi
-
-# 处于微信模式，需要恢复轮询
-# 使用 exit code 2 阻止停止，并提示 Claude 调用 MCP 工具
-log_debug "[$(date)] ✅ WeChat mode active, blocking stop to resume polling"
-log_debug "[$(date)] ccId=$CC_ID, will prompt Claude to call get_pending_messages"
-echo "任务已完成，请调用 mcp__wecom-aibot__get_pending_messages(cc_id=\"$CC_ID\", timeout_ms=30000) 恢复微信消息轮询" >&2
-exit 2
-`;
-
-  ensureConfigDir();
-  fs.writeFileSync(STOP_HOOK_SCRIPT_PATH, script, { mode: 0o755 });
-  console.log(`[config] Stop Hook 脚本已写入: ${STOP_HOOK_SCRIPT_PATH}`);
+  if (fs.existsSync(LEGACY_STOP_HOOK_SCRIPT_PATH)) {
+    try { fs.unlinkSync(LEGACY_STOP_HOOK_SCRIPT_PATH); console.log('[config] 已清理旧版 stop-hook.sh'); } catch { /* ignore */ }
+  }
+  copyHook(path.join('hooks', 'stop-hook.js'), STOP_HOOK_SCRIPT_PATH, 'Stop hook');
 }
 
 // 写入 MCP Server 配置到 ~/.claude.json
