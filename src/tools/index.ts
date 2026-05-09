@@ -433,7 +433,7 @@ npx @vrs-soft/wecom-aibot-mcp
               hooks: {
                 file: '~/.claude/settings.local.json',
                 PermissionRequest: {
-                  script: '~/.wecom-aibot-mcp/permission-hook.sh',
+                  script: '~/.wecom-aibot-mcp/permission-hook.js',
                   description: '审批请求通过微信发送',
                 },
               },

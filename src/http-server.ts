@@ -35,8 +35,8 @@ const __dirname = path.dirname(__filename);
 // 固定端口
 export const HTTP_PORT = 18963;
 
-// Hook 脚本路径
-export const HOOK_SCRIPT_PATH = path.join(os.homedir(), '.wecom-aibot-mcp', 'permission-hook.sh');
+// Hook 脚本路径（v3.0+ 改用 Node.js 脚本，跨平台）
+export const HOOK_SCRIPT_PATH = path.join(os.homedir(), '.wecom-aibot-mcp', 'permission-hook.js');
 
 let httpServer: http.Server | https.Server | null = null;
 let startTime: number = 0;

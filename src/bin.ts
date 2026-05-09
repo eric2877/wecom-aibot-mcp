@@ -215,19 +215,31 @@ function isServerRunning(): boolean {
   }
 }
 
-// 通过端口查找进程 PID（fallback，当 PID 文件不存在时）
+// 通过端口查找进程 PID（fallback，当 PID 文件不存在时）。
+// Windows 用 netstat -ano；Unix 优先 lsof，回退 ss。
 function findPidByPort(port: number): number | null {
+  if (process.platform === 'win32') {
+    try {
+      const output = execSync(`netstat -ano -p TCP`, { encoding: 'utf-8' });
+      // 行形如: "  TCP    127.0.0.1:18963   0.0.0.0:0   LISTENING   1234"
+      const re = new RegExp(`^\\s*TCP\\s+\\S+:${port}\\s+\\S+\\s+LISTENING\\s+(\\d+)`, 'm');
+      const m = output.match(re);
+      if (m) return parseInt(m[1], 10);
+    } catch { /* ignore */ }
+    return null;
+  }
+
   try {
-    // Linux: ss -tlnp | grep :18963
-    const output = execSync(`ss -tlnp 2>/dev/null | grep ':${port}'`, { encoding: 'utf-8' });
-    const match = output.match(/pid=(\d+)/);
-    if (match) return parseInt(match[1]);
+    // macOS / Linux 都装了 lsof
+    const output = execSync(`lsof -ti :${port} 2>/dev/null`, { encoding: 'utf-8' }).trim();
+    if (output) return parseInt(output.split('\n')[0]);
   } catch { /* ignore */ }
 
   try {
-    // macOS: lsof -ti :18963
-    const output = execSync(`lsof -ti :${port} 2>/dev/null`, { encoding: 'utf-8' }).trim();
-    if (output) return parseInt(output.split('\n')[0]);
+    // Linux 备选：ss -tlnp
+    const output = execSync(`ss -tlnp 2>/dev/null | grep ':${port}'`, { encoding: 'utf-8' });
+    const match = output.match(/pid=(\d+)/);
+    if (match) return parseInt(match[1]);
   } catch { /* ignore */ }
 
   return null;
@@ -494,7 +506,13 @@ async function main() {
     const CLAUDE_CONFIG_FILE = path.join(os.homedir(), '.claude.json');
     const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.local.json');
     const VERSION_FILE = path.join(os.homedir(), '.wecom-aibot-mcp', 'version.json');
-    const HOOK_SCRIPT = path.join(os.homedir(), '.wecom-aibot-mcp', 'permission-hook.sh');
+    const HOOK_SCRIPTS = [
+      path.join(os.homedir(), '.wecom-aibot-mcp', 'permission-hook.js'),
+      path.join(os.homedir(), '.wecom-aibot-mcp', 'stop-hook.js'),
+      // 旧版 .sh 残留
+      path.join(os.homedir(), '.wecom-aibot-mcp', 'permission-hook.sh'),
+      path.join(os.homedir(), '.wecom-aibot-mcp', 'stop-hook.sh'),
+    ];
 
     // 1. 删除 ~/.claude.json 中的 wecom-aibot 配置
     if (fs.existsSync(CLAUDE_CONFIG_FILE)) {
@@ -535,10 +553,12 @@ async function main() {
       console.log('[mcp] 已删除 ~/.wecom-aibot-mcp/version.json');
     }
 
-    // 4. 删除 hook 脚本
-    if (fs.existsSync(HOOK_SCRIPT)) {
-      fs.unlinkSync(HOOK_SCRIPT);
-      console.log('[mcp] 已删除 ~/.wecom-aibot-mcp/permission-hook.sh');
+    // 4. 删除 hook 脚本（含旧版 .sh）
+    for (const p of HOOK_SCRIPTS) {
+      if (fs.existsSync(p)) {
+        fs.unlinkSync(p);
+        console.log(`[mcp] 已删除 ${p}`);
+      }
     }
 
     // 5. 重新安装全局配置
