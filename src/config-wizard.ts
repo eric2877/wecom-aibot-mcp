@@ -185,10 +185,19 @@ export function deleteConfig() {
       const content = fs.readFileSync(CLAUDE_CONFIG_FILE, 'utf-8');
       const claudeConfig = JSON.parse(content);
 
+      let changed = false;
       if (claudeConfig.mcpServers?.['wecom-aibot']) {
         delete claudeConfig.mcpServers['wecom-aibot'];
-        fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
         console.log('[config] 已从 ~/.claude.json 删除 wecom-aibot 配置');
+        changed = true;
+      }
+      if (claudeConfig.mcpServers?.['wecom-aibot-channel']) {
+        delete claudeConfig.mcpServers['wecom-aibot-channel'];
+        console.log('[config] 已从 ~/.claude.json 删除 wecom-aibot-channel 配置');
+        changed = true;
+      }
+      if (changed) {
+        fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
       }
     }
   } catch (err) {
@@ -202,6 +211,7 @@ export function deleteHook() {
     if (fs.existsSync(CLAUDE_SETTINGS_FILE)) {
       const content = fs.readFileSync(CLAUDE_SETTINGS_FILE, 'utf-8');
       const settings = JSON.parse(content);
+      let changed = false;
 
       if (settings.hooks && settings.hooks['PermissionRequest']) {
         // 只删除 wecom-aibot 相关的 hook
@@ -211,8 +221,24 @@ export function deleteHook() {
         if (settings.hooks['PermissionRequest'].length === 0) {
           delete settings.hooks['PermissionRequest'];
         }
-        fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(settings, null, 2));
         console.log('[config] 已删除 PermissionRequest hook');
+        changed = true;
+      }
+
+      // 移除 wecom-aibot 相关的 MCP 权限
+      if (Array.isArray(settings.permissions?.allow)) {
+        const before = settings.permissions.allow.length;
+        settings.permissions.allow = settings.permissions.allow.filter(
+          (p: string) => !/^mcp__wecom-aibot(-channel)?__/.test(p)
+        );
+        if (settings.permissions.allow.length !== before) {
+          console.log(`[config] 已移除 ${before - settings.permissions.allow.length} 条 wecom-aibot MCP 权限`);
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(settings, null, 2));
       }
 
       // 删除 hook 脚本文件
@@ -1135,8 +1161,31 @@ export function ensureHookInstalled() {
   writeStopHookScript();
 }
 
+export type InstallMode = 'full' | 'http-only' | 'channel-only' | 'remote' | 'remote-channel';
+
+// 读取上次安装的模式 + 远程参数（来自 version.json）
+export function getInstalledMode(): { mode?: InstallMode; remote?: { url: string; token?: string } } {
+  if (!fs.existsSync(VERSION_FILE)) return {};
+  try {
+    const data = JSON.parse(fs.readFileSync(VERSION_FILE, 'utf-8'));
+    const result: { mode?: InstallMode; remote?: { url: string; token?: string } } = {};
+    if (data.mode) result.mode = data.mode as InstallMode;
+    if (data.remote?.url) result.remote = { url: data.remote.url, token: data.remote.token };
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+// 写 version.json（统一入口，记录 mode + 远程参数，用于后续 --upgrade 复用）
+function writeVersionFile(mode: InstallMode, remoteOptions?: { url: string; token?: string }) {
+  const payload: any = { version: VERSION, installedAt: Date.now(), mode };
+  if (remoteOptions?.url) payload.remote = { url: remoteOptions.url, ...(remoteOptions.token ? { token: remoteOptions.token } : {}) };
+  fs.writeFileSync(VERSION_FILE, JSON.stringify(payload, null, 2));
+}
+
 // 确保所有全局配置已写入（强制覆盖，不依赖智能体）
-export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' | 'remote' | 'remote-channel' = 'full', remoteOptions?: { url: string; token: string }): { upgraded: boolean; previousVersion?: string } {
+export function ensureGlobalConfigs(mode: InstallMode = 'full', remoteOptions?: { url: string; token: string }): { upgraded: boolean; previousVersion?: string } {
   ensureConfigDir();
 
   // 读取已安装版本
@@ -1160,7 +1209,7 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
     // 只写权限配置和 Hook（可选，用于本地调试）
     writeMcpPermissions();
     console.log('[config] 已写入权限配置到 ~/.claude/settings.local.json');
-    fs.writeFileSync(VERSION_FILE, JSON.stringify({ version: VERSION, installedAt: Date.now() }, null, 2));
+    writeVersionFile(mode);
     return { upgraded, previousVersion };
   }
 
@@ -1183,7 +1232,7 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
     };
     fs.writeFileSync(CLAUDE_CONFIG_FILE, JSON.stringify(claudeConfig, null, 2));
     console.log('[config] remote 模式：已写入远程 HTTP MCP 配置（带 Token）');
-    fs.writeFileSync(VERSION_FILE, JSON.stringify({ version: VERSION, installedAt: Date.now() }, null, 2));
+    writeVersionFile(mode, remoteOptions);
     return { upgraded, previousVersion };
   }
 
@@ -1222,7 +1271,7 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
     writeMcpPermissions();
     console.log('[config] 已写入权限配置到 ~/.claude/settings.local.json');
 
-    fs.writeFileSync(VERSION_FILE, JSON.stringify({ version: VERSION, installedAt: Date.now() }, null, 2));
+    writeVersionFile(mode, remoteOptions);
     return { upgraded, previousVersion };
   }
 
@@ -1293,7 +1342,7 @@ export function ensureGlobalConfigs(mode: 'full' | 'http-only' | 'channel-only' 
   console.log('[config] 已写入权限配置到 ~/.claude/settings.local.json');
 
   // 3. 写入版本号
-  fs.writeFileSync(VERSION_FILE, JSON.stringify({ version: VERSION, installedAt: Date.now() }, null, 2));
+  writeVersionFile(mode);
   console.log(`[config] 已记录版本号: ${VERSION}`);
 
   return { upgraded, previousVersion };

@@ -25,6 +25,7 @@ import {
   ensureHookInstalled,
   listAllRobots,
   ensureGlobalConfigs,
+  getInstalledMode,
   getAuthToken,
   setAuthToken,
   getHttpsConfig,
@@ -428,10 +429,15 @@ function startMcpServerBackground(): void {
 async function main() {
   const args = process.argv.slice(2);
 
-  // 确定安装模式
-  const installMode: 'full' | 'http-only' | 'channel-only' =
+  // 确定安装模式：优先 CLI flag，其次复用 version.json 里上次的 mode（保持 remote / channel-only 等模式不被 --upgrade 打回 full）
+  const explicitMode: 'http-only' | 'channel-only' | undefined =
     args.includes('--http-only') ? 'http-only' :
-    args.includes('--channel-only') ? 'channel-only' : 'full';
+    args.includes('--channel-only') ? 'channel-only' : undefined;
+  const prior = getInstalledMode();
+  const installMode = explicitMode || prior.mode || 'full';
+  const remoteOptions = (installMode === 'remote' || installMode === 'remote-channel') && prior.remote?.url
+    ? { url: prior.remote.url, token: prior.remote.token || '' }
+    : undefined;
 
   // 以下命令跳过顶部 ensureGlobalConfigs，避免覆盖配置
   // --setup: 向导完成后自己调用
@@ -447,7 +453,15 @@ async function main() {
     args.includes('--clean-cache') || args.includes('--set-token') || args.includes('--config');
   if (!skipEnsure) {
     // 强制覆盖所有全局配置（不依赖智能体）
-    ensureGlobalConfigs(installMode);
+    if (installMode === 'remote' || installMode === 'remote-channel') {
+      if (remoteOptions) {
+        ensureGlobalConfigs(installMode, remoteOptions);
+      } else {
+        console.log(`[mcp] 检测到上次安装模式 ${installMode}，但缺少远程参数；跳过配置写入。如需变更请使用 --setup`);
+      }
+    } else {
+      ensureGlobalConfigs(installMode);
+    }
   }
 
   // 解析命令行参数

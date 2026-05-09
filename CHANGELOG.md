@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.26] - 2026-05-09
+
+### Fixed
+- `--uninstall` now also removes the `wecom-aibot-channel` MCP entry from `~/.claude.json` (previously only removed `wecom-aibot`, leaving the Channel client config behind)
+- `--uninstall` now strips `mcp__wecom-aibot__*` and `mcp__wecom-aibot-channel__*` entries from `~/.claude/settings.local.json` permissions (previously left stale permissions behind)
+- `--upgrade` no longer silently downgrades the install mode to `full`. The previous install mode (`http-only` / `channel-only` / `remote` / `remote-channel`) is now persisted in `~/.wecom-aibot-mcp/version.json` and reused when no explicit mode flag is passed. Without this, an `--upgrade` on a `remote-channel` client would re-add a stale localhost `wecom-aibot` HTTP entry
+
+### Changed
+- `version.json` schema extended: `{ version, installedAt, mode, remote? }`. Existing installs without `mode` are treated as legacy and default to `full` until the next install/upgrade rewrites the file
+
 ## [2.4.25] - 2026-05-07
 
 ### Added
