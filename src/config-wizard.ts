@@ -481,18 +481,16 @@ function copyHook(srcRelative: string, dest: string, label: string) {
 }
 
 // 安装 hook 脚本（v3.0+ 改用 Node.js，跨平台）
+//
+// 升级期同时保留旧 .sh：仍在使用 v2.4.x 项目级 settings.json（hook 命令指向 .sh）
+// 的 CC 在 enter_headless_mode 重新被调用前还得跑 .sh，删早了会让那些 CC 立刻失审批。
+// .sh 真正清理的时机统一放在 --uninstall（deleteHook）。
 function writeHookScript() {
-  if (fs.existsSync(LEGACY_HOOK_SCRIPT_PATH)) {
-    try { fs.unlinkSync(LEGACY_HOOK_SCRIPT_PATH); console.log('[config] 已清理旧版 permission-hook.sh'); } catch { /* ignore */ }
-  }
   copyHook(path.join('hooks', 'permission-hook.js'), HOOK_SCRIPT_PATH, 'PermissionRequest hook');
 }
 
-// 安装 Stop hook 脚本（v3.0+ Node.js）
+// 安装 Stop hook 脚本（v3.0+ Node.js）；旧 .sh 同上策略，--uninstall 时清理
 function writeStopHookScript() {
-  if (fs.existsSync(LEGACY_STOP_HOOK_SCRIPT_PATH)) {
-    try { fs.unlinkSync(LEGACY_STOP_HOOK_SCRIPT_PATH); console.log('[config] 已清理旧版 stop-hook.sh'); } catch { /* ignore */ }
-  }
   copyHook(path.join('hooks', 'stop-hook.js'), STOP_HOOK_SCRIPT_PATH, 'Stop hook');
 }
 

@@ -36,7 +36,7 @@ function log(msg: string): void {
   }
 }
 
-function emit(decision: { behavior: 'allow' | 'deny'; message?: string }): void {
+function emit(decision: { behavior: 'allow' | 'deny'; message?: string }): never {
   const out = {
     hookSpecificOutput: {
       hookEventName: 'PermissionRequest',
@@ -44,6 +44,8 @@ function emit(decision: { behavior: 'allow' | 'deny'; message?: string }): void 
     },
   };
   process.stdout.write(JSON.stringify(out) + '\n');
+  // 显式退出，避免事件循环里残留的 timer / fetch 让进程多挂几秒
+  process.exit(0);
 }
 
 function readStdinSync(): string {
