@@ -796,6 +796,39 @@ export async function startHttpServer(
         return;
       }
 
+      // DELETE /admin/ccid/:id - 注销单个 ccId 并断开它的所有 SSE 客户端连接
+      // 让对应 channel-server 在 3s 内自动 re-call enter_headless_mode → connectRobot 重建链路
+      // 必须配置全局 auth token 才能用（避免裸暴露）
+      const ccidAdminMatch = url.match(/^\/admin\/ccid\/(.+)$/);
+      if (req.method === 'DELETE' && ccidAdminMatch) {
+        if (!getAuthToken()) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '/admin/ccid 需要先配置 Auth Token（--set-token）' }));
+          return;
+        }
+        const targetCcId = decodeURIComponent(ccidAdminMatch[1]);
+        const entry = ccIdRegistry.get(targetCcId);
+        if (!entry) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'ccId not found', ccId: targetCcId }));
+          return;
+        }
+        // 关闭并清理所有匹配该 ccId 的 SSE 客户端
+        const closedClients: string[] = [];
+        for (const [clientId, client] of sseClients) {
+          if (client.ccId === targetCcId) {
+            try { client.res.end(); } catch { /* ignore */ }
+            sseClients.delete(clientId);
+            closedClients.push(clientId);
+          }
+        }
+        unregisterCcId(targetCcId);
+        logger.info('ccId admin unregister', { ccId: targetCcId, robot: entry.robotName, closedSse: closedClients.length });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ccId: targetCcId, robot: entry.robotName, closedSseClients: closedClients.length }));
+        return;
+      }
+
       // ============================================
       // 调试端点统一拦截
       // ============================================

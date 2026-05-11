@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.5.0] - 2026-05-11
+
+### Fixed
+- WebSocket daemon-level auto-reconnect (modal `WecomClient`). The SDK's internal reconnect occasionally stalls when wecom kicks the connection ("New connection established"). A new safety-net timer kicks in on `disconnected` events with exponential backoff (5s → 10s → 30s → 60s, max 100 attempts) and explicitly calls `wsClient.connect()` until either a fresh `authenticated` event fires (timer cleared) or the limit is reached. Intentional `disconnect()` calls are flagged so the timer doesn't fight against them
+- `check_connection` now accepts an optional `cc_id` parameter. With `cc_id`, the tool returns the actual robot connection state for that CC — fixing the v2.4.20-class issue where multiple CCs sharing one daemon all saw the same misleading "first active connection". The no-arg form is preserved with a deprecation warning targeting v3.0
+
+### Added
+- `DELETE /admin/ccid/:id` endpoint. Auth-token gated. Unregisters a single ccId and closes all matching SSE clients, so the channel-server reconnect loop pulls a fresh `enter_headless_mode` within seconds and rebuilds the WebSocket — without resorting to a full daemon restart or `clearCcIdRegistry`
+
 ## [2.4.26] - 2026-05-09
 
 ### Fixed
