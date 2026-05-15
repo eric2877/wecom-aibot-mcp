@@ -111,6 +111,11 @@ class WecomClient extends EventEmitter {
   private reconnectAttempt = 0;  // 重连尝试次数
   private lastDisconnectTime = 0;  // 最后断线时间
   private disconnectNotifyCount = 0;  // 断线通知次数（最多1次）
+  // daemon-level 重连兜底：SDK 内部的 reconnect 偶尔会因被服务端踢断（"New connection established"）
+  // 而沉默卡住。下面这套是 daemon 层的 safety net，指数退避 5s/10s/30s/60s，最多 100 次。
+  private daemonReconnectTimer: NodeJS.Timeout | null = null;
+  private daemonReconnectAttempts = 0;
+  private intentionallyDisconnected = false;
 
   constructor(botId: string, secret: string, targetUserId: string, robotName: string) {
     super();
@@ -149,6 +154,7 @@ class WecomClient extends EventEmitter {
       this.wasReconnecting = false;
       this.reconnectAttempt = 0;
       this.disconnectNotifyCount = 0;  // 重连成功后重置断线通知计数
+      this.clearDaemonReconnect();    // 重连成功后清理 daemon-level safety net
       logAuthenticated();
 
       // 重连成功后发送通知
@@ -173,6 +179,11 @@ class WecomClient extends EventEmitter {
         this.sendText('【系统】连接中断，正在重连...').catch(err => {
           logger.error('wecom', `发送断线通知失败: ${err}`);
         });
+      }
+
+      // 兜底重连：SDK 重连失败时由 daemon 层接手
+      if (!this.intentionallyDisconnected) {
+        this.scheduleDaemonReconnect();
       }
     });
 
@@ -373,12 +384,51 @@ class WecomClient extends EventEmitter {
 
   // 连接
   connect() {
+    this.intentionallyDisconnected = false;
     this.wsClient.connect();
   }
 
   // 断开
   disconnect() {
+    this.intentionallyDisconnected = true;
+    this.clearDaemonReconnect();
     this.wsClient.disconnect();
+  }
+
+  // daemon-level 重连：SDK 内部 reconnect 卡住时由这里接手
+  // 指数退避：5s → 10s → 30s → 60s（封顶）；最多 100 次
+  private scheduleDaemonReconnect(): void {
+    if (this.daemonReconnectTimer) return;  // 已经在等待
+    if (this.daemonReconnectAttempts >= 100) {
+      logger.error('wecom', `[${this.robotName}] daemon-level reconnect 100 次仍未成功，放弃`);
+      return;
+    }
+    const backoff = [5000, 10000, 30000, 60000];
+    const delay = backoff[Math.min(this.daemonReconnectAttempts, backoff.length - 1)];
+    this.daemonReconnectTimer = setTimeout(() => {
+      this.daemonReconnectTimer = null;
+      if (this.connected || this.intentionallyDisconnected) {
+        // 已经恢复或已显式断开，不需要重连
+        return;
+      }
+      this.daemonReconnectAttempts++;
+      logger.info('wecom', `[${this.robotName}] daemon-level reconnect attempt ${this.daemonReconnectAttempts}`);
+      try {
+        this.wsClient.connect();
+      } catch (err) {
+        logger.error('wecom', `[${this.robotName}] daemon-level reconnect failed: ${(err as Error).message}`);
+      }
+      // 无论成功失败都排下一轮，若已连上下次 timeout 触发时 connected=true 会直接 return
+      this.scheduleDaemonReconnect();
+    }, delay);
+  }
+
+  private clearDaemonReconnect(): void {
+    if (this.daemonReconnectTimer) {
+      clearTimeout(this.daemonReconnectTimer);
+      this.daemonReconnectTimer = null;
+    }
+    this.daemonReconnectAttempts = 0;
   }
 
   // 检查连接状态

@@ -370,6 +370,16 @@ ccId 自动编号（cc-1, cc-2）不符合用户预期。
 
 ## 待完成设计
 
+### v2.5.0 已实施（2026-05-11）
+
+三项修复全部落地，未发布。简述：
+
+1. **WebSocket daemon-level 自动重连**：`WecomClient` 在 `disconnected` 事件中调度退避定时器（5s→10s→30s→60s 封顶，最多 100 次），显式调用 `wsClient.connect()` 兜底 SDK 偶发 stall；`authenticated` 事件清理定时器；显式 `disconnect()` 标记 `intentionallyDisconnected` 避免与意图相反
+2. **`DELETE /admin/ccid/:id`**：auth-token 强制；调用 `unregisterCcId` 后关闭匹配 SSE 客户端；channel-server 的 reconnect 循环会在数秒内自动 re-call `enter_headless_mode` 重建链路
+3. **`check_connection` 加 `cc_id`**：返回该 CC 对应 robot 的状态（用 `getRobotByCcId` + `getAllConnectionStates` 查），无参版本保留并加 deprecation warning 指向 v3.0
+
+发布前需要：（1）在多 CC 场景观察 daemon-level 重连是否真的接住 SDK stall；（2）admin 端点接通后台 CLI；（3）SKILL.md 同步要求 agent 传 cc_id。
+
 ### v2.5.0 计划修复（v2.4.20 事故暴露的设计缺陷）
 
 **背景**：用户更新 CC robot 的 docMcp 配置后，wecom 服务端踢掉了旧 WebSocket，daemon 内部 connectionPool 里 CC 的 entry 处于 disconnected 状态但**没有任何代码路径会主动重连**。地质软件的 SSE 通道仍然活着，但 wecom 不再向 CC bot 推送 → agent 收不到消息。最终通过用 cc_id="地质软件" 调用 send_message 触发 `getClient("CC")` 内部重连解决。

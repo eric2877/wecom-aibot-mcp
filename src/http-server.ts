@@ -226,7 +226,18 @@ export function clearCcIdRegistry(): { cleared: number; entries: string[] } {
 }
 
 export function getRobotByCcId(ccId: string): string | null {
-  return ccIdRegistry.get(ccId)?.robotName || null;
+  const entry = ccIdRegistry.get(ccId);
+  if (!entry) return null;
+  // 任何 lookup 都视为 CC 还活着，刷新 lastOnline 防止 30 分钟 idle 被 stale-cleanup
+  // 否则 channel 模式下 SSE 长连接还活、但 ccIdRegistry 被清，send_message 立刻报「未在微信模式」
+  entry.lastOnline = Date.now();
+  return entry.robotName;
+}
+
+// 显式刷新 ccId 的 lastOnline（SSE 心跳等场景调用）
+export function touchCcId(ccId: string): void {
+  const entry = ccIdRegistry.get(ccId);
+  if (entry) entry.lastOnline = Date.now();
 }
 
 export function getProjectDirByCcId(ccId: string): string | null {
@@ -796,6 +807,39 @@ export async function startHttpServer(
         return;
       }
 
+      // DELETE /admin/ccid/:id - 注销单个 ccId 并断开它的所有 SSE 客户端连接
+      // 让对应 channel-server 在 3s 内自动 re-call enter_headless_mode → connectRobot 重建链路
+      // 必须配置全局 auth token 才能用（避免裸暴露）
+      const ccidAdminMatch = url.match(/^\/admin\/ccid\/(.+)$/);
+      if (req.method === 'DELETE' && ccidAdminMatch) {
+        if (!getAuthToken()) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '/admin/ccid 需要先配置 Auth Token（--set-token）' }));
+          return;
+        }
+        const targetCcId = decodeURIComponent(ccidAdminMatch[1]);
+        const entry = ccIdRegistry.get(targetCcId);
+        if (!entry) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'ccId not found', ccId: targetCcId }));
+          return;
+        }
+        // 关闭并清理所有匹配该 ccId 的 SSE 客户端
+        const closedClients: string[] = [];
+        for (const [clientId, client] of sseClients) {
+          if (client.ccId === targetCcId) {
+            try { client.res.end(); } catch { /* ignore */ }
+            sseClients.delete(clientId);
+            closedClients.push(clientId);
+          }
+        }
+        unregisterCcId(targetCcId);
+        logger.info('ccId admin unregister', { ccId: targetCcId, robot: entry.robotName, closedSse: closedClients.length });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ccId: targetCcId, robot: entry.robotName, closedSseClients: closedClients.length }));
+        return;
+      }
+
       // ============================================
       // 调试端点统一拦截
       // ============================================
@@ -1301,10 +1345,11 @@ function handleSSEConnect(req: http.IncomingMessage, res: http.ServerResponse, _
   // 发送连接确认
   res.write(`event: connected\ndata: {"clientId":"${clientId}","ccId":"${targetCcId}"}\n\n`);
 
-  // 心跳机制：每 15 秒发送注释行保持连接活跃
+  // 心跳机制：每 15 秒发送注释行保持连接活跃 + 刷新 ccIdRegistry 的 lastOnline
+  // 避免 channel 模式 CC 长时间 idle 时 SSE 还活但 ccIdRegistry 被 30 分钟 stale-cleanup
   const heartbeatInterval = setInterval(() => {
-    // SSE 注释行（以冒号开头）会被客户端忽略，但保持连接
     res.write(': heartbeat\n\n');
+    touchCcId(targetCcId);
     logger.log(`[http] SSE 心跳发送: clientId=${clientId}`);
   }, 15000);
 

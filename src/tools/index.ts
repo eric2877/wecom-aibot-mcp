@@ -9,6 +9,7 @@ import {
   disconnectRobot,
   getClient,
   getConnectionState,
+  getAllConnectionStates,
 } from '../connection-manager.js';
 import {
   registerCcId,
@@ -111,13 +112,48 @@ export function registerTools(server: McpServer) {
   );
 
   // ============================================
-  // 工具 4: 检查连接状态
+  // 工具 4: 检查连接状态（per-CC）
   // ============================================
   server.tool(
     'check_connection',
-    '检查当前 WebSocket 连接状态',
-    {},
-    async () => {
+    '检查当前 WebSocket 连接状态。建议传入 cc_id 以获取本 CC 对应 robot 的状态；不传则返回任一活跃连接（v3 起将下线无参版本）',
+    {
+      cc_id: z.string().optional().describe('CC 唯一标识。传入后返回本 CC 对应 robot 的连接状态；不传则降级为旧行为'),
+    },
+    async ({ cc_id }) => {
+      if (cc_id) {
+        const robotName = getRobotByCcId(cc_id);
+        if (!robotName) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ connected: false, ccId: cc_id, error: '未注册的 ccId 或 robot 未连接' }),
+            }],
+          };
+        }
+        const all = getAllConnectionStates();
+        const entry = all.find(s => s.robotName === robotName);
+        if (!entry) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ connected: false, ccId: cc_id, robotName, error: '该 robot 不在 connectionPool 中' }),
+            }],
+          };
+        }
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              connected: entry.connected,
+              ccId: cc_id,
+              robotName: entry.robotName,
+              connectedAt: entry.connectedAt,
+            }),
+          }],
+        };
+      }
+      // 旧行为：返回 connectionPool 中任一活跃连接，并提示 deprecation
       const state = getConnectionState();
       return {
         content: [{
@@ -126,6 +162,7 @@ export function registerTools(server: McpServer) {
             connected: state.connected,
             robotName: state.robotName,
             connectedAt: state.connectedAt,
+            warning: '请传入 cc_id 获取该 CC 对应 robot 的状态，无参版本将在 v3.0 移除',
           }),
         }],
       };
