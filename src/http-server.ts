@@ -226,7 +226,18 @@ export function clearCcIdRegistry(): { cleared: number; entries: string[] } {
 }
 
 export function getRobotByCcId(ccId: string): string | null {
-  return ccIdRegistry.get(ccId)?.robotName || null;
+  const entry = ccIdRegistry.get(ccId);
+  if (!entry) return null;
+  // 任何 lookup 都视为 CC 还活着，刷新 lastOnline 防止 30 分钟 idle 被 stale-cleanup
+  // 否则 channel 模式下 SSE 长连接还活、但 ccIdRegistry 被清，send_message 立刻报「未在微信模式」
+  entry.lastOnline = Date.now();
+  return entry.robotName;
+}
+
+// 显式刷新 ccId 的 lastOnline（SSE 心跳等场景调用）
+export function touchCcId(ccId: string): void {
+  const entry = ccIdRegistry.get(ccId);
+  if (entry) entry.lastOnline = Date.now();
 }
 
 export function getProjectDirByCcId(ccId: string): string | null {
@@ -1334,10 +1345,11 @@ function handleSSEConnect(req: http.IncomingMessage, res: http.ServerResponse, _
   // 发送连接确认
   res.write(`event: connected\ndata: {"clientId":"${clientId}","ccId":"${targetCcId}"}\n\n`);
 
-  // 心跳机制：每 15 秒发送注释行保持连接活跃
+  // 心跳机制：每 15 秒发送注释行保持连接活跃 + 刷新 ccIdRegistry 的 lastOnline
+  // 避免 channel 模式 CC 长时间 idle 时 SSE 还活但 ccIdRegistry 被 30 分钟 stale-cleanup
   const heartbeatInterval = setInterval(() => {
-    // SSE 注释行（以冒号开头）会被客户端忽略，但保持连接
     res.write(': heartbeat\n\n');
+    touchCcId(targetCcId);
     logger.log(`[http] SSE 心跳发送: clientId=${clientId}`);
   }, 15000);
 

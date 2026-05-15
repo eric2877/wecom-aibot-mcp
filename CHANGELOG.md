@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - `DELETE /admin/ccid/:id` endpoint. Auth-token gated. Unregisters a single ccId and closes all matching SSE clients, so the channel-server reconnect loop pulls a fresh `enter_headless_mode` within seconds and rebuilds the WebSocket — without resorting to a full daemon restart or `clearCcIdRegistry`
+- `ccIdRegistry` 活动检测：`getRobotByCcId(ccId)` 和 SSE 心跳（每 15s）现在都会刷新该 ccId 的 `lastOnline`。修复 channel 模式下 CC 长时间 idle 时 SSE 还活但 ccId 被 30 分钟 stale-cleanup 误清的问题，原症状是「能收消息、send_message 报『未在微信模式』」
 
 ## [2.4.26] - 2026-05-09
 
