@@ -370,15 +370,35 @@ ccId 自动编号（cc-1, cc-2）不符合用户预期。
 
 ## 待完成设计
 
-### v2.5.0 已实施（2026-05-11）
+### v3.0.0 Windows 跨平台改造（已实施，待 Windows 实测）
 
-三项修复全部落地，未发布。简述：
+**背景**：v2.x 之前 hook 是 bash + jq + curl + ps + grep，daemon 启停用 ss/lsof，channel-server 走 `ps -p`，Windows 完全跑不起来。v3.0 借破坏性版本机会一次性切到 Node.js + 跨平台 API。
+
+**关键决策**：
+- **Hook 脚本改 Node.js**：`permission-hook.sh` / `stop-hook.sh` → `permission-hook.js` / `stop-hook.js`，settings.json hook 命令统一为 `node "/path/to/hook.js"`。Windows 也能跑，且去掉了 bash/jq/curl/ps 等外部依赖
+- **平台抽象层**（`src/platform.ts`）：`getParentPid` / `getProcessName` / `findClaudePid` / `isProcessAlive`，Win 用 `wmic process get` + `netstat -ano`，Unix 用 `ps -o ppid=` + `lsof -ti`
+- **Hook 内部网络栈**：`fetch` 替代 `curl`、`JSON.parse` 替代 `jq`、`new AbortController` 控超时，跨平台一致
+- **进程树查找** `findClaudePid` 同时复用：channel-server 启动时定位 Claude TUI、permission-hook 沿树找 active-projects 项
+
+**破坏性变更**（必须 v3.0）：
+1. 项目级 `.claude/settings.json` 中 hook 命令格式：旧版直接写 `~/.wecom-aibot-mcp/permission-hook.sh`，新版改为 `node "/Users/.../permission-hook.js"`
+2. `~/.wecom-aibot-mcp/` 内 hook 文件名改 `.js`；`--upgrade` / `--uninstall` 自动清理 `.sh` 残留
+
+**未完成的 Windows 实测项**（PR 转 ready-for-review 的前置条件）：
+- 在 Windows 机器上 `npx @vrs-soft/wecom-aibot-mcp@3.0.0 --setup` 走一遍向导，确认 daemon 启动
+- 触发一次 Bash 工具审批，确认 hook 正确发出请求并收到结果
+- `--stop` / `--status` 在 Windows 上返回正确状态
+- `findClaudePid` 在 Windows 进程树（claude.exe → npm.cmd → node.exe）下能正确回溯到 claude.exe
+
+### v2.5.0 已实施（2026-05-11，2026-05-15 补丁）
+
+四项修复落地：
 
 1. **WebSocket daemon-level 自动重连**：`WecomClient` 在 `disconnected` 事件中调度退避定时器（5s→10s→30s→60s 封顶，最多 100 次），显式调用 `wsClient.connect()` 兜底 SDK 偶发 stall；`authenticated` 事件清理定时器；显式 `disconnect()` 标记 `intentionallyDisconnected` 避免与意图相反
 2. **`DELETE /admin/ccid/:id`**：auth-token 强制；调用 `unregisterCcId` 后关闭匹配 SSE 客户端；channel-server 的 reconnect 循环会在数秒内自动 re-call `enter_headless_mode` 重建链路
 3. **`check_connection` 加 `cc_id`**：返回该 CC 对应 robot 的状态（用 `getRobotByCcId` + `getAllConnectionStates` 查），无参版本保留并加 deprecation warning 指向 v3.0
+4. **`ccIdRegistry` 活动检测**：`getRobotByCcId` 和 SSE 心跳刷新 `lastOnline`，修复 channel 模式 idle CC 被 30 分钟 stale-cleanup 误清
 
-发布前需要：（1）在多 CC 场景观察 daemon-level 重连是否真的接住 SDK stall；（2）admin 端点接通后台 CLI；（3）SKILL.md 同步要求 agent 传 cc_id。
 
 ### v2.5.0 计划修复（v2.4.20 事故暴露的设计缺陷）
 

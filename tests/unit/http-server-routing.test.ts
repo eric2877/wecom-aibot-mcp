@@ -151,7 +151,7 @@ describe('HTTP Server - CC Registry 逻辑', () => {
 
     it('HOOK_SCRIPT_PATH 应该包含正确路径', () => {
       expect(HOOK_SCRIPT_PATH).toContain('.wecom-aibot-mcp');
-      expect(HOOK_SCRIPT_PATH).toContain('permission-hook.sh');
+      expect(HOOK_SCRIPT_PATH).toContain('permission-hook.js');
     });
   });
 

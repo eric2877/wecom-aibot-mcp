@@ -31,7 +31,7 @@ npm run start
 - [ ] Secret 输入验证通过
 - [ ] 用户 ID 验证请求发送成功
 - [ ] 配置文件写入 `~/.wecom-aibot-mcp/config.json`
-- [ ] Hook 脚本写入 `~/.wecom-aibot-mcp/permission-hook.sh`
+- [ ] Hook 脚本写入 `~/.wecom-aibot-mcp/permission-hook.js`
 
 ### 1.2 用户 ID 自动检测测试
 

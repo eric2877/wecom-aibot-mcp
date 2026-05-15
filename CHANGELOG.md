@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.0.0] - 2026-05-09
+
+### BREAKING CHANGE — Windows 支持 + Hook 跨平台重写
+- Hook 脚本从 bash (`permission-hook.sh` / `stop-hook.sh`) 改为 Node.js (`permission-hook.js` / `stop-hook.js`)。所有平台统一通过 `node "/path/to/hook.js"` 执行；不再依赖 bash / jq / curl / ps / grep
+- 项目级 `.claude/settings.json` 中 hook 命令格式变更：旧版直接写脚本路径，新版改为 `node "/path/to/permission-hook.js"`。**升级后需要 `--upgrade` 或 `--reinstall` 重写 hook 配置**
+- 已安装的 `~/.wecom-aibot-mcp/permission-hook.sh` / `stop-hook.sh` 在新版 `--upgrade` / `--uninstall` 时会自动清理
+
+### Added
+- Windows 兼容：daemon 启停、Claude 进程树查找、PID 探测全部走跨平台实现
+- 新增 `src/platform.ts` 抽象进程/端口操作（Win 用 `wmic` + `netstat -ano`，Unix 用 `ps` + `lsof`）
+- Hook 用 fetch + JSON.parse 替代 curl + jq；用 `wmic` / `ps` 抽象替代 `ps -o ppid=`，PowerShell / cmd 不再是必要前提
+
+### Changed
+- `findPidByPort` 添加 Windows `netstat -ano` 分支；非 Win 平台优先 `lsof`，回退 `ss`
+- `channel-server.ts` 的 `findClaudePid` 改为复用 `platform.ts`，逻辑一致但跨平台
+
+### Migration
+- macOS / Linux 既有用户：跑一次 `npx @vrs-soft/wecom-aibot-mcp --upgrade`，旧 `.sh` 自动删除，新 `.js` hook 替换；项目目录的 `.claude/settings.json` 在下一次 `enter_headless_mode` 时刷新为新命令格式
+- Windows 用户：直接 `npx @vrs-soft/wecom-aibot-mcp --setup` 即可
+
 ## [2.5.0] - 2026-05-11
 
 ### Fixed

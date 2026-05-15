@@ -310,15 +310,21 @@ export function getProjectSettingsPath(projectDir: string): string {
 // Hook 脚本路径（统一定义）
 // ============================================
 const CONFIG_DIR = path.join(os.homedir(), '.wecom-aibot-mcp');
-export const PERMISSION_HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.sh');
-export const STOP_HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'stop-hook.sh');
+// v3.0+：hook 改用 Node.js 脚本，跨平台运行
+export const PERMISSION_HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'permission-hook.js');
+export const STOP_HOOK_SCRIPT_PATH = path.join(CONFIG_DIR, 'stop-hook.js');
+
+// settings.json 中 hook 命令格式：node "path"（路径 quote 兼容含空格的 Windows 路径）
+function nodeHookCommand(scriptPath: string): string {
+  return `node "${scriptPath}"`;
+}
 
 /**
  * PermissionRequest hook 配置
  */
 const PERMISSION_HOOK = {
   matcher: '',
-  hooks: [{ type: 'command', command: PERMISSION_HOOK_SCRIPT_PATH, timeout: 3600 }],
+  hooks: [{ type: 'command', command: nodeHookCommand(PERMISSION_HOOK_SCRIPT_PATH), timeout: 3600 }],
 };
 
 /**
@@ -327,7 +333,7 @@ const PERMISSION_HOOK = {
  */
 const STOP_HOOK = {
   matcher: '',
-  hooks: [{ type: 'command', command: STOP_HOOK_SCRIPT_PATH }],
+  hooks: [{ type: 'command', command: nodeHookCommand(STOP_HOOK_SCRIPT_PATH) }],
 };
 
 /**
