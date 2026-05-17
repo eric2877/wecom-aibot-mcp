@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.0] - 2026-05-18
+
+### Added
+- **CC 间消息互通（Phase 1，单 daemon 范围）**：两个新 MCP 工具
+  - `send_to_cc(cc_id, to_cc, content, kind?, reply_to?)` —— 向同 daemon 的另一个 CC 发消息
+  - `list_active_ccs(cc_id)` —— 列出同 daemon 当前在线的其他 CC
+  - 消息通过 SSE 新事件 `cc_message` 推送；channel-server 包装为 `<channel source="cc:<fromCc>" chattype="cc" kind="..." reply_to="...">` 唤醒目标 agent
+  - 跨 daemon 联邦推迟到后续版本（设计稿 `design/cc-to-cc-messaging.md`）
+
+### Fixed
+- **SSE 单向 keep-alive 失效**：channel-server 端新增 watchdog（每 15s 检查），>45s 收不到任何 chunk（含 daemon 端的 `: heartbeat` 注释）就主动 `abort()` 触发 reconnect。修复 NAT/中间设备单向闭合 client→daemon 方向时，daemon 已把 sseClients entry 清掉但 channel-server 的 fetch read 永不返回的死锁（answer-assistant 复现过两次）
+
 ## [2.5.0] - 2026-05-11
 
 ### Fixed

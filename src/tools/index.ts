@@ -17,8 +17,11 @@ import {
   getRobotByCcId,
   getProjectDirByCcId,
   generateCcId,
+  getOnlineCcIds,
+  getCCRegistryEntry,
 } from '../http-server.js';
-import { subscribeWecomMessageByCcId, WecomMessage } from '../message-bus.js';
+import { subscribeWecomMessageByCcId, WecomMessage, publishCcMessage } from '../message-bus.js';
+import { randomBytes } from 'crypto';
 import { updateWechatModeConfig, loadWechatModeConfig, addPermissionHook, removePermissionHook, addStopHook, removeStopHook, registerActiveProject, unregisterActiveProject } from '../project-config.js';
 import { logger } from '../logger.js';
 
@@ -164,6 +167,80 @@ export function registerTools(server: McpServer) {
             connectedAt: state.connectedAt,
             warning: '请传入 cc_id 获取该 CC 对应 robot 的状态，无参版本将在 v3.0 移除',
           }),
+        }],
+      };
+    }
+  );
+
+  // ============================================
+  // 工具 5a: CC 间通信 — 向另一个 CC 发消息（v2.6.0+，单 daemon 范围内）
+  // ============================================
+  server.tool(
+    'send_to_cc',
+    '向同一 daemon 上的另一个 CC 发送消息。目标 CC 收到时会作为 <channel source="cc:..."> 推送唤醒。仅支持同 daemon 间互通，跨 daemon 不通。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识（必填）'),
+      to_cc: z.string().describe('目标 CC 标识'),
+      content: z.string().describe('消息内容（支持 Markdown）'),
+      kind: z.enum(['request', 'reply', 'notify']).optional().default('notify').describe('消息语义：request 期待回复 / reply 是对前一条 request 的回复 / notify 单向通知'),
+      reply_to: z.string().optional().describe('可选：关联的请求 msgId（用于追踪请求-响应）'),
+    },
+    async ({ cc_id, to_cc, content, kind = 'notify', reply_to }) => {
+      if (cc_id === to_cc) {
+        return { content: [{ type: 'text', text: JSON.stringify({ delivered: false, reason: 'cannot send to self' }) }] };
+      }
+      const targetEntry = getCCRegistryEntry(to_cc);
+      if (!targetEntry) {
+        return { content: [{ type: 'text', text: JSON.stringify({ delivered: false, reason: 'target offline', to_cc }) }] };
+      }
+      const msgId = `cc_${Date.now()}_${randomBytes(4).toString('hex')}`;
+      publishCcMessage({
+        msgId,
+        fromCc: cc_id,
+        toCc: to_cc,
+        content,
+        kind,
+        replyTo: reply_to,
+        hopCount: 0,
+        timestamp: Date.now(),
+      });
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ delivered: true, msgId, to_cc, kind }),
+        }],
+      };
+    }
+  );
+
+  // ============================================
+  // 工具 5b: CC 间通信 — 列出当前 daemon 上在线的 CC
+  // ============================================
+  server.tool(
+    'list_active_ccs',
+    '列出同一 daemon 上当前在线的所有 CC，用于决定 send_to_cc 的目标',
+    {
+      cc_id: z.string().describe('自己的 CC 标识（用于过滤输出，不返回 self）'),
+    },
+    async ({ cc_id }) => {
+      const onlineIds = getOnlineCcIds();
+      const others = onlineIds
+        .filter(id => id !== cc_id)
+        .map(id => {
+          const entry = getCCRegistryEntry(id);
+          return entry ? {
+            ccId: id,
+            robotName: entry.robotName,
+            agentName: entry.agentName,
+            mode: entry.mode,
+            lastOnline: entry.lastOnline,
+          } : null;
+        })
+        .filter(Boolean);
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ self: cc_id, ccs: others }),
         }],
       };
     }
