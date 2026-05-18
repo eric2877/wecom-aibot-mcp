@@ -109,8 +109,8 @@ describe('MCP Tools', () => {
 
   describe('registerTools', () => {
     it('应该注册正确数量的工具', () => {
-      // 当前注册的工具数量：29 个
-      expect(toolHandlers.size).toBe(29);
+      // 当前注册的工具数量：31 个（v2.6.0 加 send_to_cc + list_active_ccs）
+      expect(toolHandlers.size).toBe(31);
     });
 
     it('应该注册 send_message 工具', () => {

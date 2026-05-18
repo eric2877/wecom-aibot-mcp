@@ -244,6 +244,13 @@ function connectSSE(ccId?: string): void {
   logger.info('Connecting to SSE', { url: sseUrl, ccId, mcpServerReady: mcpServer ? 'yes' : 'no' });
 
   sseAbortController = new AbortController();
+  // Watchdog：每 15s 检查最后一次收到 chunk 的时间，>45s 无数据则主动 abort 触发重连。
+  // 修复 daemon 端 SSE keep-alive 单向失效问题（NAT 在 client→daemon 方向闭合时
+  // daemon 写心跳失败把 entry 清掉，但 channel-server 的 fetch read 永不返回）。
+  let watchdogTimer: NodeJS.Timeout | null = null;
+  const clearWatchdog = () => {
+    if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+  };
 
   // SSE fetch 配置：添加 keep-alive headers 确保连接稳定
   fetch(sseUrl, {
@@ -292,17 +299,25 @@ function connectSSE(ccId?: string): void {
     const decoder = new TextDecoder();
     let buffer = '';
     let messageCount = 0;
+    let lastChunkAt = Date.now();
+    let currentEvent = 'message';  // SSE event type，由 `event: xxx` 行设置；空行复位
 
-    // 添加心跳监控
-    const heartbeatInterval = setInterval(() => {
-      logChannel('SSE heartbeat', { connected: sseConnected, messages: messageCount });
-    }, 30000);
+    // Watchdog：>45s 没收到任何 chunk（含 daemon 端的 `: heartbeat` 注释）
+    // 视为单向 TCP 死链，主动 abort 让 catch 分支触发 reconnect。
+    watchdogTimer = setInterval(() => {
+      const idleMs = Date.now() - lastChunkAt;
+      logChannel('SSE watchdog', { connected: sseConnected, messages: messageCount, idleMs });
+      if (idleMs > 45000) {
+        logger.info('SSE 心跳超时（>45s 无数据），主动 abort 触发重连', { ccId, idleMs });
+        try { sseAbortController?.abort(); } catch { /* ignore */ }
+      }
+    }, 15000);
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) {
         logChannel('SSE stream ended');
-        clearInterval(heartbeatInterval);
+        clearWatchdog();
         sseConnected = false;
         // 非主动断开时自动重连
         if (!sseAbortController?.signal.aborted) {
@@ -312,6 +327,7 @@ function connectSSE(ccId?: string): void {
         break;
       }
 
+      lastChunkAt = Date.now();
       const chunk = decoder.decode(value, { stream: true });
       logChannel('SSE chunk received', { bytes: chunk.length, preview: chunk.slice(0, 100) });
       buffer += chunk;
@@ -325,29 +341,49 @@ function connectSSE(ccId?: string): void {
 
         if (line.startsWith('data: ')) {
           const data = line.slice(6);
-          logChannel('📩 SSE MESSAGE RECEIVED', { data: data.slice(0, 100) });
+          logChannel('📩 SSE MESSAGE RECEIVED', { data: data.slice(0, 100), event: currentEvent });
           try {
             const msg = JSON.parse(data);
             messageCount++;
-            logChannel('✅ 消息解析成功', { messageNumber: messageCount, msg });
+            logChannel('✅ 消息解析成功', { messageNumber: messageCount, event: currentEvent, msg });
 
-            // 推送 notifications/claude/channel 唤醒 Claude agent
             if (mcpServer) {
-              // content 成为 <channel> 标签正文，meta 成为标签属性（只允许字母/数字/下划线）
-              const message = msg.message || {};
-              const notification = {
-                method: 'notifications/claude/channel',
-                params: {
-                  content: message.content || JSON.stringify(msg),
-                  meta: {
-                    from: message.from || '',
-                    chatid: message.chatid || '',
-                    chattype: message.chattype || 'single',
-                    cc_id: msg.ccId || '',
-                    quote_content: message.quoteContent || '',
-                  } as Record<string, string>,
-                },
-              };
+              let notification;
+              if (currentEvent === 'cc_message') {
+                // CC 间消息：用 cc:<fromCc> 作为 source 前缀，便于 agent 区分非 wecom 来源
+                notification = {
+                  method: 'notifications/claude/channel',
+                  params: {
+                    content: msg.content || '',
+                    meta: {
+                      source: `cc:${msg.fromCc || ''}`,
+                      from_cc: msg.fromCc || '',
+                      to_cc: msg.toCc || '',
+                      chattype: 'cc',
+                      cc_id: msg.toCc || '',
+                      kind: msg.kind || 'notify',
+                      reply_to: msg.replyTo || '',
+                      msg_id: msg.msgId || '',
+                    } as Record<string, string>,
+                  },
+                };
+              } else {
+                // 默认 wecom 消息（event: message 或无 event 头）
+                const message = msg.message || {};
+                notification = {
+                  method: 'notifications/claude/channel',
+                  params: {
+                    content: message.content || JSON.stringify(msg),
+                    meta: {
+                      from: message.from || '',
+                      chatid: message.chatid || '',
+                      chattype: message.chattype || 'single',
+                      cc_id: msg.ccId || '',
+                      quote_content: message.quoteContent || '',
+                    } as Record<string, string>,
+                  },
+                };
+              }
               logChannel('📤 发送 notification', { notification });
 
               try {
@@ -363,9 +399,11 @@ function connectSSE(ccId?: string): void {
             logChannel('JSON parse error', { error: String(e), data: data.slice(0, 50) });
           }
         } else if (line.startsWith('event: ')) {
-          logChannel('SSE event type', { type: line.slice(7) });
+          currentEvent = line.slice(7).trim();
+          logChannel('SSE event type', { type: currentEvent });
         } else if (line === '') {
-          // 事件分隔符，忽略
+          // 事件分隔符：复位 event type 到默认 'message'
+          currentEvent = 'message';
         } else if (line.startsWith(':')) {
           // SSE 注释（如 ": heartbeat"），忽略，不要写回 buffer
         } else {
@@ -375,13 +413,18 @@ function connectSSE(ccId?: string): void {
       }
     }
 
-    clearInterval(heartbeatInterval);
+    clearWatchdog();
   }).catch((err) => {
+    clearWatchdog();
     logger.error('SSE error', { error: String(err) });
     sseConnected = false;
-    // 非主动断开时自动重连
-    if (!sseAbortController?.signal.aborted) {
-      logger.info('SSE 出错，3 秒后重连', { ccId });
+    // watchdog abort 或网络异常都走这里：触发 reconnect
+    // 注意 abort() 后 signal.aborted=true，但这是 watchdog 自己造成的，仍需要重连
+    const isWatchdogAbort = sseAbortController?.signal.aborted && String(err).includes('aborted');
+    if (!sseAbortController?.signal.aborted || isWatchdogAbort) {
+      logger.info('SSE 出错，3 秒后重连', { ccId, watchdogAbort: isWatchdogAbort });
+      // watchdog abort 后需要新建 controller，否则下次 connectSSE 会立即被 abort 状态干扰
+      sseAbortController = null;
       setTimeout(() => { httpSessionId = null; connectSSE(ccId); }, 3000);
     }
   });
@@ -449,6 +492,31 @@ function registerChannelTools(server: McpServer) {
     async () => {
       return forwardToHttpMcp('check_connection', {});
     }
+  );
+
+  // ============================================
+  // 工具 4a: CC 间通信 — send_to_cc / list_active_ccs（v2.6.0+）
+  // ============================================
+  server.tool(
+    'send_to_cc',
+    '向同一 daemon 上的另一个 CC 发送消息。目标 CC 收到时会作为 <channel source="cc:..."> 推送唤醒。仅支持同 daemon 间互通。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识'),
+      to_cc: z.string().describe('目标 CC 标识'),
+      content: z.string().describe('消息内容（支持 Markdown）'),
+      kind: z.enum(['request', 'reply', 'notify']).optional().default('notify').describe('消息语义'),
+      reply_to: z.string().optional().describe('可选：关联的请求 msgId'),
+    },
+    async (params) => forwardToHttpMcp('send_to_cc', params),
+  );
+
+  server.tool(
+    'list_active_ccs',
+    '列出同一 daemon 上当前在线的所有 CC',
+    {
+      cc_id: z.string().describe('自己的 CC 标识'),
+    },
+    async (params) => forwardToHttpMcp('list_active_ccs', params),
   );
 
   // ============================================

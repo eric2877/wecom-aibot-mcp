@@ -35,6 +35,22 @@ export interface WecomMessage {
 // 审批事件结构
 // ============================================
 
+// ============================================
+// CC 间消息结构（v2.6.0+）
+// 同 daemon 上的 CC 互通用。跨 daemon 联邦留到以后。
+// ============================================
+
+export interface CcMessage {
+  msgId: string;             // daemon 生成的唯一 id
+  fromCc: string;            // 发送方 ccId
+  toCc: string;              // 接收方 ccId
+  content: string;           // 正文（支持 Markdown）
+  kind: 'request' | 'reply' | 'notify';
+  replyTo?: string;          // 可选：关联 msgId（用于追踪请求-响应）
+  hopCount: number;          // 防循环：daemon 每次中转 +1，>10 拒投
+  timestamp: number;
+}
+
 export interface ApprovalEvent {
   robotName: string;      // 机器人名称
   taskId: string;         // 审批任务 ID
@@ -70,6 +86,7 @@ function decrementSubscriberCount(robotName: string): void {
 
 const wecomMessage$ = new Subject<WecomMessage>();
 const approvalEvent$ = new Subject<ApprovalEvent>();
+const ccMessage$ = new Subject<CcMessage>();
 
 // ============================================
 // 发布/订阅接口
@@ -156,5 +173,21 @@ function isMessageForCcId(msg: WecomMessage, ccId: string): boolean {
   return false;
 }
 
+// ============================================
+// CC 间消息（v2.6.0+）
+// ============================================
+
+export function publishCcMessage(msg: CcMessage): void {
+  ccMessage$.next(msg);
+}
+
+/** 订阅发往指定 ccId 的所有 CC 间消息 */
+export function subscribeCcMessageByTarget(
+  toCc: string,
+  callback: (msg: CcMessage) => void,
+) {
+  return ccMessage$.pipe(filter(m => m.toCc === toCc)).subscribe(callback);
+}
+
 // 导出 Observable（供高级用法）
-export { wecomMessage$ };
+export { wecomMessage$, ccMessage$ };

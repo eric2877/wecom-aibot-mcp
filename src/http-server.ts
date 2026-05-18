@@ -24,7 +24,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { registerTools } from './tools/index.js';
 import { getClient, getConnectionState, getAllConnectionStates, connectAllRobots } from './connection-manager.js';
-import { subscribeWecomMessage, WecomMessage } from './message-bus.js';
+import { subscribeWecomMessage, WecomMessage, subscribeCcMessageByTarget, CcMessage } from './message-bus.js';
 import { listAllRobots, VERSION, getAuthToken } from './config-wizard.js';
 import { logger } from './logger.js';
 
@@ -1353,9 +1353,21 @@ function handleSSEConnect(req: http.IncomingMessage, res: http.ServerResponse, _
     logger.log(`[http] SSE 心跳发送: clientId=${clientId}`);
   }, 15000);
 
+  // 订阅发往当前 ccId 的 CC 间消息，转发为 cc_message SSE event
+  const ccSub = subscribeCcMessageByTarget(targetCcId, (msg: CcMessage) => {
+    try {
+      const data = JSON.stringify(msg);
+      res.write(`event: cc_message\ndata: ${data}\n\n`);
+      logger.info('cc_message pushed', { from: msg.fromCc, to: msg.toCc, msgId: msg.msgId, kind: msg.kind });
+    } catch (err) {
+      logger.error(`[http] cc_message 推送失败 clientId=${clientId}:`, err);
+    }
+  });
+
   // 处理客户端断开
   req.on('close', () => {
     clearInterval(heartbeatInterval);
+    ccSub.unsubscribe();
     sseClients.delete(clientId);
     logger.log(`[http] SSE 客户端断开: clientId=${clientId}`);
   });
