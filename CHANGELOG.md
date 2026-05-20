@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.1] - 2026-05-20
+
+### Fixed
+- **`send_to_cc` 静默丢消息**：v2.6.0 在目标 CC 注册了但 SSE 没活跃订阅者（睡眠 / NAT 闭合 / channel-server 在 reconnect 窗口里）时，`publishCcMessage` 推到 RxJS Subject 没有订阅者会蒸发，工具却返回 `delivered: true`。v2.6.1 加入 outbound pending queue：daemon 调度 `send_to_cc` 时如果 `hasActiveSseFor(to_cc)` 为 false，把消息暂存到内存队列（5 分钟 TTL、每 ccId 最多 100 条），SSE 重新连上时立即 flush。工具返回多加 `state: "live" | "queued"` 字段
+- **测试并发 race**：`tests/integration/cc-to-cc-messaging.test.ts` 和 `tests/integration/http-server-integration.test.ts` 的 auth-token 测试组并发跑时会读到对方写的 `~/.wecom-aibot-mcp/server.json` 导致 SSE 401。`openSseClient` 改为请求时读一次当前 token，有就带 `Bearer` header
+
 ## [2.6.0] - 2026-05-18
 
 ### Added
