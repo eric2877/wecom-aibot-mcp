@@ -14,7 +14,17 @@ import * as os from 'os';
 
 const CONFIG_DIR = path.join(os.homedir(), '.wecom-aibot-mcp');
 const ROBOT_CONFIG = path.join(CONFIG_DIR, 'robot-test-cc-msg.json');
+const SERVER_CONFIG_FILE = path.join(CONFIG_DIR, 'server.json');
 const TEST_PORT = 18968;
+
+// 防御并行测试时另一测试文件临时写入 server.json 导致 401：
+// 请求时读一次当前 token（如果有就带 Bearer header）
+function readCurrentAuthToken(): string | undefined {
+  try {
+    if (!fs.existsSync(SERVER_CONFIG_FILE)) return undefined;
+    return JSON.parse(fs.readFileSync(SERVER_CONFIG_FILE, 'utf-8')).authToken;
+  } catch { return undefined; }
+}
 
 /** 打开一个 SSE 连接，返回事件流读取器 */
 function openSseClient(port: number, ccId: string): Promise<{
@@ -30,8 +40,12 @@ function openSseClient(port: number, ccId: string): Promise<{
     let readyResolve: () => void = () => {};
     const ready = new Promise<void>(r => { readyResolve = r; });
 
+    const token = readCurrentAuthToken();
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
     const req = http.get(
-      { hostname: '127.0.0.1', port, path: `/sse/${ccId}?ccId=${ccId}` },
+      { hostname: '127.0.0.1', port, path: `/sse/${ccId}?ccId=${ccId}`, headers },
       (res) => {
         if (res.statusCode !== 200) {
           rejectOpen(new Error(`SSE status ${res.statusCode}`));
@@ -184,5 +198,39 @@ describe('CC-to-CC 消息互通集成测试', () => {
     serverModule.unregisterCcId('cc-x');
     serverModule.unregisterCcId('cc-y');
     serverModule.unregisterCcId('cc-z');
+  });
+
+  // v2.6.1: 目标 CC 离线时入队，SSE 连上后立即 flush
+  it('目标 CC 离线时入队，SSE 重新连上时立即收到积压消息', async () => {
+    serverModule.registerCcId('cc-offline', 'cc-test-robot', 'agent-offline', 'channel');
+
+    // 目标尚未打开 SSE → hasActiveSseFor 应为 false
+    expect(serverModule.hasActiveSseFor('cc-offline')).toBe(false);
+
+    // 入队 2 条消息
+    serverModule.enqueueCcPending({
+      msgId: 'queued-1', fromCc: 'cc-sender', toCc: 'cc-offline',
+      content: 'msg1', kind: 'request', hopCount: 0, timestamp: Date.now(),
+    });
+    serverModule.enqueueCcPending({
+      msgId: 'queued-2', fromCc: 'cc-sender', toCc: 'cc-offline',
+      content: 'msg2', kind: 'notify', hopCount: 0, timestamp: Date.now(),
+    });
+
+    // SSE 连上来 → 应立即收到 2 条 cc_message
+    const offline = await openSseClient(TEST_PORT, 'cc-offline');
+    await offline.ready;
+
+    await waitFor(() => offline.events.filter(e => e.event === 'cc_message').length >= 2);
+    const ccMsgs = offline.events.filter(e => e.event === 'cc_message').map(e => JSON.parse(e.data));
+    expect(ccMsgs.length).toBeGreaterThanOrEqual(2);
+    expect(ccMsgs.map(m => m.msgId).sort()).toEqual(['queued-1', 'queued-2']);
+    expect(ccMsgs.every(m => m.toCc === 'cc-offline')).toBe(true);
+
+    // hasActiveSseFor 现在应为 true
+    expect(serverModule.hasActiveSseFor('cc-offline')).toBe(true);
+
+    offline.close();
+    serverModule.unregisterCcId('cc-offline');
   });
 });

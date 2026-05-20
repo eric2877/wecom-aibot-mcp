@@ -19,6 +19,8 @@ import {
   generateCcId,
   getOnlineCcIds,
   getCCRegistryEntry,
+  hasActiveSseFor,
+  enqueueCcPending,
 } from '../http-server.js';
 import { subscribeWecomMessageByCcId, WecomMessage, publishCcMessage } from '../message-bus.js';
 import { randomBytes } from 'crypto';
@@ -194,7 +196,7 @@ export function registerTools(server: McpServer) {
         return { content: [{ type: 'text', text: JSON.stringify({ delivered: false, reason: 'target offline', to_cc }) }] };
       }
       const msgId = `cc_${Date.now()}_${randomBytes(4).toString('hex')}`;
-      publishCcMessage({
+      const msg = {
         msgId,
         fromCc: cc_id,
         toCc: to_cc,
@@ -203,11 +205,20 @@ export function registerTools(server: McpServer) {
         replyTo: reply_to,
         hopCount: 0,
         timestamp: Date.now(),
-      });
+      };
+      // 目标当前是否有活跃 SSE 客户端？有 → 立即推送；无 → 入 pending queue（v2.6.1+）
+      // 解决：目标 CC 睡眠 / NAT 闭合 / channel-server 在 reconnect 窗口里时，
+      // publish 到 RxJS Subject 没有订阅者会蒸发的问题。
+      const live = hasActiveSseFor(to_cc);
+      if (live) {
+        publishCcMessage(msg);
+      } else {
+        enqueueCcPending(msg);
+      }
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({ delivered: true, msgId, to_cc, kind }),
+          text: JSON.stringify({ delivered: true, msgId, to_cc, kind, state: live ? 'live' : 'queued' }),
         }],
       };
     }

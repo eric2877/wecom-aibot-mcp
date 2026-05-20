@@ -301,6 +301,55 @@ interface SSEClient {
 }
 const sseClients: Map<string, SSEClient> = new Map();  // clientId -> SSEClient
 
+// ============================================
+// CC 间消息的离线缓冲队列（v2.6.1+）
+// 当 send_to_cc 的目标 CC 此刻没有活跃 SSE 客户端时，把消息暂存到这里。
+// SSE 重新连上来时立即 flush。5 分钟 TTL，每 ccId 最多 100 条防爆。
+// ============================================
+interface CcPendingItem {
+  msg: import('./message-bus.js').CcMessage;
+  enqueuedAt: number;
+}
+const ccPendingQueue: Map<string, CcPendingItem[]> = new Map();
+const CC_PENDING_TTL_MS = 5 * 60 * 1000;
+const CC_PENDING_MAX_PER_CC = 100;
+
+/** 当前是否存在某个 ccId 的活跃 SSE 客户端 */
+export function hasActiveSseFor(ccId: string): boolean {
+  for (const [, client] of sseClients) {
+    if (client.ccId === ccId) return true;
+  }
+  return false;
+}
+
+/** 把 cc 消息存进 pending queue（目标无 SSE 时使用） */
+export function enqueueCcPending(msg: import('./message-bus.js').CcMessage): void {
+  const list = ccPendingQueue.get(msg.toCc) || [];
+  list.push({ msg, enqueuedAt: Date.now() });
+  while (list.length > CC_PENDING_MAX_PER_CC) list.shift();
+  ccPendingQueue.set(msg.toCc, list);
+  logger.info('cc_message queued', { to: msg.toCc, from: msg.fromCc, msgId: msg.msgId, depth: list.length });
+}
+
+/** 取出指定 ccId 的所有未过期 pending 消息，并清空队列 */
+export function drainCcPending(ccId: string): import('./message-bus.js').CcMessage[] {
+  const list = ccPendingQueue.get(ccId);
+  if (!list || list.length === 0) return [];
+  ccPendingQueue.delete(ccId);
+  const now = Date.now();
+  return list.filter(item => now - item.enqueuedAt < CC_PENDING_TTL_MS).map(item => item.msg);
+}
+
+// 周期性清理过期项
+setInterval(() => {
+  const now = Date.now();
+  for (const [ccId, list] of ccPendingQueue) {
+    const kept = list.filter(item => now - item.enqueuedAt < CC_PENDING_TTL_MS);
+    if (kept.length === 0) ccPendingQueue.delete(ccId);
+    else if (kept.length !== list.length) ccPendingQueue.set(ccId, kept);
+  }
+}, 60 * 1000).unref?.();
+
 // 初始化 MCP Server（不再全局连接）
 function initMcpServer(): void {
   // 订阅消息总线，实现 SSE 推送
@@ -1354,6 +1403,8 @@ function handleSSEConnect(req: http.IncomingMessage, res: http.ServerResponse, _
   }, 15000);
 
   // 订阅发往当前 ccId 的 CC 间消息，转发为 cc_message SSE event
+  // 注意 ordering：先 subscribe（捕获后续到达的消息）→ sseClients.set 已经在前面完成
+  // （所以 send_to_cc 的 hasActiveSseFor 检测已开始返 true）→ 再 drain pending（不漏）
   const ccSub = subscribeCcMessageByTarget(targetCcId, (msg: CcMessage) => {
     try {
       const data = JSON.stringify(msg);
@@ -1363,6 +1414,20 @@ function handleSSEConnect(req: http.IncomingMessage, res: http.ServerResponse, _
       logger.error(`[http] cc_message 推送失败 clientId=${clientId}:`, err);
     }
   });
+
+  // 把目标离线期间堆积的 cc_message 直接 flush 给当前连接（v2.6.1+）
+  const pending = drainCcPending(targetCcId);
+  if (pending.length > 0) {
+    for (const msg of pending) {
+      try {
+        const data = JSON.stringify(msg);
+        res.write(`event: cc_message\ndata: ${data}\n\n`);
+      } catch (err) {
+        logger.error(`[http] cc_message flush 失败 clientId=${clientId}:`, err);
+      }
+    }
+    logger.info('cc_message flushed pending', { ccId: targetCcId, count: pending.length });
+  }
 
   // 处理客户端断开
   req.on('close', () => {
