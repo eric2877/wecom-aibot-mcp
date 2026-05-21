@@ -988,68 +988,9 @@ export async function addMcpConfig() {
       return;
     }
 
-    // 先连接验证凭证
-    console.log('\n[config] 正在连接企业微信...');
-    const { initClient } = await import('./client.js');
-    const client = initClient(botId, secret, 'placeholder', 'config-validation');
-
-    // 等待连接（最多10秒）
-    const connected = await new Promise<boolean>((resolve) => {
-      const startTime = Date.now();
-      const checkInterval = setInterval(() => {
-        if (client.isConnected()) {
-          clearInterval(checkInterval);
-          resolve(true);
-        } else if (Date.now() - startTime > 10000) {
-          clearInterval(checkInterval);
-          resolve(false);
-        }
-      }, 500);
-    });
-
-    if (!connected) {
-      console.log('\n[config] ❌ 连接失败，请检查 Bot ID 和 Secret 是否正确');
-      console.log('[config] 新建机器人需要等待约 2 分钟同步时间');
-      console.log('[config] 如需授权，请访问企业微信管理后台完成授权');
-      return;
-    }
-
-    // 通过消息自动识别用户 ID
-    const targetUserId = await detectUserIdFromMessage(client, 180);
-
-    if (!targetUserId) {
-      console.log('\n[config] 未能在规定时间内识别用户 ID');
-      console.log('[config] 请重新运行: npx @vrs-soft/wecom-aibot-mcp --add');
-      return;
-    }
-
-    // 保存机器人配置
-    const robotConfig: any = {
-      botId,
-      secret,
-      targetUserId,
-      nameTag: robotName,
-      ...(docMcpUrl ? { doc_mcp_url: docMcpUrl } : {}),
-    };
-
-    // 确保配置目录存在
-    ensureConfigDir();
-
-    // 统一使用 robot-*.json 格式
-    const robotConfigPath = path.join(CONFIG_DIR, `robot-${Date.now()}.json`);
-    fs.writeFileSync(robotConfigPath, JSON.stringify(robotConfig, null, 2));
-    console.log(`\n[config] ✅ 已添加机器人: ${robotName}`);
-
-    console.log(`[config] 用户 ID: ${targetUserId}`);
-
-    // 列出所有机器人
-    const robots = listAllRobots();
-    console.log(`\n[config] 当前共 ${robots.length} 个机器人配置`);
-    robots.forEach((r, i) => {
-      console.log(`  ${i + 1}. ${r.name} (${r.targetUserId})`);
-    });
-
-    console.log('\n[config] MCP 配置无需修改，多个机器人共享同一个 HTTP 服务');
+    // 机器人直连功能已移至 wecom-aibot-server，此客户端不支持
+    console.log('\n[config] ❌ 此客户端不支持直接连接企业微信机器人');
+    console.log('[config] 请在 wecom-aibot-server 端配置机器人');
 
   } catch (err) {
     logger.error('[config] 添加配置失败:', err);
@@ -1622,33 +1563,7 @@ export async function runConfigWizard(): Promise<{ config: WecomConfig; instance
       console.log(`\n当前默认联系人（targetUserId）: ${targetUserId || '（未设置）'}`);
       const changeContact = await question(rl, '是否重新识别？(y/N): ');
       if (changeContact.toLowerCase() === 'y') {
-        // 临时连接 bot 等待用户消息以识别 userid
-        console.log('\n[config] 正在连接企业微信验证凭证...');
-        const { initClient } = await import('./client.js');
-        const tmpClient = initClient(botId, secret, 'placeholder', 'config-detect');
-
-        // 等待连接（最多10秒）
-        const connected = await new Promise<boolean>((resolve) => {
-          const start = Date.now();
-          const iv = setInterval(() => {
-            if (tmpClient.isConnected()) { clearInterval(iv); resolve(true); }
-            else if (Date.now() - start > 10000) { clearInterval(iv); resolve(false); }
-          }, 500);
-        });
-
-        if (!connected) {
-          console.log('[config] ❌ 连接失败（Bot ID/Secret 可能有误），保持原默认联系人');
-          tmpClient.disconnect();
-        } else {
-          const detectedUserId = await detectUserIdFromMessage(tmpClient, 180);
-          tmpClient.disconnect();
-          if (detectedUserId) {
-            targetUserId = detectedUserId;
-            console.log(`[config] ✅ 默认联系人已更新: ${targetUserId}`);
-          } else {
-            console.log('[config] 未识别到用户消息，保持原默认联系人');
-          }
-        }
+        console.log('[config] 机器人直连功能已移至 wecom-aibot-server，请在服务端重新配置目标用户');
       } else {
         console.log('[config] 保持原默认联系人');
       }

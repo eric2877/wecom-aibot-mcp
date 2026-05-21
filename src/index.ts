@@ -1,44 +1,9 @@
 /**
- * MCP Server 模块入口
+ * wecom-aibot-mcp 公共 API
  *
- * 可作为库导入使用
- *
- * v2.0 架构变更：
- * - 使用 Session 管理
- * - 不再使用 projectDir
- * - robotName 作为连接索引
+ * 客户端模块入口（channel-server + config）
  */
 
-// Client 模块
-export { WecomClient, initClient } from './client.js';
-
-// 连接管理模块
-export {
-  connectRobot,
-  disconnectRobot,
-  getClient,
-  getConnectionState,
-  getAllConnectionStates,
-} from './connection-manager.js';
-
-// HTTP 服务模块
-export {
-  startHttpServer,
-  stopHttpServer,
-  HTTP_PORT,
-} from './http-server.js';
-export type { ApprovalRequest } from './http-server.js';
-
-// Hook 脚本路径（统一从 project-config.ts 导出）
-export {
-  PERMISSION_HOOK_SCRIPT_PATH,
-  STOP_HOOK_SCRIPT_PATH,
-} from './project-config.js';
-// 向后兼容别名
-export { PERMISSION_HOOK_SCRIPT_PATH as HOOK_SCRIPT_PATH } from './project-config.js';
-
-// 工具注册
-export { registerTools } from './tools/index.js';
-
-// 配置向导
-export { listAllRobots, runConfigWizard } from './config-wizard.js';
+export { startChannelServer } from './channel-server.js';
+export { VERSION, runRemoteInstallWizard, uninstall, getInstalledMode } from './config-wizard.js';
+export { logger } from './logger.js';
