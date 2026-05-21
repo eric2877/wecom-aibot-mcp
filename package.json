@@ -1,7 +1,7 @@
 {
   "name": "@vrs-soft/wecom-aibot-mcp",
-  "version": "2.6.1",
-  "description": "企业微信智能机器人 MCP 服务 - Claude Code 审批通道",
+  "version": "3.0.0",
+  "description": "企业微信智能机器人 MCP 客户端 - 连接 wecom-aibot-server daemon",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -19,8 +19,7 @@
     "prepublishOnly": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
-    "test:e2e": "vitest run tests/e2e"
+    "test:coverage": "vitest run --coverage"
   },
   "keywords": [
     "wecom",
@@ -38,9 +37,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@wecom/aibot-node-sdk": "^1.0.4",
-    "dotenv": "^16.4.5",
-    "rxjs": "^7.8.2"
+    "dotenv": "^16.4.5"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

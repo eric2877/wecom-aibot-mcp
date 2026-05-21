@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.0.0] - 2026-05-21
+
+### Breaking Changes
+- **项目拆分**：daemon 部分（HTTP Server、WebSocket 连接、机器人配置）已迁移至独立私有项目 `wecom-aibot-server`。本包（`@vrs-soft/wecom-aibot-mcp`）现在是纯客户端，只负责连接远端 daemon
+- **移除命令**：`--start`, `--stop`, `--debug`, `--add`, `--config`, `--status`, `--list`, `--clean-cache`, `--set-token`（均属 server 端管理）
+- **移除依赖**：`@wecom/aibot-node-sdk`, `rxjs`（不再直连企业微信 WebSocket）
+
+### Added
+- `--install`：新安装向导，交互式填写远端 daemon 地址 + Auth Token，写入 `~/.claude.json`（Channel 或 HTTP 直连两种模式）
+
+### Changed
+- `--channel`：行为不变（SSE 代理 + 工具转发），但不再依赖本地 daemon，直连远端 `MCP_URL`
+- `--uninstall`：保留，清除本地 MCP 配置和 hook 脚本
+
 ## [2.6.1] - 2026-05-20
 
 ### Fixed
