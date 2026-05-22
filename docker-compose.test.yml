@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  server:
+    build:
+      context: ../wecom-aibot-server
+      dockerfile: Dockerfile
+    ports:
+      - "18963:18963"
+    environment:
+      - WECOM_BOT_ID=${WECOM_BOT_ID}
+      - WECOM_SECRET=${WECOM_SECRET}
+      - WECOM_TARGET_USER=${WECOM_TARGET_USER}
+      - AUTH_TOKEN=${AUTH_TOKEN:-test-token-docker}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:18963/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
