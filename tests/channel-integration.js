@@ -18,6 +18,7 @@
 import { spawn, execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -359,6 +360,15 @@ async function main() {
   } finally {
     client.close();
     channelProc.kill('SIGTERM');
+    // 强制清理：移除测试遗留的 active-projects.json 条目，避免污染生产环境
+    try {
+      const apFile = path.join(os.homedir(), '.wecom-aibot-mcp', 'active-projects.json');
+      if (fs.existsSync(apFile)) {
+        const entries = JSON.parse(fs.readFileSync(apFile, 'utf-8'));
+        const cleaned = entries.filter(e => e.projectDir !== '/tmp/channel-test');
+        fs.writeFileSync(apFile, JSON.stringify(cleaned, null, 2));
+      }
+    } catch { /* ignore */ }
     dockerDown();
   }
 
