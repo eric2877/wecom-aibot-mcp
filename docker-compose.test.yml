@@ -8,10 +8,10 @@ services:
     ports:
       - "18963:18963"
     environment:
-      - WECOM_BOT_ID=${WECOM_BOT_ID}
-      - WECOM_SECRET=${WECOM_SECRET}
-      - WECOM_TARGET_USER=${WECOM_TARGET_USER}
-      - AUTH_TOKEN=${AUTH_TOKEN:-test-token-docker}
+      - WECOM_BOT_ID=aibHof1xin4g5PE8qorp7RLH5OE-CnBR43P
+      - WECOM_SECRET=IFVJXWMbN8f1ELP855hx0tF5w4Du7onW9PwmYYkuD8R
+      - WECOM_TARGET_USER=LiuYang
+      - AUTH_TOKEN=test-token-docker
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:18963/health"]
       interval: 5s

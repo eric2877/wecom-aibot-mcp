@@ -37,16 +37,8 @@ function pass(label) { console.log(`${GREEN}✅ PASS${NC} ${label}`); PASS++; }
 function fail(label, detail = '') { console.log(`${RED}❌ FAIL${NC} ${label}${detail ? ': ' + detail : ''}`); FAIL++; }
 function info(msg) { console.log(`${YELLOW}ℹ️  ${msg}${NC}`); }
 
-// ─── 加载 .env.test ───────────────────────────────────
-const envFile = path.join(ROOT, '.env.test');
-if (!fs.existsSync(envFile)) { console.error('ERROR: .env.test not found'); process.exit(1); }
-for (const line of fs.readFileSync(envFile, 'utf-8').split('\n')) {
-  if (!line || line.startsWith('#')) continue;
-  const [k, ...v] = line.split('=');
-  if (k) process.env[k.trim()] = v.join('=').trim();
-}
-
-const AUTH_TOKEN = process.env.AUTH_TOKEN || 'test-token-docker';
+// 测试 bot 凭证（专用测试机器人，与生产 bot 独立）
+const AUTH_TOKEN = 'test-token-docker';
 const BASE_URL = 'http://localhost:18963';
 const CHANNEL_BIN = path.join(ROOT, 'dist', 'bin.js');
 
@@ -115,7 +107,7 @@ class McpStdioClient {
 function dockerUp() {
   info('Building and starting Docker server...');
   execSync(
-    `docker compose -f docker-compose.test.yml --env-file .env.test up -d --build`,
+    `docker compose -f docker-compose.test.yml up -d --build`,
     { cwd: ROOT, stdio: 'pipe' }
   );
 }
