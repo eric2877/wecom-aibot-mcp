@@ -351,19 +351,47 @@ function connectSSE(ccId?: string): void {
               let notification;
               if (currentEvent === 'cc_message') {
                 // CC 间消息：用 cc:<fromCc> 作为 source 前缀，便于 agent 区分非 wecom 来源
+                const meta: Record<string, string> = {
+                  source: `cc:${msg.fromCc || ''}`,
+                  from_cc: msg.fromCc || '',
+                  to_cc: msg.toCc || '',
+                  chattype: 'cc',
+                  cc_id: msg.toCc || '',
+                  kind: msg.kind || 'notify',
+                  reply_to: msg.replyTo || '',
+                  msg_id: msg.msgId || '',
+                };
+                if (Array.isArray(msg.attachments) && msg.attachments.length > 0) {
+                  meta.attachments_json = JSON.stringify(msg.attachments);
+                  meta.attachment_count = String(msg.attachments.length);
+                }
                 notification = {
                   method: 'notifications/claude/channel',
                   params: {
                     content: msg.content || '',
+                    meta,
+                  },
+                };
+              } else if (currentEvent === 'cc_document_notify') {
+                // CC 间文档通知：只含元数据，agent 收到后按需 fetch_document(doc_id)
+                const sizeKb = Math.max(1, Math.round((msg.size || 0) / 1024));
+                const text = `📎 收到文档「${msg.title || ''}」(${msg.mimeType || ''}, ~${sizeKb} KB)，发送方=${msg.fromCc || ''}，docId=${msg.docId || ''}。调用 fetch_document(cc_id, doc_id="${msg.docId || ''}") 取内容。`;
+                notification = {
+                  method: 'notifications/claude/channel',
+                  params: {
+                    content: text,
                     meta: {
                       source: `cc:${msg.fromCc || ''}`,
                       from_cc: msg.fromCc || '',
                       to_cc: msg.toCc || '',
                       chattype: 'cc',
                       cc_id: msg.toCc || '',
-                      kind: msg.kind || 'notify',
-                      reply_to: msg.replyTo || '',
-                      msg_id: msg.msgId || '',
+                      kind: 'document',
+                      doc_id: msg.docId || '',
+                      title: msg.title || '',
+                      mime_type: msg.mimeType || '',
+                      size: String(msg.size || 0),
+                      expires_at: String(msg.expiresAt || 0),
                     } as Record<string, string>,
                   },
                 };
@@ -499,13 +527,18 @@ function registerChannelTools(server: McpServer) {
   // ============================================
   server.tool(
     'send_to_cc',
-    '向同一 daemon 上的另一个 CC 发送消息。目标 CC 收到时会作为 <channel source="cc:..."> 推送唤醒。仅支持同 daemon 间互通。',
+    '向同一 daemon 上的另一个 CC 发送消息。目标 CC 收到时会作为 <channel source="cc:..."> 推送唤醒。仅支持同 daemon 间互通。支持 attachments 内联小文档（每个 < 16 KB）；大文档请改用 upload_document。',
     {
       cc_id: z.string().describe('自己的 CC 标识'),
       to_cc: z.string().describe('目标 CC 标识'),
       content: z.string().describe('消息内容（支持 Markdown）'),
       kind: z.enum(['request', 'reply', 'notify']).optional().default('notify').describe('消息语义'),
       reply_to: z.string().optional().describe('可选：关联的请求 msgId'),
+      attachments: z.array(z.object({
+        title: z.string(),
+        content: z.string(),
+        mimeType: z.string().optional(),
+      })).optional().describe('可选：内联附件，每个 content < 16 KB'),
     },
     async (params) => forwardToHttpMcp('send_to_cc', params),
   );
@@ -517,6 +550,112 @@ function registerChannelTools(server: McpServer) {
       cc_id: z.string().describe('自己的 CC 标识'),
     },
     async (params) => forwardToHttpMcp('list_active_ccs', params),
+  );
+
+  // ============================================
+  // CC 间文档传输（v2.7.0+）— upload_document / fetch_document / list_documents
+  // ============================================
+  server.tool(
+    'upload_document',
+    'CC 间传输较大文档（> 16 KB 或二进制）。服务端暂存（默认 30 分钟 TTL），向目标 CC 推送 cc_document_notify 事件，接收方按需 fetch_document(docId) 取内容。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识'),
+      to_cc: z.string().describe('目标 CC 标识'),
+      title: z.string().describe('文档标题'),
+      content: z.string().describe('文档内容。文本直接传字符串；二进制（图片、PDF 等）传 base64 并设 encoding=base64'),
+      mime_type: z.string().optional().describe('MIME 类型，如 text/markdown / image/png'),
+      encoding: z.enum(['utf8', 'base64']).optional().default('utf8').describe('内容编码'),
+      ttl_seconds: z.number().int().min(60).max(86400).optional().describe('暂存秒数，默认 1800，最大 86400'),
+    },
+    async (params) => forwardToHttpMcp('upload_document', params),
+  );
+
+  server.tool(
+    'fetch_document',
+    '按 docId 拉取 CC 间暂存的文档内容。仅文档接收方（to_cc）可取。图片自动返回 MCP image content（Claude 可视觉识别）。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识（必须 = 文档的 to_cc）'),
+      doc_id: z.string().describe('文档 ID（从 cc_document_notify 或 list_documents 获得）'),
+    },
+    async (params) => forwardToHttpMcp('fetch_document', params),
+  );
+
+  server.tool(
+    'list_documents',
+    '列出当前 CC 收到的所有未过期文档元数据（不含 content）。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识'),
+      from_cc: z.string().optional().describe('可选：只列指定发送方的文档'),
+      include_expired: z.boolean().optional().describe('是否包含已过期，默认 false'),
+    },
+    async (params) => forwardToHttpMcp('list_documents', params),
+  );
+
+  // ============================================
+  // 共享文件池（v2.7.0+）— share_file / fetch_shared_file / list_shared_files
+  // 与 upload_document 不同：无指定接收方，所有 CC 可见
+  // ============================================
+  server.tool(
+    'share_file',
+    '上传一个共享文件到 MCP 服务端，所有在线 CC 都可通过 fetch_shared_file 取用。支持 inline content 或 file_path（server 直读，避免大文件经 Claude context）。默认 5 MB / 30 分钟 TTL。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识（owner）'),
+      title: z.string().describe('文件标题'),
+      content: z.string().optional().describe('二选一：内联内容'),
+      file_path: z.string().optional().describe('二选一：server 端文件绝对路径（大文件用，避免走 Claude context）'),
+      mime_type: z.string().optional().describe('MIME 类型；file_path 模式按扩展名推断'),
+      encoding: z.enum(['utf8', 'base64']).optional().describe('content 模式下的编码；file_path 自动判定'),
+      ttl_seconds: z.number().int().min(60).max(86400).optional().describe('暂存秒数，默认 1800'),
+      tags: z.array(z.string()).optional().describe('可选标签'),
+    },
+    async (params) => forwardToHttpMcp('share_file', params),
+  );
+
+  server.tool(
+    'fetch_shared_file',
+    '按 fileId 拉取共享文件内容。任何在线 CC 都能取。图片自动返回 MCP image content（Claude 可视觉识别）。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识'),
+      file_id: z.string().describe('共享文件 ID'),
+    },
+    async (params) => forwardToHttpMcp('fetch_shared_file', params),
+  );
+
+  server.tool(
+    'list_shared_files',
+    '列出共享文件池中未过期的文件元数据（不含 content）。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识'),
+      owner: z.string().optional().describe('可选：按 owner 过滤'),
+      tag: z.string().optional().describe('可选：按标签过滤'),
+      include_expired: z.boolean().optional().describe('是否包含已过期，默认 false'),
+    },
+    async (params) => forwardToHttpMcp('list_shared_files', params),
+  );
+
+  // ============================================
+  // 接收方落盘工具（v2.7.0+）
+  // ============================================
+  server.tool(
+    'accept_document',
+    '接受 upload_document 推来的文档：fetch 内容 + 落盘到 {projectDir}/received-file/。【强制】必须先通过 send_message 询问用户、得到肯定回复后才能调用。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识'),
+      doc_id: z.string().describe('文档 ID'),
+      save_as: z.string().optional().describe('可选：自定义文件名'),
+    },
+    async (params) => forwardToHttpMcp('accept_document', params),
+  );
+
+  server.tool(
+    'accept_shared_file',
+    '从共享池下载文件并落盘到 {projectDir}/received-file/。共享池为 pull 模型，无强制询问。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识'),
+      file_id: z.string().describe('共享文件 ID'),
+      save_as: z.string().optional().describe('可选：自定义文件名'),
+    },
+    async (params) => forwardToHttpMcp('accept_shared_file', params),
   );
 
   // ============================================
@@ -634,15 +773,20 @@ function registerChannelTools(server: McpServer) {
               logger.info('本地 PermissionRequest hook 已写入', { path: hookResult.path, success: hookResult.success });
 
               // 注册 Claude TUI 的 PID（不能用 process.ppid，npx 部署时 ppid 是 npx 不是 Claude）
-              const startPid = process.ppid ?? process.pid;
-              const claudePid = findClaudePid(startPid);
-              registerActiveProject(claudePid, localProjectDir);
-              logger.info('本地 active-projects 已注册', {
-                pid: claudePid,
-                rawPpid: startPid,
-                resolvedClaudePid: claudePid !== startPid,
-                projectDir: localProjectDir,
-              });
+              // WECOM_TEST_NO_REGISTER=1 时跳过注册，防止集成测试污染宿主机 active-projects.json
+              if (!process.env.WECOM_TEST_NO_REGISTER) {
+                const startPid = process.ppid ?? process.pid;
+                const claudePid = findClaudePid(startPid);
+                registerActiveProject(claudePid, localProjectDir);
+                logger.info('本地 active-projects 已注册', {
+                  pid: claudePid,
+                  rawPpid: startPid,
+                  resolvedClaudePid: claudePid !== startPid,
+                  projectDir: localProjectDir,
+                });
+              } else {
+                logger.info('WECOM_TEST_NO_REGISTER=1，跳过 active-projects 注册', { projectDir: localProjectDir });
+              }
 
               // 写入本地 wecom-aibot.json（远程 HTTP MCP 写在远端 fs，agent 本地需要自己落地）
               updateWechatModeConfig(localProjectDir, {
@@ -767,19 +911,19 @@ function registerChannelTools(server: McpServer) {
   // 文档代理工具（转发到 HTTP MCP）
   // ============================================
   const docTools: Array<[string, string, Record<string, z.ZodTypeAny>]> = [
-    ['create_doc', '新建文档或智能表格', {
+    ['create_wecom_doc', '新建企业微信在线文档或智能表格', {
       doc_type: z.number().int().describe('文档类型：3=文档，10=智能表格'),
       doc_name: z.string().describe('文档名称'),
       robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
     }],
-    ['get_doc_content', '获取文档内容（Markdown 格式）', {
+    ['get_wecom_doc_content', '获取企业微信在线文档内容（Markdown 格式）', {
       type: z.number().int().describe('内容格式：2=Markdown'),
       url: z.string().optional().describe('文档链接'),
       docid: z.string().optional().describe('文档 docid'),
       task_id: z.string().optional().describe('任务 ID（轮询时填写）'),
       robot_name: z.string().optional().describe('指定机器人名称（多机器人时必填）'),
     }],
-    ['edit_doc_content', '编辑文档内容（Markdown 格式覆写）', {
+    ['edit_wecom_doc_content', '编辑企业微信在线文档内容（Markdown 格式覆写）', {
       content: z.string().describe('覆写的文档内容'),
       content_type: z.number().int().describe('内容类型：1=Markdown'),
       url: z.string().optional().describe('文档链接'),
@@ -875,7 +1019,7 @@ export async function startChannelServer(): Promise<void> {
       tools: {},
     },
     // 告知 Claude 如何处理 channel 事件
-    instructions: '企业微信消息通过 <channel> 标签推送。属性说明：from=发送者userid, chatid=会话ID(单聊=用户ID,群聊=群ID), chattype=single|group, cc_id=当前会话标识。【强制规则】收到任何用户消息后，必须先执行步骤1再执行步骤2，禁止跳过：1) 立即发送确认 send_message(cc_id, "收到，正在处理...", target_user=chatid)；2) 处理任务；3) 发送结果 send_message(cc_id, "【完成】...", target_user=chatid)。',
+    instructions: '企业微信消息通过 <channel> 标签推送。属性说明：from=发送者userid, chatid=会话ID(单聊=用户ID,群聊=群ID), chattype=single|group, cc_id=当前会话标识。【强制规则1·用户消息】收到任何用户消息后，必须先执行步骤1再执行步骤2，禁止跳过：1) 立即发送确认 send_message(cc_id, "收到，正在处理...", target_user=chatid)；2) 处理任务；3) 发送结果 send_message(cc_id, "【完成】...", target_user=chatid)。【强制规则2·CC 间文档】收到 <channel kind="document"> 通知（cc_document_notify）时，禁止擅自落盘：1) 立即 send_message 告知用户（"CC <from_cc> 想发送文件「<title>」(<size>, <mime_type>)，是否接收？"），target_user 取当前 cc 的 chatid；2) 等用户明确肯定回复（是/接受/yes/同意等）；3) 同意后调 accept_document(cc_id, doc_id) 落盘到 {projectDir}/received-file/；4) 发送完成消息并附 saved_path；拒绝则忽略 doc_id 不调 fetch_document。共享池 share_file/fetch_shared_file 为 pull 模型，agent 主动决定，无需询问。',
   });
 
   // 注册工具
