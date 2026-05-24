@@ -648,6 +648,26 @@ function registerChannelTools(server: McpServer) {
   );
 
   server.tool(
+    'get_document_info',
+    '查询单个文档的元数据（不返回 content）。与 fetch_document 同权限：仅 to_cc 可查。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识（必须 = 文档的 to_cc）'),
+      doc_id: z.string().describe('文档 ID'),
+    },
+    async (params) => forwardToHttpMcp('get_document_info', params),
+  );
+
+  server.tool(
+    'get_shared_file_info',
+    '查询单个共享文件的元数据（不返回 content）。共享池无权限校验，任何 CC 都可查。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识'),
+      file_id: z.string().describe('共享文件 ID'),
+    },
+    async (params) => forwardToHttpMcp('get_shared_file_info', params),
+  );
+
+  server.tool(
     'accept_shared_file',
     '从共享池下载文件并落盘到 {projectDir}/received-file/。共享池为 pull 模型，无强制询问。',
     {
