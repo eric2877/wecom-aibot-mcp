@@ -61,6 +61,119 @@ function findClaudePid(startPid: number): number {
 const MCP_URL = process.env.MCP_URL || 'http://127.0.0.1:18963';
 const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
 
+// ============================================
+// 文件传输辅助（v3.2.0）—— channel-server 本地 fs + HTTP 直传 daemon
+// ============================================
+
+const MIME_BY_EXT: Record<string, string> = {
+  '.md': 'text/markdown', '.txt': 'text/plain', '.json': 'application/json',
+  '.yaml': 'application/yaml', '.yml': 'application/yaml', '.toml': 'application/toml',
+  '.ts': 'text/typescript', '.js': 'text/javascript', '.py': 'text/x-python',
+  '.html': 'text/html', '.css': 'text/css', '.csv': 'text/csv',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.webp': 'image/webp', '.svg': 'image/svg+xml',
+  '.pdf': 'application/pdf', '.zip': 'application/zip',
+};
+
+interface UploadArgs {
+  kind: 'document' | 'shared';
+  cc_id: string;
+  to_cc?: string;
+  file_path: string;
+  title?: string;
+  mime_type?: string;
+  ttl_seconds?: number;
+  tags?: string[];
+}
+
+async function uploadFileToHttp(args: UploadArgs): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  const abs = path.resolve(args.file_path);
+  if (!fs.existsSync(abs)) {
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'file_not_found', detail: abs }) }] };
+  }
+  let stat: fs.Stats;
+  try { stat = fs.statSync(abs); } catch (e) {
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'file_unreadable', detail: String(e) }) }] };
+  }
+  if (!stat.isFile()) {
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'not_a_file' }) }] };
+  }
+  const title = args.title || path.basename(abs);
+  const mime = args.mime_type || MIME_BY_EXT[path.extname(abs).toLowerCase()] || 'application/octet-stream';
+  const buf = fs.readFileSync(abs);
+
+  const endpoint = args.kind === 'document' ? '/api/v1/upload/document' : '/api/v1/upload/shared';
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/octet-stream',
+    'Content-Length': String(buf.length),
+    'X-Title': encodeURIComponent(title),
+    'X-Mime': mime,
+  };
+  if (MCP_AUTH_TOKEN) headers['Authorization'] = `Bearer ${MCP_AUTH_TOKEN}`;
+  if (args.ttl_seconds) headers['X-TTL'] = String(args.ttl_seconds);
+  if (args.kind === 'document') {
+    headers['X-From-CC'] = args.cc_id;
+    headers['X-To-CC'] = args.to_cc || '';
+  } else {
+    headers['X-Owner-CC'] = args.cc_id;
+    if (args.tags && args.tags.length > 0) headers['X-Tags'] = args.tags.join(',');
+  }
+
+  try {
+    const res = await fetch(`${MCP_URL}${endpoint}`, { method: 'POST', headers, body: buf });
+    const text = await res.text();
+    if (!res.ok) {
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'upload_http_failed', status: res.status, body: text.slice(0, 500) }) }] };
+    }
+    return { content: [{ type: 'text', text }] };
+  } catch (e) {
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'upload_network_failed', detail: String(e) }) }] };
+  }
+}
+
+interface DownloadArgs {
+  kind: 'document' | 'shared';
+  cc_id: string;
+  id: string;
+  save_path: string;
+}
+
+async function downloadFileFromHttp(args: DownloadArgs): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  const savePath = path.resolve(args.save_path);
+  const endpoint = args.kind === 'document'
+    ? `/api/v1/download/document/${encodeURIComponent(args.id)}?cc=${encodeURIComponent(args.cc_id)}`
+    : `/api/v1/download/shared/${encodeURIComponent(args.id)}`;
+  const headers: Record<string, string> = {};
+  if (MCP_AUTH_TOKEN) headers['Authorization'] = `Bearer ${MCP_AUTH_TOKEN}`;
+
+  try {
+    const res = await fetch(`${MCP_URL}${endpoint}`, { method: 'GET', headers });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'download_http_failed', status: res.status, body: text.slice(0, 500) }) }] };
+    }
+    const arrayBuf = await res.arrayBuffer();
+    const buf = Buffer.from(arrayBuf);
+    const dir = path.dirname(savePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(savePath, buf);
+    const stat = fs.statSync(savePath);
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: true,
+          saved_path: savePath,
+          size: stat.size,
+          mime_type: res.headers.get('content-type') || undefined,
+        }),
+      }],
+    };
+  } catch (e) {
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'download_network_failed', detail: String(e) }) }] };
+  }
+}
+
 // 构建带 auth 的 fetch headers
 function getAuthHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
@@ -669,13 +782,76 @@ function registerChannelTools(server: McpServer) {
 
   server.tool(
     'accept_shared_file',
-    '从共享池下载文件并落盘到 {projectDir}/received-file/。共享池为 pull 模型，无强制询问。',
+    '【已废弃】仅本地 daemon 有效。远端 daemon 用 download_shared_file_to_path 替代。',
     {
       cc_id: z.string().describe('自己的 CC 标识'),
       file_id: z.string().describe('共享文件 ID'),
       save_as: z.string().optional().describe('可选：自定义文件名'),
     },
     async (params) => forwardToHttpMcp('accept_shared_file', params),
+  );
+
+  // ============================================
+  // 文件直传工具（v3.2.0）—— channel-server 本地读写 + HTTP 直传
+  // 解决远端 daemon 场景下 file_path/accept_* 不可用的 bug
+  // 文件字节全程不经 LLM context
+  // ============================================
+  server.tool(
+    'upload_document_from_file',
+    'CC 间发送文件给目标 CC：channel-server 本地读取 file_path → HTTP POST 字节流到 daemon → 目标 CC 收 cc_document_notify。文件全程不经 LLM context。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识'),
+      to_cc: z.string().describe('目标 CC 标识'),
+      file_path: z.string().describe('本地文件绝对路径（channel-server 进程能读到的路径）'),
+      title: z.string().optional().describe('可选：文档标题（默认用文件名）'),
+      mime_type: z.string().optional().describe('可选：MIME 类型（默认按扩展名推断）'),
+      ttl_seconds: z.number().int().min(60).max(86400).optional().describe('暂存秒数，默认 1800'),
+    },
+    async ({ cc_id, to_cc, file_path, title, mime_type, ttl_seconds }) => {
+      return uploadFileToHttp({ kind: 'document', cc_id, to_cc, file_path, title, mime_type, ttl_seconds });
+    },
+  );
+
+  server.tool(
+    'share_file_from_path',
+    '共享本地文件到 daemon 共享池：channel-server 本地读取 file_path → HTTP POST 字节流到 daemon。文件全程不经 LLM context。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识（owner）'),
+      file_path: z.string().describe('本地文件绝对路径'),
+      title: z.string().optional().describe('可选：文件标题（默认用文件名）'),
+      mime_type: z.string().optional().describe('可选：MIME 类型'),
+      ttl_seconds: z.number().int().min(60).max(86400).optional().describe('暂存秒数，默认 1800'),
+      tags: z.array(z.string()).optional().describe('可选标签'),
+    },
+    async ({ cc_id, file_path, title, mime_type, ttl_seconds, tags }) => {
+      return uploadFileToHttp({ kind: 'shared', cc_id, file_path, title, mime_type, ttl_seconds, tags });
+    },
+  );
+
+  server.tool(
+    'download_document_to_path',
+    '下载点对点文档到本地路径：channel-server 从 daemon HTTP GET 字节流 → 写入本地 save_path。文件全程不经 LLM context。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识（必须 = 文档的 to_cc）'),
+      doc_id: z.string().describe('文档 ID'),
+      save_path: z.string().describe('本地保存路径（绝对路径；目录会自动创建）'),
+    },
+    async ({ cc_id, doc_id, save_path }) => {
+      return downloadFileFromHttp({ kind: 'document', cc_id, id: doc_id, save_path });
+    },
+  );
+
+  server.tool(
+    'download_shared_file_to_path',
+    '下载共享文件到本地路径：channel-server 从 daemon HTTP GET 字节流 → 写入本地 save_path。文件全程不经 LLM context。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识'),
+      file_id: z.string().describe('共享文件 ID'),
+      save_path: z.string().describe('本地保存路径（绝对路径；目录会自动创建）'),
+    },
+    async ({ cc_id, file_id, save_path }) => {
+      return downloadFileFromHttp({ kind: 'shared', cc_id, id: file_id, save_path });
+    },
   );
 
   // ============================================
@@ -1039,7 +1215,7 @@ export async function startChannelServer(): Promise<void> {
       tools: {},
     },
     // 告知 Claude 如何处理 channel 事件
-    instructions: '企业微信消息通过 <channel> 标签推送。属性说明：from=发送者userid, chatid=会话ID(单聊=用户ID,群聊=群ID), chattype=single|group, cc_id=当前会话标识。【强制规则1·用户消息】收到任何用户消息后，必须先执行步骤1再执行步骤2，禁止跳过：1) 立即发送确认 send_message(cc_id, "收到，正在处理...", target_user=chatid)；2) 处理任务；3) 发送结果 send_message(cc_id, "【完成】...", target_user=chatid)。【强制规则2·CC 间文档】收到 <channel kind="document"> 通知（cc_document_notify）时，禁止擅自落盘：1) 立即 send_message 告知用户（"CC <from_cc> 想发送文件「<title>」(<size>, <mime_type>)，是否接收？"），target_user 取当前 cc 的 chatid；2) 等用户明确肯定回复（是/接受/yes/同意等）；3) 同意后调 accept_document(cc_id, doc_id) 落盘到 {projectDir}/received-file/；4) 发送完成消息并附 saved_path；拒绝则忽略 doc_id 不调 fetch_document。共享池 share_file/fetch_shared_file 为 pull 模型，agent 主动决定，无需询问。',
+    instructions: '企业微信消息通过 <channel> 标签推送。属性说明：from=发送者userid, chatid=会话ID(单聊=用户ID,群聊=群ID), chattype=single|group, cc_id=当前会话标识。【强制规则1·用户消息】收到任何用户消息后，必须先执行步骤1再执行步骤2，禁止跳过：1) 立即发送确认 send_message(cc_id, "收到，正在处理...", target_user=chatid)；2) 处理任务；3) 发送结果 send_message(cc_id, "【完成】...", target_user=chatid)。【强制规则2·CC 间文档】收到 <channel kind="document"> 通知（cc_document_notify）时，禁止擅自落盘：1) 立即 send_message 告知用户（"CC <from_cc> 想发送文件「<title>」(<size>, <mime_type>)，是否接收？"），target_user 取当前 cc 的 chatid；2) 等用户明确肯定回复（是/接受/yes/同意等）；3) 同意后调 download_document_to_path(cc_id, doc_id, save_path) 落盘（save_path 推荐 {projectDir}/received-file/<title>，目录会自动创建）；4) 发送完成消息并附 saved_path；拒绝则忽略 doc_id 不调任何下载工具。共享池 share_file_from_path/download_shared_file_to_path 为 pull 模型，agent 主动决定，无需询问。【重要】发送/接收文件请用 *_from_file / *_to_path 系列（文件字节走 channel-server 本地 fs + HTTP，不进 LLM context）；旧的 upload_document/fetch_document/accept_document 仍可用但仅适合小内容（< 16KB），远端 daemon 部署下 accept_* 与 file_path 模式不可用。',
   });
 
   // 注册工具
