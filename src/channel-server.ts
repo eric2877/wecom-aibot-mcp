@@ -516,6 +516,7 @@ function connectSSE(ccId?: string): void {
                   params: {
                     content: message.content || JSON.stringify(msg),
                     meta: {
+                      msgid: message.msgid || '',
                       from: message.from || '',
                       chatid: message.chatid || '',
                       chattype: message.chattype || 'single',
@@ -638,6 +639,18 @@ function registerChannelTools(server: McpServer) {
   // ============================================
   // 工具 4a: CC 间通信 — send_to_cc / list_active_ccs（v2.6.0+）
   // ============================================
+  server.tool(
+    'send_thinking',
+    'wecom 流式回复占位符。在用户原会话气泡里追加"思考中"文字，让用户立即看到反馈。仅对最近 60s 的 msgid 有效。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识'),
+      msgid: z.string().describe('用户消息的 msgid（来自 channel notification meta.msgid）'),
+      content: z.string().optional().describe('占位文字，默认"💭 正在处理..."'),
+      finished: z.boolean().optional().describe('是否最终回复'),
+    },
+    async (params) => forwardToHttpMcp('send_thinking', params),
+  );
+
   server.tool(
     'send_to_cc',
     '向同一 daemon 上的另一个 CC 发送消息。目标 CC 收到时会作为 <channel source="cc:..."> 推送唤醒。仅支持同 daemon 间互通。支持 attachments 内联小文档（每个 < 16 KB）；大文档请改用 upload_document。',
@@ -1215,7 +1228,7 @@ export async function startChannelServer(): Promise<void> {
       tools: {},
     },
     // 告知 Claude 如何处理 channel 事件
-    instructions: '企业微信消息通过 <channel> 标签推送。属性说明：from=发送者userid, chatid=会话ID(单聊=用户ID,群聊=群ID), chattype=single|group, cc_id=当前会话标识。【强制规则1·用户消息】收到任何用户消息后，必须先执行步骤1再执行步骤2，禁止跳过：1) 立即发送确认 send_message(cc_id, "收到，正在处理...", target_user=chatid)；2) 处理任务；3) 发送结果 send_message(cc_id, "【完成】...", target_user=chatid)。【强制规则2·CC 间文档】收到 <channel kind="document"> 通知（cc_document_notify）时，禁止擅自落盘：1) 立即 send_message 告知用户（"CC <from_cc> 想发送文件「<title>」(<size>, <mime_type>)，是否接收？"），target_user 取当前 cc 的 chatid；2) 等用户明确肯定回复（是/接受/yes/同意等）；3) 同意后调 download_document_to_path(cc_id, doc_id, save_path) 落盘（save_path 推荐 {projectDir}/received-file/<title>，目录会自动创建）；4) 发送完成消息并附 saved_path；拒绝则忽略 doc_id 不调任何下载工具。共享池 share_file_from_path/download_shared_file_to_path 为 pull 模型，agent 主动决定，无需询问。【重要】发送/接收文件请用 *_from_file / *_to_path 系列（文件字节走 channel-server 本地 fs + HTTP，不进 LLM context）；旧的 upload_document/fetch_document/accept_document 仍可用但仅适合小内容（< 16KB），远端 daemon 部署下 accept_* 与 file_path 模式不可用。',
+    instructions: '企业微信消息通过 <channel> 标签推送。属性说明：from=发送者userid, chatid=会话ID(单聊=用户ID,群聊=群ID), chattype=single|group, cc_id=当前会话标识, msgid=用户消息ID（用于 send_thinking 流式占位）。【强制规则1·用户消息】收到任何用户消息后，必须先执行步骤1再执行步骤2，禁止跳过：1) 立即发送确认 send_message(cc_id, "收到，正在处理...", target_user=chatid)；2) 处理任务；3) 发送结果 send_message(cc_id, "【完成】...", target_user=chatid)。处理耗时较长时可选调 send_thinking(cc_id, msgid, content="...") 在用户原会话气泡里追加"思考中"占位，给用户视觉反馈（仅 60s 内有效）。【强制规则2·CC 间文档】收到 <channel kind="document"> 通知（cc_document_notify）时，禁止擅自落盘：1) 立即 send_message 告知用户（"CC <from_cc> 想发送文件「<title>」(<size>, <mime_type>)，是否接收？"），target_user 取当前 cc 的 chatid；2) 等用户明确肯定回复（是/接受/yes/同意等）；3) 同意后调 download_document_to_path(cc_id, doc_id, save_path) 落盘（save_path 推荐 {projectDir}/received-file/<title>，目录会自动创建）；4) 发送完成消息并附 saved_path；拒绝则忽略 doc_id 不调任何下载工具。共享池 share_file_from_path/download_shared_file_to_path 为 pull 模型，agent 主动决定，无需询问。【重要】发送/接收文件请用 *_from_file / *_to_path 系列（文件字节走 channel-server 本地 fs + HTTP，不进 LLM context）；旧的 upload_document/fetch_document/accept_document 仍可用但仅适合小内容（< 16KB），远端 daemon 部署下 accept_* 与 file_path 模式不可用。',
   });
 
   // 注册工具
