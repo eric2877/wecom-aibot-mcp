@@ -772,6 +772,26 @@ function registerChannelTools(server: McpServer) {
   );
 
   server.tool(
+    'delete_shared_file',
+    '删除共享文件。仅 owner 可删。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识（必须 = owner）'),
+      file_id: z.string().describe('共享文件 ID'),
+    },
+    async (params) => forwardToHttpMcp('delete_shared_file', params),
+  );
+
+  server.tool(
+    'delete_document',
+    '删除点对点文档。fromCc 或 toCc 任一方可删。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识（必须 = fromCc 或 toCc）'),
+      doc_id: z.string().describe('文档 ID'),
+    },
+    async (params) => forwardToHttpMcp('delete_document', params),
+  );
+
+  server.tool(
     'get_shared_file_info',
     '查询单个共享文件的元数据（不返回 content）。共享池无权限校验，任何 CC 都可查。',
     {
