@@ -119,6 +119,7 @@ async function sendWecomMediaFromFile(args: SendWecomMediaArgs): Promise<{ conte
     'X-Target-User': args.target_user,
     'X-Media-Type': args.media_type,
     'X-Filename': encodeURIComponent(filename),
+    'X-Cc-Id': args.cc_id,  // v3.2.5: daemon 用 ccId 查 registry 找到正确的 robot（群聊必须用 CC 自己的机器人）
   };
   if (MCP_AUTH_TOKEN) headers['Authorization'] = `Bearer ${MCP_AUTH_TOKEN}`;
   if (args.robot_name) headers['X-Robot'] = args.robot_name;
