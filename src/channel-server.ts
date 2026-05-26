@@ -86,6 +86,57 @@ interface UploadArgs {
   tags?: string[];
 }
 
+// v3.2.4: 发媒体给 wecom 用户
+interface SendWecomMediaArgs {
+  cc_id: string;
+  target_user: string;
+  file_path: string;
+  media_type: 'image' | 'file' | 'voice' | 'video';
+  filename?: string;
+  robot_name?: string;
+  video_title?: string;
+  video_description?: string;
+}
+
+async function sendWecomMediaFromFile(args: SendWecomMediaArgs): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  const abs = path.resolve(args.file_path);
+  if (!fs.existsSync(abs)) {
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'file_not_found', detail: abs }) }] };
+  }
+  let stat: fs.Stats;
+  try { stat = fs.statSync(abs); } catch (e) {
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'file_unreadable', detail: String(e) }) }] };
+  }
+  if (!stat.isFile()) {
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'not_a_file' }) }] };
+  }
+  const filename = args.filename || path.basename(abs);
+  const buf = fs.readFileSync(abs);
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/octet-stream',
+    'Content-Length': String(buf.length),
+    'X-Target-User': args.target_user,
+    'X-Media-Type': args.media_type,
+    'X-Filename': encodeURIComponent(filename),
+  };
+  if (MCP_AUTH_TOKEN) headers['Authorization'] = `Bearer ${MCP_AUTH_TOKEN}`;
+  if (args.robot_name) headers['X-Robot'] = args.robot_name;
+  if (args.video_title) headers['X-Video-Title'] = encodeURIComponent(args.video_title);
+  if (args.video_description) headers['X-Video-Description'] = encodeURIComponent(args.video_description);
+
+  try {
+    const res = await fetch(`${MCP_URL}/api/v1/wecom/send_media`, { method: 'POST', headers, body: buf });
+    const text = await res.text();
+    if (!res.ok) {
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'http_failed', status: res.status, body: text.slice(0, 500) }) }] };
+    }
+    return { content: [{ type: 'text', text }] };
+  } catch (e) {
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'network_failed', detail: String(e) }) }] };
+  }
+}
+
 async function uploadFileToHttp(args: UploadArgs): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   const abs = path.resolve(args.file_path);
   if (!fs.existsSync(abs)) {
@@ -810,6 +861,64 @@ function registerChannelTools(server: McpServer) {
       save_as: z.string().optional().describe('可选：自定义文件名'),
     },
     async (params) => forwardToHttpMcp('accept_shared_file', params),
+  );
+
+  // ============================================
+  // 发媒体给 wecom 用户（v3.2.4）
+  // channel-server 本地读文件 + HTTP POST 字节流 → daemon uploadMedia + sendMediaMessage
+  // ============================================
+  server.tool(
+    'send_image_to_wecom_user',
+    '把本地图片发送给 wecom 用户。channel-server 读文件 + POST 字节流 → daemon 调用 wecom uploadMedia + sendMediaMessage。文件字节不经 LLM context。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识（仅日志）'),
+      target_user: z.string().describe('目标 wecom userid（单聊用户ID，群聊用群ID/chatid）'),
+      file_path: z.string().describe('本地图片绝对路径（PNG/JPEG/GIF/WebP 等）'),
+      filename: z.string().optional().describe('可选：发到 wecom 端显示的文件名'),
+      robot_name: z.string().optional().describe('可选：指定通过哪个机器人发送'),
+    },
+    async (params) => sendWecomMediaFromFile({ ...params, media_type: 'image' }),
+  );
+
+  server.tool(
+    'send_file_to_wecom_user',
+    '把本地任意文件（PDF/zip/docx 等）发送给 wecom 用户。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识'),
+      target_user: z.string().describe('目标 wecom userid 或 chatid'),
+      file_path: z.string().describe('本地文件绝对路径'),
+      filename: z.string().optional().describe('可选：wecom 显示的文件名（默认用 basename）'),
+      robot_name: z.string().optional().describe('可选：指定机器人'),
+    },
+    async (params) => sendWecomMediaFromFile({ ...params, media_type: 'file' }),
+  );
+
+  server.tool(
+    'send_video_to_wecom_user',
+    '把本地视频文件发送给 wecom 用户。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识'),
+      target_user: z.string().describe('目标 wecom userid 或 chatid'),
+      file_path: z.string().describe('本地视频路径（MP4 等）'),
+      filename: z.string().optional(),
+      title: z.string().optional().describe('视频标题'),
+      description: z.string().optional().describe('视频描述'),
+      robot_name: z.string().optional(),
+    },
+    async ({ title, description, ...params }) => sendWecomMediaFromFile({ ...params, media_type: 'video', video_title: title, video_description: description }),
+  );
+
+  server.tool(
+    'send_voice_to_wecom_user',
+    '把本地语音文件发送给 wecom 用户（amr 格式优先；wecom 对其他格式可能拒绝）。',
+    {
+      cc_id: z.string().describe('自己的 CC 标识'),
+      target_user: z.string().describe('目标 wecom userid 或 chatid'),
+      file_path: z.string().describe('本地语音文件路径'),
+      filename: z.string().optional(),
+      robot_name: z.string().optional(),
+    },
+    async (params) => sendWecomMediaFromFile({ ...params, media_type: 'voice' }),
   );
 
   // ============================================
