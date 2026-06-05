@@ -1,6 +1,6 @@
 {
   "name": "@vrs-soft/wecom-aibot-mcp",
-  "version": "3.3.1",
+  "version": "3.3.2",
   "description": "企业微信智能机器人 MCP 客户端 - 连接 wecom-aibot-server daemon",
   "type": "module",
   "main": "dist/index.js",

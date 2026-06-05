@@ -18,7 +18,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
 import { VERSION, installSkill } from './config-wizard.js';
-import { addPermissionHook, registerActiveProject, unregisterActiveProject, updateWechatModeConfig } from './project-config.js';
+import { addPermissionHook, registerActiveProject, unregisterActiveProject, updateWechatModeConfig, loadWechatModeConfig } from './project-config.js';
 import { logger } from './logger.js';
 
 /**
@@ -1074,12 +1074,25 @@ function registerChannelTools(server: McpServer) {
       auto_approve_timeout: z.number().optional().default(600).describe('超时自动决策等待时间（秒，默认 600 即 10 分钟）'),
     },
     async ({ agent_name, cc_id, robot_id, project_dir, mode, auto_approve_timeout }) => {
+      // v3.3.2: 远端 daemon 看不到本地 .claude/wecom-aibot.json，无法走 existingConfig 复用 ccId 的路径。
+      // 这里在 channel-server 本地读保存的 ccId，没有传入 cc_id 时自动塞进去 —— 避免每次 enter
+      // 都因 stale registry entry 撞冲突，生成 商务机器人-2 / -3 之类的奇怪 ccId。
+      const effectiveProjectDir = project_dir || process.cwd();
+      let effectiveCcId = cc_id;
+      if (!effectiveCcId) {
+        const saved = loadWechatModeConfig(effectiveProjectDir);
+        if (saved?.ccId) {
+          effectiveCcId = saved.ccId;
+          logger.info('reuse saved ccId from local wecom-aibot.json', { projectDir: effectiveProjectDir, ccId: saved.ccId });
+        }
+      }
+
       // 转发请求
       const result = await forwardToHttpMcp('enter_headless_mode', {
         agent_name,
-        cc_id,
+        cc_id: effectiveCcId,
         robot_id,
-        project_dir: project_dir || process.cwd(),
+        project_dir: effectiveProjectDir,
         mode,
         auto_approve_timeout,
       });
