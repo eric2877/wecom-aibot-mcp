@@ -113,16 +113,18 @@ async function sendWecomMediaFromFile(args: SendWecomMediaArgs): Promise<{ conte
   const filename = args.filename || path.basename(abs);
   const buf = fs.readFileSync(abs);
 
+  // v3.3.1: 所有可能包含 CJK 的 header 值必须 encodeURIComponent —— HTTP header 值受 ISO-8859-1 限制，
+  //         node fetch 见到 char > 255 直接抛 ByteString TypeError。daemon 端 getHeaderStr 会 decodeURIComponent。
   const headers: Record<string, string> = {
     'Content-Type': 'application/octet-stream',
     'Content-Length': String(buf.length),
-    'X-Target-User': args.target_user,
+    'X-Target-User': encodeURIComponent(args.target_user),
     'X-Media-Type': args.media_type,
     'X-Filename': encodeURIComponent(filename),
-    'X-Cc-Id': args.cc_id,  // v3.2.5: daemon 用 ccId 查 registry 找到正确的 robot（群聊必须用 CC 自己的机器人）
+    'X-Cc-Id': encodeURIComponent(args.cc_id),
   };
   if (MCP_AUTH_TOKEN) headers['Authorization'] = `Bearer ${MCP_AUTH_TOKEN}`;
-  if (args.robot_name) headers['X-Robot'] = args.robot_name;
+  if (args.robot_name) headers['X-Robot'] = encodeURIComponent(args.robot_name);
   if (args.video_title) headers['X-Video-Title'] = encodeURIComponent(args.video_title);
   if (args.video_description) headers['X-Video-Description'] = encodeURIComponent(args.video_description);
 
@@ -163,12 +165,13 @@ async function uploadFileToHttp(args: UploadArgs): Promise<{ content: Array<{ ty
   };
   if (MCP_AUTH_TOKEN) headers['Authorization'] = `Bearer ${MCP_AUTH_TOKEN}`;
   if (args.ttl_seconds) headers['X-TTL'] = String(args.ttl_seconds);
+  // v3.3.1: 同上，CJK ccId / tags 必须 URL 编码
   if (args.kind === 'document') {
-    headers['X-From-CC'] = args.cc_id;
-    headers['X-To-CC'] = args.to_cc || '';
+    headers['X-From-CC'] = encodeURIComponent(args.cc_id);
+    headers['X-To-CC'] = encodeURIComponent(args.to_cc || '');
   } else {
-    headers['X-Owner-CC'] = args.cc_id;
-    if (args.tags && args.tags.length > 0) headers['X-Tags'] = args.tags.join(',');
+    headers['X-Owner-CC'] = encodeURIComponent(args.cc_id);
+    if (args.tags && args.tags.length > 0) headers['X-Tags'] = encodeURIComponent(args.tags.join(','));
   }
 
   try {
